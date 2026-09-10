@@ -4,6 +4,7 @@ use bsky_observatory::{
     api::{self, AppState, GrowthBaseline},
     archive::Archive,
     config::Config,
+    identity::IdentityService,
     metrics::Metrics,
     storage::Storage,
 };
@@ -29,19 +30,31 @@ async fn main() -> Result<()> {
         cfg.state_retention_hours,
         cfg.windows_seconds.clone(),
     );
+    let identities = IdentityService::new(
+        storage.clone(),
+        cfg.identity_profile_endpoint.clone(),
+        cfg.identity_cache_capacity,
+        std::time::Duration::from_secs(cfg.identity_cache_ttl_seconds),
+        std::time::Duration::from_secs(cfg.identity_negative_ttl_seconds),
+        cfg.identity_requests_per_second,
+    );
     let state = AppState {
         analysis: analysis.clone(),
         metrics: metrics.clone(),
         storage: storage.clone(),
         archive_dir: cfg.data_dir.clone(),
+        web_dist_dir: cfg.web_dist_dir.clone(),
         growth_baseline: GrowthBaseline {
             measured_at: std::time::Instant::now(),
             bytes: Archive::total_size(&cfg.data_dir) + storage.bytes().await.unwrap_or(0),
         },
+        system_history: Default::default(),
+        identities: identities.clone(),
     };
     let listener = tokio::net::TcpListener::bind(&cfg.listen_addr).await?;
+    tokio::spawn(api::sample_system_history(state.clone()));
     tokio::spawn(bsky_observatory::ingest::run(
-        cfg, storage, analysis, metrics,
+        cfg, storage, analysis, metrics, identities,
     ));
     axum::serve(listener, api::router(state)).await?;
     Ok(())

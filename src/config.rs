@@ -24,6 +24,12 @@ pub struct Config {
         default_value = "/mnt/storage/bsky-observatory/archive"
     )]
     pub data_dir: PathBuf,
+    #[arg(
+        long,
+        env = "WEB_DIST_DIR",
+        default_value = "/usr/share/bsky-observatory"
+    )]
+    pub web_dist_dir: PathBuf,
     #[arg(long, env = "LISTEN_ADDR", default_value = "0.0.0.0:3000")]
     pub listen_addr: String,
     #[arg(long, env = "ARCHIVE_SEGMENT_MIB", default_value_t = 256)]
@@ -49,6 +55,20 @@ pub struct Config {
     pub min_cluster_events: usize,
     #[arg(long, env = "STATE_RETENTION_HOURS", default_value_t = 24)]
     pub state_retention_hours: i64,
+    #[arg(
+        long,
+        env = "IDENTITY_PROFILE_ENDPOINT",
+        default_value = "https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile"
+    )]
+    pub identity_profile_endpoint: String,
+    #[arg(long, env = "IDENTITY_CACHE_CAPACITY", default_value_t = 100_000)]
+    pub identity_cache_capacity: usize,
+    #[arg(long, env = "IDENTITY_CACHE_TTL_SECONDS", default_value_t = 21600)]
+    pub identity_cache_ttl_seconds: u64,
+    #[arg(long, env = "IDENTITY_NEGATIVE_TTL_SECONDS", default_value_t = 300)]
+    pub identity_negative_ttl_seconds: u64,
+    #[arg(long, env = "IDENTITY_REQUESTS_PER_SECOND", default_value_t = 10)]
+    pub identity_requests_per_second: u32,
 }
 
 impl Config {

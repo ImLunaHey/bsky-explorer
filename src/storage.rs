@@ -1,11 +1,31 @@
-use crate::model::{Detection, NormalizedEvent};
+use crate::{
+    identity::IdentityRecord,
+    model::{Detection, NormalizedEvent},
+};
 use anyhow::{Context, Result};
 use clickhouse::{Client, Row};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
 pub struct Storage {
     client: Client,
+}
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct TableStats {
+    pub table: String,
+    pub rows: u64,
+    pub active_parts: u64,
+    pub compressed_bytes: u64,
+    pub uncompressed_bytes: u64,
+    pub compression_ratio: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ClickHouseStats {
+    pub tables: Vec<TableStats>,
+    pub pending_mutations: u64,
+    pub errors_since_restart: u64,
+    pub active_queries: u64,
 }
 #[derive(Row, Serialize)]
 struct EventRow {
@@ -88,12 +108,74 @@ impl Storage {
         self.client.query("INSERT INTO detections (cluster_id, first_seen, last_seen, account_count, event_count, coordination_score, evidence_json) VALUES (?, fromUnixTimestamp64Milli(?), fromUnixTimestamp64Milli(?), ?, ?, ?, ?)").bind(&d.cluster_id).bind(d.first_seen.timestamp_millis()).bind(d.last_seen.timestamp_millis()).bind(d.accounts.len() as u32).bind(d.event_count as u64).bind(d.scores.coordination_score).bind(body).execute().await?;
         Ok(())
     }
+    pub async fn insert_identity(&self, identity: &IdentityRecord) -> Result<()> {
+        for table in ["identity_history", "identities"] {
+            self.client
+                .query(&format!("INSERT INTO {table} (did, handle, observed_at, source) VALUES (?, ?, fromUnixTimestamp64Milli(?), ?)"))
+                .bind(&identity.did)
+                .bind(identity.handle.as_deref().unwrap_or(""))
+                .bind(identity.observed_at.timestamp_millis())
+                .bind(&identity.source)
+                .execute()
+                .await
+                .with_context(|| format!("insert identity into {table}"))?;
+        }
+        Ok(())
+    }
+    pub async fn identity(&self, did: &str) -> Result<Option<IdentityRecord>> {
+        #[derive(Row, Deserialize)]
+        struct IdentityResult {
+            did: String,
+            handle: String,
+            observed_at_ms: i64,
+            source: String,
+        }
+        let row = self.client
+            .query("SELECT did, handle, toUnixTimestamp64Milli(observed_at) AS observed_at_ms, source FROM identities FINAL WHERE did = ? LIMIT 1")
+            .bind(did)
+            .fetch_optional::<IdentityResult>()
+            .await?;
+        Ok(row.and_then(|row| {
+            Some(IdentityRecord {
+                did: row.did,
+                handle: (!row.handle.is_empty()).then_some(row.handle),
+                observed_at: chrono::DateTime::from_timestamp_millis(row.observed_at_ms)?,
+                source: row.source,
+            })
+        }))
+    }
     pub async fn bytes(&self) -> Result<u64> {
         self.table_bytes(None).await
     }
     pub async fn table_bytes(&self, table: Option<&str>) -> Result<u64> {
         let table = table.unwrap_or("");
         Ok(self.client.query("SELECT coalesce(sum(bytes_on_disk), 0) FROM system.parts WHERE active AND database=currentDatabase() AND (? = '' OR table = ?)").bind(table).bind(table).fetch_one::<u64>().await?)
+    }
+    pub async fn stats(&self) -> Result<ClickHouseStats> {
+        let tables = self.client.query(
+            "SELECT table, sum(rows) AS rows, count() AS active_parts, sum(bytes_on_disk) AS compressed_bytes, sum(data_uncompressed_bytes) AS uncompressed_bytes, if(compressed_bytes=0, 0., uncompressed_bytes/compressed_bytes) AS compression_ratio FROM system.parts WHERE active AND database=currentDatabase() GROUP BY table ORDER BY compressed_bytes DESC"
+        ).fetch_all::<TableStats>().await?;
+        let pending_mutations = self.client.query(
+            "SELECT count() FROM system.mutations WHERE database=currentDatabase() AND NOT is_done"
+        ).fetch_one::<u64>().await.unwrap_or(0);
+        let errors_since_restart = self
+            .client
+            .query("SELECT coalesce(sum(value), 0) FROM system.errors")
+            .fetch_one::<u64>()
+            .await
+            .unwrap_or(0);
+        let active_queries = self
+            .client
+            .query("SELECT count() FROM system.processes")
+            .fetch_one::<u64>()
+            .await
+            .unwrap_or(0);
+        Ok(ClickHouseStats {
+            tables,
+            pending_mutations,
+            errors_since_restart,
+            active_queries,
+        })
     }
 }
 
@@ -186,5 +268,13 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing or out-of-order ClickHouse column {column}"));
             previous += position + column.len();
         }
+    }
+
+    #[test]
+    fn identity_schema_keeps_current_and_replayable_history() {
+        let schema = include_str!("../migrations/002_identities.sql");
+        assert!(schema.contains("identity_history"));
+        assert!(schema.contains("ENGINE = ReplacingMergeTree(observed_at)"));
+        assert!(schema.contains("TTL observed_at + INTERVAL 365 DAY"));
     }
 }

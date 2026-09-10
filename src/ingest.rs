@@ -2,6 +2,7 @@ use crate::{
     analysis::Analyzer,
     archive::Archive,
     config::Config,
+    identity::{IdentityService, parse_identity_event},
     metrics::Metrics,
     normalize::{jetstream_time_us, parse_jetstream},
     storage::Storage,
@@ -17,6 +18,7 @@ pub async fn run(
     storage: Storage,
     analysis: Analyzer,
     metrics: Arc<Metrics>,
+    identities: IdentityService,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::channel(20_000);
     let st = storage.clone();
@@ -50,7 +52,7 @@ pub async fn run(
             url.push_str(if url.contains('?') { "&" } else { "?" });
             url.push_str(&format!("cursor={cursor}"));
         }
-        match consume(&url, &cfg, &tx, &storage, &analysis, &metrics).await {
+        match consume(&url, &cfg, &tx, &storage, &analysis, &metrics, &identities).await {
             Ok(()) => tracing::warn!("Jetstream closed"),
             Err(e) => tracing::error!(error=%e,"Jetstream disconnected"),
         };
@@ -77,6 +79,7 @@ async fn consume(
     storage: &Storage,
     analysis: &Analyzer,
     metrics: &Metrics,
+    identities: &IdentityService,
 ) -> Result<()> {
     let (ws, _) = connect_async(url).await.context("connect Jetstream")?;
     metrics.connected.set(1);
@@ -105,6 +108,19 @@ async fn consume(
         metrics
             .archive_bytes
             .set(Archive::total_size(&cfg.data_dir) as i64);
+        match parse_identity_event(&raw) {
+            Ok(Some(identity)) => {
+                if let Err(error) = identities.observe(identity).await {
+                    tracing::error!(%error, "persist Jetstream identity update");
+                }
+                continue;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(%error, "bad Jetstream identity event");
+                continue;
+            }
+        }
         let event = match parse_jetstream(&raw) {
             Ok(Some(e)) => e,
             Ok(None) => continue,
