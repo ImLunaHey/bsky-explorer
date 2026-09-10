@@ -591,6 +591,12 @@ impl Analyzer {
         let recent = end - Duration::minutes(5);
         let previous = end - Duration::minutes(10);
         let mut grouped: HashMap<String, (u64, u64)> = HashMap::new();
+        let retained_posts: HashMap<&str, &NormalizedEvent> = s
+            .events
+            .iter()
+            .filter(|event| !event.at_uri.is_empty() && event.text.is_some())
+            .map(|event| (event.at_uri.as_str(), event))
+            .collect();
         for event in s.events.iter().filter(|e| e.timestamp >= previous) {
             let key = event.reply_root.as_ref().or(event.reply_parent.as_ref());
             if let Some(key) = key {
@@ -605,11 +611,14 @@ impl Analyzer {
         let mut result: Vec<_> = grouped
             .into_iter()
             .map(|(key, (now, before))| TrendingItem {
+                sample: retained_posts
+                    .get(key.as_str())
+                    .and_then(|event| event.text.as_deref())
+                    .map(truncate_sample),
                 key,
                 count: now + before,
                 recent_count: now,
                 growth: now as i64 - before as i64,
-                sample: None,
             })
             .filter(|x| x.recent_count > 0)
             .collect();
