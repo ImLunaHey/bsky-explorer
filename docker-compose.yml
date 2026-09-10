@@ -23,12 +23,23 @@ services:
       clickhouse:
         condition: service_healthy
     environment:
+      JETSTREAM_URL: ${JETSTREAM_URL:-wss://jetstream2.us-east.bsky.network/subscribe}
       CLICKHOUSE_URL: http://clickhouse:8123
       CLICKHOUSE_DATABASE: observatory
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
       DATA_DIR: /data/archive
+      ARCHIVE_RETENTION_DAYS: ${ARCHIVE_RETENTION_DAYS:-30}
+      ARCHIVE_SEGMENT_MIB: ${ARCHIVE_SEGMENT_MIB:-256}
+      WINDOWS_SECONDS: ${WINDOWS_SECONDS:-60,300,3600,86400}
+      COORDINATION_WINDOW_SECONDS: ${COORDINATION_WINDOW_SECONDS:-30}
+      MIN_CLUSTER_ACCOUNTS: ${MIN_CLUSTER_ACCOUNTS:-3}
+      MIN_CLUSTER_EVENTS: ${MIN_CLUSTER_EVENTS:-3}
+      STATE_RETENTION_HOURS: ${STATE_RETENTION_HOURS:-24}
+      CLICKHOUSE_BATCH_SIZE: ${CLICKHOUSE_BATCH_SIZE:-1000}
+      CLICKHOUSE_FLUSH_SECONDS: ${CLICKHOUSE_FLUSH_SECONDS:-2}
       RUST_LOG: bsky_observatory=info,tower_http=info
     volumes:
       - ${STORAGE_ROOT:-/mnt/storage/bsky-observatory}/archive:/data/archive
     ports:
       - "3000:3000"
-

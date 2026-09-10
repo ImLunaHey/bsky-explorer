@@ -76,6 +76,13 @@ impl Storage {
         }
         insert.end().await.context("commit ClickHouse event batch")
     }
+    pub async fn ping(&self) -> Result<()> {
+        self.client
+            .query("SELECT 1")
+            .execute()
+            .await
+            .context("ClickHouse readiness query")
+    }
     pub async fn insert_detection(&self, d: &Detection) -> Result<()> {
         let body = serde_json::to_string(d)?;
         self.client.query("INSERT INTO detections (cluster_id, first_seen, last_seen, account_count, event_count, coordination_score, evidence_json) VALUES (?, fromUnixTimestamp64Milli(?), fromUnixTimestamp64Milli(?), ?, ?, ?, ?)").bind(&d.cluster_id).bind(d.first_seen.timestamp_millis()).bind(d.last_seen.timestamp_millis()).bind(d.accounts.len() as u32).bind(d.event_count as u64).bind(d.scores.coordination_score).bind(body).execute().await?;
@@ -121,5 +128,63 @@ mod tests {
         let r = EventRow::from(&e);
         assert_eq!(r.target, "");
         assert_eq!(r.kind, "like")
+    }
+
+    #[test]
+    fn schema_is_append_optimized_bounded_and_blob_free() {
+        let schema = include_str!("../migrations/001_init.sql");
+        assert!(schema.contains("ENGINE = MergeTree"));
+        assert!(schema.contains("PARTITION BY toYYYYMM(timestamp)"));
+        assert!(schema.contains("TTL timestamp + INTERVAL 365 DAY"));
+        assert!(schema.contains("CODEC(ZSTD(3))"));
+
+        let lowercase = schema.to_ascii_lowercase();
+        for forbidden in [" image ", " avatar ", " banner ", " video ", " blob "] {
+            assert!(
+                !lowercase.contains(forbidden),
+                "schema must not retain media column {forbidden:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn schema_matches_serialized_event_columns_in_order() {
+        let schema = include_str!("../migrations/001_init.sql");
+        let expected = [
+            "event_id",
+            "time_us",
+            "timestamp",
+            "actor_did",
+            "kind",
+            "collection",
+            "rkey",
+            "at_uri",
+            "target",
+            "target_did",
+            "text",
+            "reply_parent",
+            "reply_root",
+            "quote_target",
+            "urls",
+            "domains",
+            "languages",
+            "text_hash",
+            "normalized_text_hash",
+            "simhash",
+        ];
+        let event_table = schema
+            .split("CREATE TABLE IF NOT EXISTS observatory.events")
+            .nth(1)
+            .unwrap()
+            .split("ENGINE")
+            .next()
+            .unwrap();
+        let mut previous = 0;
+        for column in expected {
+            let position = event_table[previous..]
+                .find(column)
+                .unwrap_or_else(|| panic!("missing or out-of-order ClickHouse column {column}"));
+            previous += position + column.len();
+        }
     }
 }
