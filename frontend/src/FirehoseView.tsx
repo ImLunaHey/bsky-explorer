@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
 import { Activity, CirclePause, CirclePlay, ExternalLink, Filter, Search, Wifi, WifiOff } from 'lucide-react'
 import { api } from './api'
+import type { LiveConnection } from './live'
 import type { FirehoseEvent, FirehoseFeed, Identity } from './types'
 
 const shortDid=(did:string)=>did.length>30?`${did.slice(0,18)}…${did.slice(-7)}`:did
@@ -21,7 +22,9 @@ export function FirehoseView({onAccount,onRecord}:{onAccount:(did:string)=>void;
   const [snapshot,setSnapshot]=useState<FirehoseFeed>()
   const [search,setSearch]=useState('')
   const [kinds,setKinds]=useState<Set<string>>(new Set())
-  const feed=useQuery({queryKey:['firehose-feed'],queryFn:()=>api<FirehoseFeed>('/api/firehose?limit=300'),refetchInterval:paused?false:1_000,refetchIntervalInBackground:true})
+  const connection=useQuery<LiveConnection>({queryKey:['live-connection'],queryFn:async()=>({state:'connecting'}),enabled:false})
+  const live=connection.data?.state==='connected'
+  const feed=useQuery({queryKey:['firehose-feed'],queryFn:()=>api<FirehoseFeed>('/api/firehose?limit=300'),refetchInterval:paused||live?false:3_000,refetchIntervalInBackground:true})
   useEffect(()=>{if(!paused&&feed.data)setSnapshot(feed.data)},[feed.data,paused])
   const data=paused?snapshot:feed.data
   const events=useMemo(()=>[...(data?.events||[])].reverse(),[data?.events])
@@ -39,7 +42,7 @@ export function FirehoseView({onAccount,onRecord}:{onAccount:(did:string)=>void;
   return <div className="space-y-5">
     <section className="panel overflow-hidden">
       <div className="flex flex-col gap-4 border-b border-line p-5 lg:flex-row lg:items-center lg:justify-between">
-        <div><div className="flex items-center gap-2"><h2 className="font-semibold">Live firehose</h2><span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${paused?'bg-amber-300/10 text-amber-300':feed.isError?'bg-red-300/10 text-red-300':'bg-mint/10 text-mint'}`}>{paused?<CirclePause className="size-3"/>:feed.isError?<WifiOff className="size-3"/>:<Wifi className="size-3"/>}{paused?'Paused':feed.isError?'Disconnected':'Streaming'}</span></div><p className="mt-1 text-xs text-dim">Newest public ATProto events retained in the in-memory live buffer.</p></div>
+        <div><div className="flex items-center gap-2"><h2 className="font-semibold">Live firehose</h2><span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${paused?'bg-amber-300/10 text-amber-300':connection.data?.state==='disconnected'&&feed.isError?'bg-red-300/10 text-red-300':'bg-mint/10 text-mint'}`}>{paused?<CirclePause className="size-3"/>:connection.data?.state==='disconnected'&&feed.isError?<WifiOff className="size-3"/>:<Wifi className="size-3"/>}{paused?'Paused':live?'Streaming':feed.isError?'Reconnecting':'Connecting'}</span></div><p className="mt-1 text-xs text-dim">Newest public ATProto events retained in the in-memory live buffer.</p></div>
         <div className="flex items-center gap-3"><span className="text-xs text-dim">Showing {visible.length} of {events.length}</span><button type="button" onClick={()=>setPaused(value=>!value)} className="inline-flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-xs font-medium hover:border-mint/50">{paused?<CirclePlay className="size-4 text-mint"/>:<CirclePause className="size-4"/>}{paused?'Resume live':'Pause'}</button></div>
       </div>
       <div className="space-y-3 border-b border-line bg-panel/40 p-4">

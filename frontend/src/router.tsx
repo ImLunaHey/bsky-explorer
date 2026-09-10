@@ -10,12 +10,14 @@ const systemRoute=createRoute({getParentRoute:()=>rootRoute,path:'/system',compo
 const accountRoute=createRoute({getParentRoute:()=>rootRoute,path:'/accounts/$did',component:AccountRoute})
 const recordRoute=createRoute({getParentRoute:()=>rootRoute,path:'/records/$uri',component:RecordRoute})
 const clusterRoute=createRoute({getParentRoute:()=>rootRoute,path:'/clusters/$clusterId',component:ClusterRoute})
+const trendRoute=createRoute({getParentRoute:()=>rootRoute,path:'/trends/$dimension',validateSearch:(search:Record<string,unknown>)=>({key:typeof search.key==='string'?search.key:''}),component:TrendRoute})
 
 function AccountRoute(){const {did}=accountRoute.useParams();return <App route={{view:'account',did}}/>}
 function RecordRoute(){const {uri}=recordRoute.useParams();return <App route={{view:'record',uri}}/>}
 function ClusterRoute(){const {clusterId}=clusterRoute.useParams();return <App route={{view:'cluster',clusterId}}/>}
+function TrendRoute(){const {dimension}=trendRoute.useParams();const {key}=trendRoute.useSearch();return <App route={{view:'trend',dimension,trendKey:key}}/>}
 
-const routeTree=rootRoute.addChildren([indexRoute,firehoseRoute,detectionsRoute,systemRoute,accountRoute,recordRoute,clusterRoute])
+const routeTree=rootRoute.addChildren([indexRoute,firehoseRoute,detectionsRoute,systemRoute,accountRoute,recordRoute,clusterRoute,trendRoute])
 export const router=createRouter({routeTree,defaultPreload:'intent'})
 
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }
