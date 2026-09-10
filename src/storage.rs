@@ -101,6 +101,23 @@ pub struct AccountFollowAnalytics {
     pub unresolved_note: &'static str,
 }
 #[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct AccountActivityBucket {
+    pub timestamp_ms: i64,
+    pub events: u64,
+    pub posts: u64,
+    pub interactions: u64,
+}
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct AccountKindCount {
+    pub kind: String,
+    pub count: u64,
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountAnalytics {
+    pub activity: Vec<AccountActivityBucket>,
+    pub event_kinds: Vec<AccountKindCount>,
+}
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
 pub struct SearchEvent {
     pub event_id: String,
     pub timestamp_ms: i64,
@@ -375,6 +392,37 @@ impl Storage {
             windows,
             recent_events,
             unresolved_note: "Jetstream delete events may omit the original follow target. Those outbound unfollows are counted as unknown-target removals; they reduce outbound net change but cannot be attributed to a specific account. Inbound net change can therefore overstate growth when an incoming unfollow target was unavailable.",
+        })
+    }
+    /// Bounded 24-hour activity series for an interactive account page. Both
+    /// queries use event time and return at most 24 buckets / a handful of kinds.
+    pub async fn account_analytics(&self, did: &str) -> Result<AccountAnalytics> {
+        let activity = self
+            .client
+            .query(
+                "SELECT toInt64(toUnixTimestamp(toStartOfHour(timestamp)))*1000 AS timestamp_ms,
+               count() AS events,
+               countIf(kind IN ('post','reply','quote')) AS posts,
+               countIf(kind NOT IN ('post','reply','quote')) AS interactions
+             FROM events
+             WHERE actor_did=? AND timestamp >= now64(3)-INTERVAL 24 HOUR
+             GROUP BY toStartOfHour(timestamp) ORDER BY timestamp_ms",
+            )
+            .bind(did)
+            .fetch_all::<AccountActivityBucket>();
+        let event_kinds = self
+            .client
+            .query(
+                "SELECT kind, count() AS count FROM events
+             WHERE actor_did=? AND timestamp >= now64(3)-INTERVAL 24 HOUR
+             GROUP BY kind ORDER BY count DESC",
+            )
+            .bind(did)
+            .fetch_all::<AccountKindCount>();
+        let (activity, event_kinds) = tokio::try_join!(activity, event_kinds)?;
+        Ok(AccountAnalytics {
+            activity,
+            event_kinds,
         })
     }
     /// Searches retained normalized events. Exact identifiers search the full
