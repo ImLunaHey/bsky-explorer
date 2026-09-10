@@ -835,6 +835,7 @@ mod tests {
         assert!(schema.contains("ENGINE = MergeTree"));
         assert!(schema.contains("PARTITION BY toYYYYMM(timestamp)"));
         assert!(schema.contains("TTL timestamp + INTERVAL 365 DAY"));
+        assert!(schema.contains("operation NOT IN ('pds_backfill', 'association_backfill')"));
         assert!(schema.contains("CODEC(ZSTD(3))"));
 
         let lowercase = schema.to_ascii_lowercase();
