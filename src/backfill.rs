@@ -189,6 +189,25 @@ impl BackfillQueue {
     pub fn claim(&self, lease_seconds: i64) -> Result<Option<BackfillJob>> {
         let now = Utc::now();
         let mut jobs = self.jobs.lock();
+        let blocked: Vec<_> = jobs
+            .values()
+            .filter(|job| job.status == JobStatus::Queued)
+            .filter_map(|job| {
+                let dependency = job.depends_on_job_id.as_ref()?;
+                jobs.get(dependency)
+                    .is_some_and(|parent| {
+                        matches!(parent.status, JobStatus::DeadLetter | JobStatus::Cancelled)
+                    })
+                    .then(|| job.id.clone())
+            })
+            .collect();
+        for id in blocked {
+            let job = jobs.get_mut(&id).expect("blocked dependent exists");
+            job.status = JobStatus::DeadLetter;
+            job.last_error = Some("dependency did not complete".into());
+            job.updated_at = now;
+            self.persist(job)?;
+        }
         let candidate_id = jobs
             .values()
             .find(|j| {
@@ -219,6 +238,7 @@ impl BackfillQueue {
         }
     }
     fn renew_lease(&self, id: &str, token: &str, lease_seconds: i64) -> Result<()> {
+        let association_records = self.association_progress(id);
         let mut jobs = self.jobs.lock();
         let job = jobs.get_mut(id).context("leased job disappeared")?;
         anyhow::ensure!(
@@ -231,7 +251,22 @@ impl BackfillQueue {
         );
         job.lease_until = Some(Utc::now() + Duration::seconds(lease_seconds));
         job.updated_at = Utc::now();
+        if let Some(records) = association_records {
+            job.records_written = records;
+        }
         self.persist(job)
+    }
+    fn association_progress(&self, id: &str) -> Option<u64> {
+        let value: serde_json::Value = serde_json::from_slice(
+            &fs::read(self.root.join(format!("{id}-associations.json"))).ok()?,
+        )
+        .ok()?;
+        Some(
+            ["likes", "reposts", "quotes", "replies"]
+                .iter()
+                .filter_map(|key| value.get(key)?.as_u64())
+                .sum(),
+        )
     }
     fn persist(&self, job: &BackfillJob) -> Result<()> {
         let path = self.root.join(format!("{}.json", job.id));
@@ -376,6 +411,9 @@ async fn execute_job(queue: &BackfillQueue, mut job: BackfillJob) -> Result<()> 
         }
     };
     anyhow::ensure!(status.success(), "backfill subprocess failed: {status}");
+    if let Some(records) = queue.association_progress(&job.id) {
+        job.records_written = records;
+    }
     job.status = JobStatus::Completed;
     job.updated_at = Utc::now();
     job.lease_token = None;
@@ -577,6 +615,67 @@ mod tests {
         let claimed = queue.claim(120).unwrap().unwrap();
         assert!(claimed.lease_token.is_some());
         assert!(queue.claim(120).unwrap().is_none());
+    }
+
+    #[test]
+    fn terminal_dependency_does_not_leave_child_queued_forever() {
+        let directory = tempfile::tempdir().unwrap();
+        let queue = BackfillQueue::open(directory.path().into()).unwrap();
+        let parent = queue
+            .enqueue(
+                "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+                Some("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"),
+                JobType::Repository,
+                None,
+                false,
+            )
+            .unwrap();
+        let child = queue
+            .enqueue(
+                "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+                Some("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"),
+                JobType::Associations,
+                Some(parent.id.clone()),
+                false,
+            )
+            .unwrap();
+        let mut failed = parent;
+        failed.status = JobStatus::DeadLetter;
+        queue.update(failed).unwrap();
+        assert!(queue.claim(120).unwrap().is_none());
+        let child = queue.get(&child.id).unwrap();
+        assert_eq!(child.status, JobStatus::DeadLetter);
+        assert_eq!(
+            child.last_error.as_deref(),
+            Some("dependency did not complete")
+        );
+    }
+
+    #[test]
+    fn association_checkpoint_progress_is_reflected_in_durable_job() {
+        let directory = tempfile::tempdir().unwrap();
+        let queue = BackfillQueue::open(directory.path().into()).unwrap();
+        let job = queue
+            .enqueue(
+                "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+                Some("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"),
+                JobType::Associations,
+                None,
+                false,
+            )
+            .unwrap();
+        fs::write(
+            directory
+                .path()
+                .join(format!("{}-associations.json", job.id)),
+            br#"{"likes":10,"reposts":2,"quotes":3,"replies":4}"#,
+        )
+        .unwrap();
+        let claimed = queue.claim(120).unwrap().unwrap();
+        queue
+            .renew_lease(&claimed.id, claimed.lease_token.as_deref().unwrap(), 120)
+            .unwrap();
+        assert_eq!(queue.get(&job.id).unwrap().records_written, 19);
     }
 
     #[test]
