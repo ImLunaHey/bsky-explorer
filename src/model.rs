@@ -71,6 +71,11 @@ pub struct EvidenceEvent {
     pub kind: String,
     pub timestamp: DateTime<Utc>,
     pub target: Option<String>,
+    pub at_uri: Option<String>,
+    pub text_excerpt: Option<String>,
+    pub reply_parent: Option<String>,
+    pub reply_root: Option<String>,
+    pub quote_target: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -240,6 +240,11 @@ impl Analyzer {
                     kind: x.kind.as_str().into(),
                     timestamp: x.timestamp,
                     target: x.target.clone(),
+                    at_uri: (!x.at_uri.is_empty()).then(|| x.at_uri.clone()),
+                    text_excerpt: x.text.as_deref().map(truncate_sample),
+                    reply_parent: x.reply_parent.clone(),
+                    reply_root: x.reply_root.clone(),
+                    quote_target: x.quote_target.clone(),
                 })
                 .collect(),
         };
@@ -699,7 +704,37 @@ mod tests {
         assert!(a.observe(e("b", 101)).is_none());
         let d = a.observe(e("c", 102)).unwrap();
         assert_eq!(d.accounts.len(), 3);
-        assert!(d.scores.coordination_score > 0.6)
+        assert!(d.scores.coordination_score > 0.6);
+        assert_eq!(d.sample_events[0].at_uri.as_deref(), Some("u"));
+    }
+    #[test]
+    fn detection_evidence_keeps_public_record_context_without_blobs() {
+        let a = Analyzer::new(30, 2, 2, 24);
+        let first = e("alice", 100);
+        a.observe(first);
+        let mut second = e("bob", 101);
+        second.text = Some("A useful excerpt for investigators".into());
+        second.reply_parent = Some("at://did:plc:parent/app.bsky.feed.post/one".into());
+        second.reply_root = Some("at://did:plc:root/app.bsky.feed.post/two".into());
+        second.quote_target = Some("at://did:plc:quoted/app.bsky.feed.post/three".into());
+        let detection = a.observe(second).expect("coordinated pair");
+        let sample = detection
+            .sample_events
+            .iter()
+            .find(|event| event.actor_did == "bob")
+            .unwrap();
+        assert_eq!(sample.at_uri.as_deref(), Some("u"));
+        assert_eq!(
+            sample.text_excerpt.as_deref(),
+            Some("A useful excerpt for investigators")
+        );
+        assert!(sample.reply_parent.as_deref().unwrap().contains("parent"));
+        assert!(sample.reply_root.as_deref().unwrap().contains("root"));
+        assert!(sample.quote_target.as_deref().unwrap().contains("quoted"));
+        let json = serde_json::to_string(sample).unwrap();
+        for forbidden in ["blob", "avatar", "banner", "image", "video"] {
+            assert!(!json.contains(forbidden));
+        }
     }
     #[test]
     fn account_activity_exposes_windows_evidence_and_clusters() {
