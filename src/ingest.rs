@@ -133,7 +133,15 @@ async fn consume(
             }
         };
         metrics.event(&event.kind);
-        if let Some(d) = analysis.observe(event.clone())
+        let lag_us = chrono::Utc::now()
+            .timestamp_micros()
+            .saturating_sub(event.time_us);
+        if lag_us > 5 * 60 * 1_000_000 {
+            // Prioritize durable catch-up after downtime. Running pairwise
+            // coordination analysis over stale backlog would delay the live
+            // stream further; replay can analyze it later.
+            analysis.observe_without_detection(event.clone());
+        } else if let Some(d) = analysis.observe(event.clone())
             && let Err(e) = storage.insert_detection(&d).await
         {
             tracing::error!(error=%e,"persist detection")

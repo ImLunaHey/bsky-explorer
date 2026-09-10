@@ -181,6 +181,12 @@ impl Analyzer {
         }
     }
     pub fn observe(&self, e: NormalizedEvent) -> Option<Detection> {
+        self.observe_inner(e, true)
+    }
+    pub fn observe_without_detection(&self, e: NormalizedEvent) {
+        self.observe_inner(e, false);
+    }
+    fn observe_inner(&self, e: NormalizedEvent, detect: bool) -> Option<Detection> {
         let mut s = self.inner.write();
         for x in &e.urls {
             *s.url_counts.entry(x.clone()).or_default() += 1
@@ -204,6 +210,9 @@ impl Analyzer {
             // Replay may be out of order; keep its slower correctness path away
             // from the latency-sensitive ordered firehose.
             s.events.retain(|event| event.timestamp >= cutoff);
+        }
+        if !detect {
+            return None;
         }
         let key = e
             .target
@@ -418,7 +427,10 @@ impl Analyzer {
     }
     pub fn rates(&self) -> Rates {
         let s = self.inner.read();
-        let now = Utc::now();
+        // During cursor recovery the watermark can trail wall time. Rates should
+        // describe the stream currently being processed instead of displaying
+        // misleading zeros until catch-up completes.
+        let now = s.watermark.unwrap_or_else(Utc::now);
         let windows: Vec<_> = self
             .windows_seconds
             .iter()
