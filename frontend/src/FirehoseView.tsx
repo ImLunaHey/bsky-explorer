@@ -6,6 +6,7 @@ import { api } from './api'
 import { shortDid, useIdentityMap } from './identities'
 import type { LiveConnection } from './live'
 import type { FirehoseEvent, FirehoseFeed, RecordMediaResponse } from './types'
+import { HlsVideo } from './HlsVideo'
 
 const recordUri=(event:FirehoseEvent)=>['post','reply','quote'].includes(event.kind)&&event.at_uri?.includes('/app.bsky.feed.post/')?event.at_uri:undefined
 const tones:Record<string,string>={post:'bg-orange-400/10 text-orange-300',reply:'bg-orange-400/10 text-orange-300',like:'bg-pink-300/10 text-pink-300',repost:'bg-violet-300/10 text-violet-300',follow:'bg-orange-300/10 text-orange-300',unfollow:'bg-amber-300/10 text-amber-300',delete:'bg-red-300/10 text-red-300',quote:'bg-orange-300/10 text-orange-300'}
@@ -16,7 +17,7 @@ function MediaPreview({uri}:{uri:string}) {
   useEffect(()=>{const node=host.current;if(!node)return;const observer=new IntersectionObserver(entries=>{if(entries.some(entry=>entry.isIntersecting)){setVisible(true);observer.disconnect()}},{rootMargin:'120px'});observer.observe(node);return()=>observer.disconnect()},[])
   const media=useQuery({queryKey:['record-media',uri],queryFn:()=>api<RecordMediaResponse>(`/api/records/media?uri=${encodeURIComponent(uri)}`),enabled:visible,staleTime:300_000,gcTime:900_000,retry:0})
   const asset=media.data?.media[0]
-  return <div ref={host} className="grid h-20 w-28 shrink-0 place-items-center overflow-hidden rounded-lg border border-white/10 bg-white/[.025]">{asset?.kind==='image'?<img src={asset.url} alt={asset.alt} loading="lazy" referrerPolicy="no-referrer" className="h-full w-full object-cover"/>:asset?.kind==='video'?<video src={asset.url} poster={asset.thumbnail_url} muted controls preload="metadata" className="h-full w-full object-cover"/>:<ImageIcon className={`size-4 ${media.isLoading?'animate-pulse text-orange-300':'text-white/15'}`}/>}</div>
+  return <div ref={host} className="grid h-20 w-28 shrink-0 place-items-center overflow-hidden rounded-lg border border-white/10 bg-white/[.025]">{asset?.kind==='image'?<img src={asset.url} alt={asset.alt} loading="lazy" referrerPolicy="no-referrer" className="h-full w-full object-cover"/>:asset?.kind==='video'?<HlsVideo src={asset.url} poster={asset.thumbnail_url} label={asset.alt||'Bluesky video preview'} className="h-full w-full"/>:<ImageIcon className={`size-4 ${media.isLoading?'animate-pulse text-orange-300':'text-white/15'}`}/>}</div>
 }
 
 const columnHelper=createColumnHelper<FirehoseEvent>()
