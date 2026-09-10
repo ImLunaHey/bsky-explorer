@@ -295,12 +295,36 @@ pub fn normalize_appview_post(post: &Value, observed_at: DateTime<Utc>) -> Resul
         "AppView author does not match URI"
     );
     let record = post.get("record").context("AppView post has no record")?;
+    normalize_repository_record(uri, author_did, record, "appview_fetch", observed_at)
+}
+
+/// Normalizes a record obtained from a repository read without pretending it
+/// came from the live firehose. Callers supply a distinct source operation.
+pub fn normalize_repository_record(
+    uri: &str,
+    actor_did: &str,
+    record: &Value,
+    operation: &str,
+    observed_at: DateTime<Utc>,
+) -> Result<NormalizedEvent> {
+    let rest = uri.strip_prefix("at://").context("invalid record AT URI")?;
+    let mut parts = rest.split('/');
+    let _authority = parts.next().context("record URI has no authority")?;
+    let collection = parts.next().context("record URI has no collection")?;
+    let rkey = parts.next().context("record URI has no rkey")?;
+    anyhow::ensure!(
+        !actor_did.is_empty()
+            && !collection.is_empty()
+            && !rkey.is_empty()
+            && parts.next().is_none(),
+        "invalid repository record"
+    );
     let envelope = serde_json::json!({
-        "did": author_did,
+        "did": actor_did,
         "time_us": observed_at.timestamp_micros(),
         "kind": "commit",
         "commit": {
-            "operation": "appview_fetch",
+            "operation": operation,
             "collection": collection,
             "rkey": rkey,
             "record": record,

@@ -121,6 +121,10 @@ pub struct SearchIdentity {
     pub did: String,
     pub handle_value: String,
 }
+#[derive(Debug, Clone, Deserialize, Row)]
+struct StoredUri {
+    at_uri: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchEventType {
@@ -491,6 +495,23 @@ impl Storage {
             "SELECT at_uri, actor_did, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, kind, text, reply_parent, reply_root, quote_target, urls, domains, languages FROM events WHERE has(?, at_uri) AND kind IN ('post','reply','quote') ORDER BY timestamp DESC LIMIT ?"
         ).bind(uris).bind(uris.len() as u64 * 2)
         .fetch_all::<StoredRecord>().await?)
+    }
+    pub async fn existing_uris(
+        &self,
+        uris: &[String],
+    ) -> Result<std::collections::HashSet<String>> {
+        if uris.is_empty() {
+            return Ok(std::collections::HashSet::new());
+        }
+        Ok(self
+            .client
+            .query("SELECT DISTINCT at_uri FROM events WHERE has(?, at_uri)")
+            .bind(uris)
+            .fetch_all::<StoredUri>()
+            .await?
+            .into_iter()
+            .map(|row| row.at_uri)
+            .collect())
     }
     pub async fn record_interaction_counts(&self, uri: &str) -> Result<RecordInteractionCounts> {
         Ok(self.client.query(

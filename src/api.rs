@@ -186,35 +186,68 @@ async fn search(
     State(s): State<AppState>,
     Query(query): Query<SearchQuery>,
 ) -> Result<Json<SearchResponse>, (StatusCode, String)> {
-    let term = query.q.trim();
-    validate_search_query(term, &query.result_type, query.limit, query.offset)?;
+    let requested_term = query.q.trim();
+    validate_search_query(
+        requested_term,
+        &query.result_type,
+        query.limit,
+        query.offset,
+    )?;
+    let term = normalized_search_term(requested_term);
     let limit = query.limit.min(100);
     let fetch_limit = query.offset + limit + 1;
     let include_accounts = matches!(query.result_type.as_str(), "all" | "account");
-    let event_type = match query.result_type.as_str() {
-        "record" => Some(crate::storage::SearchEventType::Records),
-        "event" => Some(crate::storage::SearchEventType::Events),
-        "all" => Some(crate::storage::SearchEventType::Both),
-        "account" => None,
-        _ => unreachable!("validated above"),
-    };
-
-    let identities = async {
-        if include_accounts {
-            s.storage.search_identities(term, fetch_limit).await
-        } else {
-            Ok(Vec::new())
-        }
-    };
-    let events = async {
-        if let Some(event_type) = event_type {
-            s.storage.search_events(term, event_type, fetch_limit).await
-        } else {
-            Ok(Vec::new())
-        }
-    };
     let (identities, events) = tokio::time::timeout(Duration::from_millis(2_500), async {
-        tokio::try_join!(identities, events)
+        // Identity lookup also turns a handle into the DID used by event rows.
+        let identities = s.storage.search_identities(&term, fetch_limit).await?;
+        let event_term = identities
+            .iter()
+            .find(|identity| {
+                identity.handle_value.eq_ignore_ascii_case(&term) || identity.did == term
+            })
+            .map(|identity| identity.did.as_str())
+            .unwrap_or(&term);
+        let events = match query.result_type.as_str() {
+            "record" => {
+                s.storage
+                    .search_events(
+                        event_term,
+                        crate::storage::SearchEventType::Records,
+                        fetch_limit,
+                    )
+                    .await?
+            }
+            "event" => {
+                s.storage
+                    .search_events(
+                        event_term,
+                        crate::storage::SearchEventType::Events,
+                        fetch_limit,
+                    )
+                    .await?
+            }
+            "all" => {
+                // Put authored content ahead of generic interactions so a busy
+                // like history cannot bury the account's posts.
+                let (mut records, interactions) = tokio::try_join!(
+                    s.storage.search_events(
+                        event_term,
+                        crate::storage::SearchEventType::Records,
+                        fetch_limit
+                    ),
+                    s.storage.search_events(
+                        event_term,
+                        crate::storage::SearchEventType::Events,
+                        fetch_limit
+                    )
+                )?;
+                records.extend(interactions);
+                records
+            }
+            "account" => Vec::new(),
+            _ => unreachable!("validated above"),
+        };
+        anyhow::Ok((identities, events))
     })
     .await
     .map_err(|_| {
@@ -226,22 +259,24 @@ async fn search(
     .map_err(internal_error)?;
 
     let mut results = Vec::with_capacity(identities.len() + events.len());
-    results.extend(identities.into_iter().map(|identity| SearchResult {
-        result_type: "account",
-        did: identity.did,
-        handle: (!identity.handle_value.is_empty()).then_some(identity.handle_value),
-        event_id: None,
-        at_uri: None,
-        event_type: None,
-        collection: None,
-        operation: None,
-        timestamp_ms: None,
-        text: None,
-        record_json: None,
-        target: None,
-        urls: Vec::new(),
-        domains: Vec::new(),
-    }));
+    if include_accounts {
+        results.extend(identities.into_iter().map(|identity| SearchResult {
+            result_type: "account",
+            did: identity.did,
+            handle: (!identity.handle_value.is_empty()).then_some(identity.handle_value),
+            event_id: None,
+            at_uri: None,
+            event_type: None,
+            collection: None,
+            operation: None,
+            timestamp_ms: None,
+            text: None,
+            record_json: None,
+            target: None,
+            urls: Vec::new(),
+            domains: Vec::new(),
+        }));
+    }
     results.extend(events.into_iter().map(|event| {
         let is_record = matches!(event.kind.as_str(), "post" | "reply" | "quote");
         SearchResult {
@@ -271,14 +306,50 @@ async fn search(
         .collect();
     let has_more = page.len() > limit as usize;
     page.truncate(limit as usize);
+    let result_dids: Vec<String> = page
+        .iter()
+        .filter(|result| result.handle.is_none())
+        .map(|result| result.did.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let result_handles: HashMap<_, _> = s
+        .storage
+        .identities_for_dids(&result_dids)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|identity| (identity.did, identity.handle_value))
+        .collect();
+    for result in &mut page {
+        if result.handle.is_none() {
+            result.handle = result_handles
+                .get(&result.did)
+                .filter(|handle| !handle.is_empty())
+                .cloned();
+        }
+    }
     Ok(Json(SearchResponse {
-        query: term.to_owned(),
+        query: requested_term.to_owned(),
         result_type: query.result_type,
         offset: query.offset,
         limit,
         has_more,
         results: page,
     }))
+}
+
+fn normalized_search_term(term: &str) -> String {
+    let term = term.strip_prefix('@').unwrap_or(term);
+    if term.len() == 24
+        && term
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    {
+        format!("did:plc:{term}")
+    } else {
+        term.to_owned()
+    }
 }
 
 fn validate_search_query(
@@ -1562,6 +1633,12 @@ mod tests {
         assert!(validate_search_query("alice", "all", 0, 0).is_err());
         assert!(validate_search_query("alice", "all", 101, 0).is_err());
         assert!(validate_search_query("alice", "all", 25, 10_001).is_err());
+        assert_eq!(
+            normalized_search_term("k6acu4chiwkixvdedcmdgmal"),
+            "did:plc:k6acu4chiwkixvdedcmdgmal"
+        );
+        assert_eq!(normalized_search_term("@imlunahey.com"), "imlunahey.com");
+        assert_eq!(normalized_search_term("ordinary words"), "ordinary words");
     }
 
     #[test]
