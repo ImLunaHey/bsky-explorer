@@ -399,7 +399,7 @@ impl Storage {
             did: String,
         }
         let rows = self.client.query(
-            "SELECT did FROM (SELECT actor_did AS did FROM events WHERE timestamp >= now() - INTERVAL 7 DAY UNION DISTINCT SELECT target_did AS did FROM events WHERE timestamp >= now() - INTERVAL 7 DAY AND target_did != '') WHERE did NOT IN (SELECT did FROM identities FINAL) LIMIT ? SETTINGS max_execution_time=2"
+            "SELECT did FROM (SELECT actor_did AS did FROM events WHERE timestamp >= now() - INTERVAL 7 DAY UNION DISTINCT SELECT target_did AS did FROM events WHERE timestamp >= now() - INTERVAL 7 DAY AND target_did != '' UNION DISTINCT SELECT actor_did AS did FROM events WHERE operation = 'association_backfill') WHERE did NOT IN (SELECT did FROM identities FINAL) LIMIT ? SETTINGS max_execution_time=2"
         ).bind(limit.min(1000)).fetch_all::<DidRow>().await?;
         Ok(rows.into_iter().map(|r| r.did).collect())
     }
