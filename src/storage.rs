@@ -117,12 +117,44 @@ pub struct AccountAnalytics {
     pub activity: Vec<AccountActivityBucket>,
     pub event_kinds: Vec<AccountKindCount>,
 }
-#[derive(Debug, Clone, Deserialize, Row, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AccountCollectionStat {
     pub collection: String,
+    pub namespace: String,
+    pub family: String,
     pub event_count: u64,
     pub first_seen_ms: i64,
     pub last_seen_ms: i64,
+}
+pub fn lexicon_family(collection: &str) -> &'static str {
+    if collection.starts_with("app.bsky.graph.list")
+        || collection.contains("starterpack")
+        || collection.starts_with("tools.ozone.")
+    {
+        "lists_moderation"
+    } else if collection.starts_with("com.whtwnd.") || collection.contains("whitewind") {
+        "whitewind_blog"
+    } else if collection.starts_with("fm.rocksky.")
+        || collection.contains("rocksky")
+        || collection.contains("scrobble")
+    {
+        "rocksky_music"
+    } else if collection.starts_with("chat.")
+        || collection.contains(".community")
+        || collection.contains(".chat")
+    {
+        "chats_communities"
+    } else if collection.contains("profile") || collection.contains("location") {
+        "profile_location"
+    } else if collection.contains(".rpg") || collection.contains(".game") {
+        "rpg_games"
+    } else if collection.starts_with("com.imlunahey.") {
+        "com_imlunahey"
+    } else if collection.starts_with("app.bsky.") {
+        "bluesky_social"
+    } else {
+        "unknown"
+    }
 }
 #[derive(Debug, Clone, Deserialize, Row, Serialize)]
 pub struct AccountCollectionSample {
@@ -463,6 +495,13 @@ impl Storage {
     /// while computing counts.
     pub async fn account_lexicon_inventory(&self, did: &str) -> Result<AccountLexiconInventory> {
         #[derive(Debug, Deserialize, Row)]
+        struct CollectionRow {
+            collection: String,
+            event_count: u64,
+            first_seen_ms: i64,
+            last_seen_ms: i64,
+        }
+        #[derive(Debug, Deserialize, Row)]
         struct MembershipRow {
             listitem_uri: String,
             list_uri: String,
@@ -470,7 +509,7 @@ impl Storage {
         }
         let stats = self.client.query(
             "SELECT collection, count() AS event_count, toUnixTimestamp64Milli(min(timestamp)) AS first_seen_ms, toUnixTimestamp64Milli(max(timestamp)) AS last_seen_ms FROM events WHERE actor_did=? GROUP BY collection ORDER BY event_count DESC, collection LIMIT 200"
-        ).bind(did).fetch_all::<AccountCollectionStat>();
+        ).bind(did).fetch_all::<CollectionRow>();
         let samples = self.client.query(
             "SELECT collection, at_uri, operation, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, record_json FROM events WHERE actor_did=? AND record_json!='' ORDER BY timestamp DESC LIMIT 3 BY collection LIMIT 600"
         ).bind(did).fetch_all::<AccountCollectionSample>();
@@ -480,12 +519,48 @@ impl Storage {
         let memberships = self.client.query(
             "SELECT listitem_uri, JSONExtractString(record_json, 'list') AS list_uri, toUnixTimestamp64Milli(observed_at) AS observed_at_ms FROM (SELECT at_uri AS listitem_uri, argMax(operation,time_us) AS latest_operation, argMaxIf(record_json,time_us,record_json!='') AS record_json, max(timestamp) AS observed_at FROM events WHERE collection='app.bsky.graph.listitem' GROUP BY at_uri HAVING latest_operation!='delete') WHERE JSONExtractString(record_json,'subject')=? AND list_uri!='' ORDER BY observed_at DESC LIMIT 200"
         ).bind(did).fetch_all::<MembershipRow>();
-        let (collections, samples, memberships) = tokio::try_join!(stats, samples, memberships)?;
-        let inbound_list_memberships = memberships.into_iter().map(|row| {
-            let creator_did = row.list_uri.strip_prefix("at://").and_then(|value| value.split('/').next()).unwrap_or_default().to_owned();
-            AccountListMembership { listitem_uri: row.listitem_uri, list_uri: row.list_uri, creator_did, observed_at_ms: row.observed_at_ms }
-        }).collect();
-        Ok(AccountLexiconInventory { collections, samples, inbound_list_memberships })
+        let (collection_rows, samples, memberships) =
+            tokio::try_join!(stats, samples, memberships)?;
+        let collections = collection_rows
+            .into_iter()
+            .map(|row| {
+                let mut parts = row.collection.split('.');
+                let namespace = match (parts.next(), parts.next()) {
+                    (Some(a), Some(b)) => format!("{a}.{b}"),
+                    _ => row.collection.clone(),
+                };
+                AccountCollectionStat {
+                    family: lexicon_family(&row.collection).into(),
+                    namespace,
+                    collection: row.collection,
+                    event_count: row.event_count,
+                    first_seen_ms: row.first_seen_ms,
+                    last_seen_ms: row.last_seen_ms,
+                }
+            })
+            .collect();
+        let inbound_list_memberships = memberships
+            .into_iter()
+            .map(|row| {
+                let creator_did = row
+                    .list_uri
+                    .strip_prefix("at://")
+                    .and_then(|value| value.split('/').next())
+                    .unwrap_or_default()
+                    .to_owned();
+                AccountListMembership {
+                    listitem_uri: row.listitem_uri,
+                    list_uri: row.list_uri,
+                    creator_did,
+                    observed_at_ms: row.observed_at_ms,
+                }
+            })
+            .collect();
+        Ok(AccountLexiconInventory {
+            collections,
+            samples,
+            inbound_list_memberships,
+        })
     }
     /// Searches retained normalized events. Exact identifiers search the full
     /// retention period; free-text searches are deliberately bounded to the
@@ -712,6 +787,17 @@ impl Storage {
 mod tests {
     use super::*;
     use crate::model::EventKind;
+    #[test]
+    fn classifies_known_and_unknown_lexicon_families_without_guessing() {
+        assert_eq!(
+            lexicon_family("app.bsky.graph.listitem"),
+            "lists_moderation"
+        );
+        assert_eq!(lexicon_family("com.whtwnd.blog.entry"), "whitewind_blog");
+        assert_eq!(lexicon_family("fm.rocksky.scrobble"), "rocksky_music");
+        assert_eq!(lexicon_family("com.imlunahey.status"), "com_imlunahey");
+        assert_eq!(lexicon_family("net.example.unknown"), "unknown");
+    }
     #[test]
     fn serializes_without_options() {
         let e = NormalizedEvent {

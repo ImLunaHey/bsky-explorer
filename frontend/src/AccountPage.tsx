@@ -9,6 +9,7 @@ import { ArrowDownUp, Check, Copy, ExternalLink, UserRound } from 'lucide-react'
 import { useNavigate } from '@tanstack/react-router'
 import { api } from './api'
 import { AccountFollows } from './AccountFollows'
+import { AccountLexicons } from './AccountLexicons'
 import type { AccountDetail, AccountEvent, Identity } from './types'
 
 type AccountAnalytics={activity:{timestamp_ms:number;events:number;posts:number;interactions:number}[];event_kinds:{kind:string;count:number}[]}
@@ -30,9 +31,8 @@ export function AccountPage({did}:{did:string}) {
   const analytics=useQuery({queryKey:['account-analytics',did],queryFn:()=>api<AccountAnalytics>(`/api/accounts/${encodeURIComponent(did)}/analytics`),staleTime:15_000})
   // Resolve the primary account publicly. Resolving every event target here
   // would serialize external profile requests and make a cold page very slow.
-  const eventDids=[did]
   const identities=useQuery({queryKey:['identities',did],queryFn:()=>api<Identity[]>(`/api/identities?dids=${encodeURIComponent(did)}`),staleTime:300_000})
-  const handles=new Map((identities.data||[]).map(identity=>[identity.did,identity.handle])),identity=handles.get(did)||account.data?.current_identity.handle
+  const handles=useMemo(()=>new Map((identities.data||[]).map(identity=>[identity.did,identity.handle])),[identities.data]),identity=handles.get(did)||account.data?.current_identity.handle
   const filtered=(events.data||[]).filter(event=>(kind==='all'||event.kind===kind)&&(!search||`${event.text} ${event.target} ${event.kind}`.toLowerCase().includes(search.toLowerCase())))
   const columns=useMemo(()=>[
     eventHelper.accessor('time_us',{id:'time',header:'Time',cell:cell=><time className="whitespace-nowrap text-dim">{new Date(cell.getValue()/1000).toLocaleString()}</time>}),
@@ -49,6 +49,7 @@ export function AccountPage({did}:{did:string}) {
     <div className="mt-8 grid gap-5 lg:grid-cols-[2fr_1fr]"><div className="rounded-xl border border-line p-4"><h3 className="eyebrow mb-4">Activity · last 24 hours</h3><ActivityChart data={analytics.data?.activity||[]}/><div className="mt-2 flex flex-wrap justify-center gap-4 text-[10px] uppercase text-dim"><Legend color="#ff8a1f" label="All events"/><Legend color="#ffd0a3" label="Posts"/><Legend color="#ffb15c" label="Interactions"/></div></div><div className="rounded-xl border border-line p-4"><h3 className="eyebrow mb-4">Event kind distribution · 24h</h3><div className="space-y-3">{kinds.map(item=><div key={item.kind}><div className="mb-1 flex justify-between text-xs"><span className="uppercase text-dim">{item.kind}</span><b>{number.format(item.count)}</b></div><div className="h-1.5 rounded bg-line"><div className="h-full rounded bg-mint" style={{width:`${item.count/maxKind*100}%`}}/></div></div>)}</div></div></div>
     <div className="mt-8 grid gap-5 md:grid-cols-2"><Tags title="Top retained domains" values={stored?.domains||[]}/><Tags title="Top retained URLs" values={stored?.urls||[]}/></div>
     <AccountFollows did={did} onAccount={accountDid=>navigate({to:'/accounts/$did',params:{did:accountDid}})}/>
+    <AccountLexicons did={did}/>
     <h3 className="eyebrow mb-3 mt-8">Recent observed events</h3><div className="mb-4 flex flex-wrap gap-2"><input value={search} onChange={event=>setSearch(event.target.value)} placeholder="Filter content or target…" className="min-w-56 flex-1 rounded-lg border border-line bg-black px-3 py-2 text-sm outline-none focus:border-mint"/><select value={kind} onChange={event=>setKind(event.target.value)} className="rounded-lg border border-line bg-black px-3 py-2 text-sm"><option value="all">All kinds</option>{[...new Set((events.data||[]).map(event=>event.kind))].sort().map(value=><option key={value}>{value}</option>)}</select></div>
     <div className="scrollbar overflow-x-auto rounded-xl border border-line"><table className="w-full min-w-180 text-left text-xs"><thead className="border-b border-line text-dim">{table.getHeaderGroups().map(group=><tr key={group.id}>{group.headers.map(header=><th className="px-3 py-3" key={header.id}><button className="flex items-center gap-1" onClick={header.column.getToggleSortingHandler()}>{flexRender(header.column.columnDef.header,header.getContext())}<ArrowDownUp className="size-3"/></button></th>)}</tr>)}</thead><tbody>{table.getRowModel().rows.map(row=><tr key={row.id} className="cursor-pointer border-b border-line/60 hover:bg-white/[.025]" onClick={()=>{const event=row.original;if(['post','reply','quote'].includes(event.kind)&&event.at_uri)navigate({to:'/records/$uri',params:{uri:event.at_uri}})}}>{row.getVisibleCells().map(cell=><td className="px-3 py-3" key={cell.id}>{flexRender(cell.column.columnDef.cell,cell.getContext())}</td>)}</tr>)}</tbody></table></div><div className="mt-3 flex items-center justify-between text-xs text-dim"><span>{filtered.length} events · page {table.getState().pagination.pageIndex+1} of {Math.max(table.getPageCount(),1)}</span><div className="flex gap-2"><button disabled={!table.getCanPreviousPage()} onClick={()=>table.previousPage()} className="rounded border border-line px-3 py-1.5 disabled:opacity-30">Previous</button><button disabled={!table.getCanNextPage()} onClick={()=>table.nextPage()} className="rounded border border-line px-3 py-1.5 disabled:opacity-30">Next</button></div></div>
   </section>

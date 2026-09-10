@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
 import { createColumnHelper, flexRender, getCoreRowModel, getFilteredRowModel, getPaginationRowModel, getSortedRowModel, type SortingState, useReactTable } from '@tanstack/react-table'
-import { Activity, ArrowDownUp, Bot, Check, ChevronRight, CircleAlert, Copy, ExternalLink, Gauge, Network, Search, TrendingUp, UserRound } from 'lucide-react'
+import { Activity, ArrowDownUp, Bot, ChevronRight, CircleAlert, Gauge, Network, Search, TrendingUp } from 'lucide-react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Chart } from '@tanstack/charts/react'
 import { defineChart, lineY } from '@tanstack/charts'
@@ -14,7 +14,7 @@ import { TrendPage } from './TrendPage'
 import { CommandPalette } from './CommandPalette'
 import { SearchPage } from './SearchPage'
 import { AccountPage } from './AccountPage'
-import type { AccountDetail, AccountEvent, Anomalies, ClusterDetail, Detection, Identity, Rates, SearchKind, StorageStats, SystemSample, SystemStats, TrendingItem } from './types'
+import type { Anomalies, ClusterDetail, Detection, Identity, Rates, SearchKind, StorageStats, SystemSample, SystemStats, TrendingItem } from './types'
 
 const n = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 })
 const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
@@ -40,7 +40,6 @@ function AccountIdentity({did,identities,onOpen,compact=false}:{did:string;ident
 }
 
 
-function MiniStat({label,value}:{label:string;value:string}) { return <div className="rounded-xl border border-line bg-panel p-4"><div className="text-xl font-semibold">{value}</div><div className="eyebrow mt-1">{label}</div></div> }
 const didFromTarget = (target:string) => target.startsWith('at://') ? target.slice(5).split('/')[0] : target.startsWith('did:') ? target : undefined
 function blueskyPostUrl(uri?:string,handles?:Map<string,string|undefined>) {
   if(!uri?.startsWith('at://')) return undefined
