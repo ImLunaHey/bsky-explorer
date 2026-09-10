@@ -1,0 +1,34 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: observatory
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - ${STORAGE_ROOT:-/mnt/storage/bsky-observatory}/clickhouse:/var/lib/clickhouse
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  observatory:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DATABASE: observatory
+      DATA_DIR: /data/archive
+      RUST_LOG: bsky_observatory=info,tower_http=info
+    volumes:
+      - ${STORAGE_ROOT:-/mnt/storage/bsky-observatory}/archive:/data/archive
+    ports:
+      - "3000:3000"
+
