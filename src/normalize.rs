@@ -335,6 +335,17 @@ pub fn normalize_repository_record(
     // AppView must return the exact requested URI. Retain that identifier even
     // when its authority was a handle rather than its author's DID.
     event.at_uri = uri.to_owned();
+    if operation == "pds_backfill" {
+        // Repository records commonly carry their original client timestamp.
+        // Historical imports must not appear as a giant live activity burst.
+        if let Some(created_at) = record.get("createdAt").and_then(Value::as_str)
+            && let Ok(parsed) = DateTime::parse_from_rfc3339(created_at)
+        {
+            event.timestamp = parsed.with_timezone(&Utc);
+            event.time_us = event.timestamp.timestamp_micros();
+        }
+        event.event_id = format!("pds_backfill:{:016x}", xxh3_64(uri.as_bytes()));
+    }
     Ok(event)
 }
 
@@ -408,5 +419,25 @@ mod tests {
         let mut wrong = post;
         wrong["author"]["did"] = Value::String("did:plc:other".into());
         assert!(normalize_appview_post(&wrong, Utc::now()).is_err());
+    }
+
+    #[test]
+    fn repository_backfill_uses_historical_time_and_deterministic_id() {
+        let record = serde_json::json!({"$type":"app.bsky.feed.post", "text":"old", "createdAt":"2023-11-14T22:13:20Z"});
+        let uri = "at://did:plc:a/app.bsky.feed.post/x";
+        let first =
+            normalize_repository_record(uri, "did:plc:a", &record, "pds_backfill", Utc::now())
+                .unwrap();
+        let second = normalize_repository_record(
+            uri,
+            "did:plc:a",
+            &record,
+            "pds_backfill",
+            Utc::now() + chrono::Duration::days(1),
+        )
+        .unwrap();
+        assert_eq!(first.timestamp.timestamp(), 1_700_000_000);
+        assert_eq!(first.event_id, second.event_id);
+        assert_eq!(first.time_us, second.time_us);
     }
 }
