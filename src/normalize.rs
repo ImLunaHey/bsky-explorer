@@ -264,6 +264,56 @@ pub fn parse_jetstream(raw: &[u8]) -> Result<Option<NormalizedEvent>> {
     }))
 }
 
+/// Converts a validated AppView post into the same blob-free normalized shape
+/// as a firehose commit. The observation time is local because AppView's
+/// client-supplied `createdAt` is not a trustworthy ingestion timestamp.
+pub fn normalize_appview_post(post: &Value, observed_at: DateTime<Utc>) -> Result<NormalizedEvent> {
+    let uri = post
+        .get("uri")
+        .and_then(Value::as_str)
+        .context("AppView post has no URI")?;
+    let rest = uri
+        .strip_prefix("at://")
+        .context("invalid AppView AT URI")?;
+    let mut parts = rest.split('/');
+    let uri_did = parts.next().context("AppView URI has no authority")?;
+    let collection = parts.next().context("AppView URI has no collection")?;
+    let rkey = parts.next().context("AppView URI has no rkey")?;
+    anyhow::ensure!(
+        (uri_did.starts_with("did:") || uri_did.contains('.'))
+            && collection == "app.bsky.feed.post"
+            && !rkey.is_empty()
+            && parts.next().is_none(),
+        "AppView URI is not a Bluesky post URI"
+    );
+    let author_did = post
+        .pointer("/author/did")
+        .and_then(Value::as_str)
+        .context("AppView post has no author DID")?;
+    anyhow::ensure!(
+        !uri_did.starts_with("did:") || author_did == uri_did,
+        "AppView author does not match URI"
+    );
+    let record = post.get("record").context("AppView post has no record")?;
+    let envelope = serde_json::json!({
+        "did": author_did,
+        "time_us": observed_at.timestamp_micros(),
+        "kind": "commit",
+        "commit": {
+            "operation": "appview_fetch",
+            "collection": collection,
+            "rkey": rkey,
+            "record": record,
+        }
+    });
+    let mut event = parse_jetstream(envelope.to_string().as_bytes())?
+        .context("AppView post could not be normalized")?;
+    // AppView must return the exact requested URI. Retain that identifier even
+    // when its authority was a handle rather than its author's DID.
+    event.at_uri = uri.to_owned();
+    Ok(event)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,5 +368,21 @@ mod tests {
         assert_eq!(event.kind, EventKind::Delete);
         assert_eq!(event.operation, "delete");
         assert!(event.record_json.is_none());
+    }
+
+    #[test]
+    fn appview_post_is_exact_blob_free_and_marks_its_source() {
+        let post = serde_json::json!({
+            "uri": "at://did:plc:a/app.bsky.feed.post/x",
+            "author": {"did": "did:plc:a"},
+            "record": {"$type":"app.bsky.feed.post", "text":"hello", "embed": {"images":[{"image":{"$type":"blob", "ref":{"$link":"secret"}, "mimeType":"image/jpeg", "size":12}}]}}
+        });
+        let event = normalize_appview_post(&post, Utc::now()).unwrap();
+        assert_eq!(event.operation, "appview_fetch");
+        assert_eq!(event.text.as_deref(), Some("hello"));
+        assert!(!event.record_json.unwrap().contains("secret"));
+        let mut wrong = post;
+        wrong["author"]["did"] = Value::String("did:plc:other".into());
+        assert!(normalize_appview_post(&wrong, Utc::now()).is_err());
     }
 }

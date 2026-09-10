@@ -374,6 +374,17 @@ impl Storage {
             .fetch_all::<SearchIdentity>()
             .await?)
     }
+    pub async fn identities_for_dids(&self, dids: &[String]) -> Result<Vec<SearchIdentity>> {
+        if dids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .client
+            .query("SELECT did, argMax(handle, observed_at) AS handle_value FROM identities WHERE has(?, did) GROUP BY did")
+            .bind(dids)
+            .fetch_all::<SearchIdentity>()
+            .await?)
+    }
     pub async fn account_cluster_ids(&self, did: &str, limit: u64) -> Result<Vec<String>> {
         #[derive(Row, Deserialize)]
         struct ClusterResult {
@@ -392,6 +403,15 @@ impl Storage {
         Ok(self.client.query(
             "SELECT at_uri, actor_did, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, kind, text, reply_parent, reply_root, quote_target, urls, domains, languages FROM events WHERE at_uri = ? AND kind IN ('post','reply','quote') ORDER BY timestamp DESC LIMIT 1"
         ).bind(uri).fetch_optional::<StoredRecord>().await?)
+    }
+    pub async fn records(&self, uris: &[String]) -> Result<Vec<StoredRecord>> {
+        if uris.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(self.client.query(
+            "SELECT at_uri, actor_did, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, kind, text, reply_parent, reply_root, quote_target, urls, domains, languages FROM events WHERE has(?, at_uri) AND kind IN ('post','reply','quote') ORDER BY timestamp DESC LIMIT ?"
+        ).bind(uris).bind(uris.len() as u64 * 2)
+        .fetch_all::<StoredRecord>().await?)
     }
     pub async fn record_interaction_counts(&self, uri: &str) -> Result<RecordInteractionCounts> {
         Ok(self.client.query(

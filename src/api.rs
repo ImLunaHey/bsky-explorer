@@ -19,7 +19,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, HashSet, VecDeque},
     convert::Infallible,
     fs,
     path::PathBuf,
@@ -575,8 +575,97 @@ fn valid_event_kind(kind: &str) -> bool {
         .iter()
         .any(|candidate| candidate.eq_ignore_ascii_case(kind))
 }
-async fn conversations(State(s): State<AppState>) -> Json<Vec<crate::analysis::TrendingItem>> {
-    Json(analyzer_blocking(s.analysis, |analysis| analysis.growing_conversations()).await)
+#[derive(Serialize)]
+struct EnrichedConversation {
+    key: String,
+    count: u64,
+    recent_count: u64,
+    growth: i64,
+    sample: Option<String>,
+    record: Option<crate::storage::StoredRecord>,
+    handle: Option<String>,
+}
+
+async fn conversations(
+    State(s): State<AppState>,
+) -> Result<Json<Vec<EnrichedConversation>>, (StatusCode, String)> {
+    let items = analyzer_blocking(s.analysis.clone(), |analysis| {
+        analysis.growing_conversations()
+    })
+    .await;
+    let roots: Vec<String> = items
+        .iter()
+        .map(|item| item.key.clone())
+        .filter(|uri| is_bluesky_post_uri(uri))
+        .take(20)
+        .collect();
+    let local = s.storage.records(&roots).await.map_err(internal_error)?;
+    let mut records: HashMap<String, crate::storage::StoredRecord> = HashMap::new();
+    for record in local {
+        records.entry(record.at_uri.clone()).or_insert(record);
+    }
+    let missing: Vec<String> = roots
+        .iter()
+        .filter(|uri| !records.contains_key(*uri))
+        .cloned()
+        .collect();
+    if !missing.is_empty() {
+        match fetch_appview_posts(&missing).await {
+            Ok(fetched) => {
+                if let Err(error) = s.storage.insert_events(&fetched).await {
+                    tracing::warn!(%error, "could not persist AppView conversation records");
+                }
+                for event in fetched {
+                    let record = stored_record_from_event(event);
+                    records.insert(record.at_uri.clone(), record);
+                }
+            }
+            Err((status, error)) => {
+                tracing::warn!(%status, %error, "could not enrich conversation roots");
+            }
+        }
+    }
+    let dids: Vec<String> = records
+        .values()
+        .map(|record| record.actor_did.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let handles: HashMap<_, _> = s
+        .storage
+        .identities_for_dids(&dids)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|identity| (identity.did, identity.handle_value))
+        .collect();
+    Ok(Json(
+        items
+            .into_iter()
+            .map(|item| {
+                let record = records.remove(&item.key);
+                let handle = record
+                    .as_ref()
+                    .and_then(|record| handles.get(&record.actor_did))
+                    .filter(|handle| !handle.is_empty())
+                    .cloned();
+                let sample = item.sample.or_else(|| {
+                    record
+                        .as_ref()
+                        .map(|record| record.text.chars().take(180).collect())
+                });
+                EnrichedConversation {
+                    key: item.key,
+                    count: item.count,
+                    recent_count: item.recent_count,
+                    growth: item.growth,
+                    sample,
+                    record,
+                    handle,
+                }
+            })
+            .collect(),
+    ))
 }
 async fn anomalies(State(s): State<AppState>) -> Json<crate::analysis::CategorizedAnomalies> {
     Json(s.analysis.categorized_anomalies())
@@ -709,23 +798,20 @@ async fn record(
     }
     let record = match s.storage.record(&query.uri).await.map_err(internal_error)? {
         Some(record) => record,
-        None => s
-            .analysis
-            .retained_record(&query.uri)
-            .map(|event| crate::storage::StoredRecord {
-                at_uri: event.at_uri,
-                actor_did: event.actor_did,
-                timestamp_ms: event.timestamp.timestamp_millis(),
-                kind: event.kind.as_str().to_owned(),
-                text: event.text.unwrap_or_default(),
-                reply_parent: event.reply_parent.unwrap_or_default(),
-                reply_root: event.reply_root.unwrap_or_default(),
-                quote_target: event.quote_target.unwrap_or_default(),
-                urls: event.urls,
-                domains: event.domains,
-                languages: event.languages,
-            })
-            .ok_or_else(|| (StatusCode::NOT_FOUND, "record not retained".into()))?,
+        None => match s.analysis.retained_record(&query.uri) {
+            Some(event) => stored_record_from_event(event),
+            None => {
+                let mut fetched = fetch_appview_posts(std::slice::from_ref(&query.uri)).await?;
+                let event = fetched
+                    .pop()
+                    .ok_or_else(|| (StatusCode::NOT_FOUND, "post was not found".into()))?;
+                s.storage
+                    .insert_events(std::slice::from_ref(&event))
+                    .await
+                    .map_err(internal_error)?;
+                stored_record_from_event(event)
+            }
+        },
     };
     let root = if record.reply_root.is_empty() {
         &query.uri
@@ -749,6 +835,118 @@ async fn record(
         recent_interactions,
         conversation,
     }))
+}
+
+fn stored_record_from_event(event: crate::model::NormalizedEvent) -> crate::storage::StoredRecord {
+    crate::storage::StoredRecord {
+        at_uri: event.at_uri,
+        actor_did: event.actor_did,
+        timestamp_ms: event.timestamp.timestamp_millis(),
+        kind: event.kind.as_str().to_owned(),
+        text: event.text.unwrap_or_default(),
+        reply_parent: event.reply_parent.unwrap_or_default(),
+        reply_root: event.reply_root.unwrap_or_default(),
+        quote_target: event.quote_target.unwrap_or_default(),
+        urls: event.urls,
+        domains: event.domains,
+        languages: event.languages,
+    }
+}
+
+fn is_bluesky_post_uri(uri: &str) -> bool {
+    is_at_uri(uri) && uri.contains("/app.bsky.feed.post/")
+}
+
+async fn fetch_appview_posts(
+    uris: &[String],
+) -> Result<Vec<crate::model::NormalizedEvent>, (StatusCode, String)> {
+    const MAX_URIS: usize = 20;
+    const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+    if uris.is_empty() {
+        return Ok(Vec::new());
+    }
+    if uris.len() > MAX_URIS
+        || uris
+            .iter()
+            .any(|uri| !is_bluesky_post_uri(uri) || uri.len() > 512)
+    {
+        return Err((StatusCode::BAD_REQUEST, "invalid AppView post batch".into()));
+    }
+    let requested: HashSet<&str> = uris.iter().map(String::as_str).collect();
+    if requested.len() != uris.len() {
+        return Err((StatusCode::BAD_REQUEST, "duplicate post URI".into()));
+    }
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(1))
+        .timeout(Duration::from_secs(3))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent("bsky-observatory/0.1")
+        .build()
+        .map_err(|error| internal_error(error.into()))?;
+    let query: Vec<(&str, &str)> = uris.iter().map(|uri| ("uris", uri.as_str())).collect();
+    let response = client
+        .get("https://public.api.bsky.app/xrpc/app.bsky.feed.getPosts")
+        .query(&query)
+        .send()
+        .await
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?
+        .error_for_status()
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            "AppView response is too large".into(),
+        ));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
+    if bytes.len() > MAX_RESPONSE_BYTES {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            "AppView response is too large".into(),
+        ));
+    }
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
+    let posts = value
+        .get("posts")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_GATEWAY,
+                "AppView response has no posts".into(),
+            )
+        })?;
+    if posts.len() > MAX_URIS {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            "AppView returned too many posts".into(),
+        ));
+    }
+    let observed_at = chrono::Utc::now();
+    let mut seen = HashSet::new();
+    posts
+        .iter()
+        .map(|post| {
+            let uri = post
+                .get("uri")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| (StatusCode::BAD_GATEWAY, "AppView post has no URI".into()))?;
+            if !requested.contains(uri) || !seen.insert(uri) {
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    "AppView returned an unexpected post".into(),
+                ));
+            }
+            crate::normalize::normalize_appview_post(post, observed_at)
+                .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))
+        })
+        .collect()
 }
 
 fn is_at_uri(uri: &str) -> bool {
@@ -1323,6 +1521,20 @@ mod tests {
         assert!(!is_at_uri(
             "at://did:plc:alice/app.bsky.feed.post/key/extra"
         ));
+    }
+
+    #[test]
+    fn only_post_at_uris_are_eligible_for_appview_enrichment() {
+        assert!(is_bluesky_post_uri(
+            "at://did:plc:alice/app.bsky.feed.post/3kexample"
+        ));
+        assert!(is_bluesky_post_uri(
+            "at://alice.test/app.bsky.feed.post/3kexample"
+        ));
+        assert!(!is_bluesky_post_uri(
+            "at://did:plc:alice/app.bsky.feed.like/3kexample"
+        ));
+        assert!(!is_bluesky_post_uri("https://example.test/post"));
     }
 
     #[test]
