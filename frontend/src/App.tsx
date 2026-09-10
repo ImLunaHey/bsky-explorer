@@ -127,8 +127,8 @@ function RateChart({rates}:{rates:Rates}) {
 function RankList({items,onOpen}:{items:TrendingItem[];onOpen?:(item:TrendingItem)=>void}) {
   if(!items.length)return <Empty />
   const max=Math.max(...items.map(x=>x.count),1)
-  const open=(item:TrendingItem)=>onOpen?.(item)??(item.key.startsWith('at://')?window.location.assign(`/records/${encodeURIComponent(item.key)}`):undefined)
-  return <div className="space-y-4">{items.slice(0,8).map((item,i)=><button type="button" disabled={!onOpen&&!item.key.startsWith('at://')} onClick={()=>open(item)} className="block w-full text-left disabled:cursor-default" key={item.key}><div className="mb-1.5 flex items-center gap-3 text-sm"><span className="w-5 text-xs text-dim">{String(i+1).padStart(2,'0')}</span><span className="min-w-0 flex-1 truncate hover:text-orange-300" title={item.key}>{item.sample||'Root post predates this observatory'}</span><span className="font-mono text-xs text-mint">{compact.format(item.count)}</span></div><div className="ml-8 h-1 overflow-hidden rounded bg-line"><div className="h-full rounded bg-mint/70" style={{width:`${item.count/max*100}%`}} /></div></button>)}</div>
+  const open=(item:TrendingItem)=>onOpen?.(item)??(item.sample&&item.key.startsWith('at://')?window.location.assign(`/records/${encodeURIComponent(item.key)}`):undefined)
+  return <div className="space-y-4">{items.slice(0,8).map((item,i)=><button type="button" disabled={!onOpen&&!item.sample} onClick={()=>open(item)} className="block w-full text-left disabled:cursor-default" key={item.key}><div className="mb-1.5 flex items-center gap-3 text-sm"><span className="w-5 text-xs text-dim">{String(i+1).padStart(2,'0')}</span><span className="min-w-0 flex-1 truncate hover:text-orange-300" title={item.key}>{item.sample||'Root post predates this observatory'}</span><span className="font-mono text-xs text-mint">{compact.format(item.count)}</span></div><div className="ml-8 h-1 overflow-hidden rounded bg-line"><div className="h-full rounded bg-mint/70" style={{width:`${item.count/max*100}%`}} /></div></button>)}</div>
 }
 
 const clusterHelper=createColumnHelper<Detection>()
