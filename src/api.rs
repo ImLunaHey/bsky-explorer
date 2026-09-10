@@ -228,7 +228,7 @@ async fn search(
     results.extend(identities.into_iter().map(|identity| SearchResult {
         result_type: "account",
         did: identity.did,
-        handle: (!identity.handle.is_empty()).then_some(identity.handle),
+        handle: (!identity.handle_value.is_empty()).then_some(identity.handle_value),
         event_id: None,
         at_uri: None,
         event_type: None,
@@ -576,7 +576,7 @@ fn valid_event_kind(kind: &str) -> bool {
         .any(|candidate| candidate.eq_ignore_ascii_case(kind))
 }
 async fn conversations(State(s): State<AppState>) -> Json<Vec<crate::analysis::TrendingItem>> {
-    Json(s.analysis.growing_conversations())
+    Json(analyzer_blocking(s.analysis, |analysis| analysis.growing_conversations()).await)
 }
 async fn anomalies(State(s): State<AppState>) -> Json<crate::analysis::CategorizedAnomalies> {
     Json(s.analysis.categorized_anomalies())

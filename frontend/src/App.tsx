@@ -68,13 +68,6 @@ function useIdentityMap(values:string[]) {
   const queries=useQueries({queries:batches.map(batch=>({queryKey:['identities',...batch],queryFn:()=>api<Identity[]>(`/api/identities?dids=${encodeURIComponent(batch.join(','))}`),staleTime:300_000}))})
   return new Map(queries.flatMap(q=>q.data||[]).map(identity=>[identity.did,identity.handle]))
 }
-function IdentityLabel({value,handles,onOpen}:{value:string;handles:Map<string,string|undefined>;onOpen:(did:string)=>void}) {
-  const did=didFromTarget(value),handle=did&&handles.get(did)
-  if (!did) return <span title={value}>{value}</span>
-  const suffix=value.startsWith('at://')?value.slice(`at://${did}`.length):''
-  return <span className="min-w-0" title={value}><button type="button" onClick={()=>onOpen(did)} className="block max-w-full truncate font-medium text-cyan hover:text-mint">{handle?`@${handle}`:shortDid(did)}</button>{handle&&<span className="block truncate font-mono text-[10px] text-dim">{shortDid(did)}</span>}{suffix&&<span className="block truncate font-mono text-[10px] text-dim">{suffix}</span>}</span>
-}
-
 type GraphEdge = ClusterDetail['graph_edges'][number]
 
 function InteractionGraph({edges,handles,onAccount}:{edges:GraphEdge[];handles:Map<string,string|undefined>;onAccount:(did:string)=>void}) {

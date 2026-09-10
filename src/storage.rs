@@ -92,7 +92,7 @@ pub struct SearchEvent {
 #[derive(Debug, Clone, Deserialize, Row, Serialize)]
 pub struct SearchIdentity {
     pub did: String,
-    pub handle: String,
+    pub handle_value: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -365,7 +365,7 @@ impl Storage {
             .with_option("max_result_rows", (limit + 1).to_string());
         Ok(client
             .query(
-                "SELECT did, argMax(handle, observed_at) AS handle FROM identities WHERE did = ? OR positionCaseInsensitiveUTF8(handle, ?) > 0 GROUP BY did ORDER BY (did = ?) DESC, handle, did LIMIT ?",
+                "SELECT did, argMax(handle, observed_at) AS handle_value FROM identities WHERE did = ? OR positionCaseInsensitiveUTF8(handle, ?) > 0 GROUP BY did ORDER BY (did = ?) DESC, handle_value, did LIMIT ?",
             )
             .bind(term)
             .bind(term)
