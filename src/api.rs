@@ -74,6 +74,7 @@ pub fn router(s: AppState) -> Router {
         .route("/api/clusters/{id}", get(cluster))
         .route("/api/accounts/{did}", get(account))
         .route("/api/records", get(record))
+        .route("/api/records/media", get(record_media))
         .route("/api/identities", get(identities))
         .route("/api/storage", get(storage))
         .route("/api/system", get(system))
@@ -513,6 +514,191 @@ fn is_at_uri(uri: &str) -> bool {
         && parts.next().is_none()
 }
 
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct RecordMedia {
+    kind: String,
+    url: String,
+    thumbnail_url: Option<String>,
+    alt: String,
+    width: Option<u64>,
+    height: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct RecordMediaResponse {
+    media: Vec<RecordMedia>,
+    source: &'static str,
+    ephemeral: bool,
+}
+
+/// Fetches only AppView metadata. Blob bytes remain between the user's browser
+/// and Bluesky's CDN and are never proxied, cached, or persisted here.
+async fn record_media(
+    Query(query): Query<RecordQuery>,
+) -> Result<Json<RecordMediaResponse>, (StatusCode, String)> {
+    if !is_at_uri(&query.uri) || !query.uri.contains("/app.bsky.feed.post/") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "uri must identify a Bluesky post".into(),
+        ));
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(4))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent("bsky-observatory/0.1")
+        .build()
+        .map_err(|error| internal_error(error.into()))?;
+    let response = client
+        .get("https://public.api.bsky.app/xrpc/app.bsky.feed.getPosts")
+        .query(&[("uris", &query.uri)])
+        .send()
+        .await
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?
+        .error_for_status()
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
+    if response
+        .content_length()
+        .is_some_and(|size| size > 1_048_576)
+    {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            "upstream metadata is too large".into(),
+        ));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
+    if bytes.len() > 1_048_576 {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            "upstream metadata is too large".into(),
+        ));
+    }
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
+    let post = value
+        .get("posts")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|posts| posts.first())
+        .filter(|post| post.get("uri").and_then(serde_json::Value::as_str) == Some(&query.uri));
+    let media = post
+        .and_then(|post| post.get("embed"))
+        .map(extract_record_media)
+        .unwrap_or_default();
+    Ok(Json(RecordMediaResponse {
+        media,
+        source: "public_appview",
+        ephemeral: true,
+    }))
+}
+
+fn extract_record_media(embed: &serde_json::Value) -> Vec<RecordMedia> {
+    let mut output = Vec::new();
+    extract_record_media_into(embed, &mut output);
+    output.truncate(8);
+    output
+}
+
+fn extract_record_media_into(embed: &serde_json::Value, output: &mut Vec<RecordMedia>) {
+    if output.len() >= 8 {
+        return;
+    }
+    let kind = embed
+        .get("$type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if kind.contains("recordWithMedia") {
+        if let Some(media) = embed.get("media") {
+            extract_record_media_into(media, output);
+        }
+        return;
+    }
+    if kind.contains("images") {
+        for image in embed
+            .get("images")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if output.len() >= 8 {
+                break;
+            }
+            let Some(url) = image
+                .get("fullsize")
+                .and_then(serde_json::Value::as_str)
+                .filter(|url| valid_media_url(url))
+            else {
+                continue;
+            };
+            let thumbnail_url = image
+                .get("thumb")
+                .and_then(serde_json::Value::as_str)
+                .filter(|url| valid_media_url(url))
+                .map(str::to_owned);
+            let ratio = image.get("aspectRatio");
+            output.push(RecordMedia {
+                kind: "image".into(),
+                url: url.into(),
+                thumbnail_url,
+                alt: image
+                    .get("alt")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .chars()
+                    .take(2_000)
+                    .collect(),
+                width: ratio
+                    .and_then(|v| v.get("width"))
+                    .and_then(serde_json::Value::as_u64),
+                height: ratio
+                    .and_then(|v| v.get("height"))
+                    .and_then(serde_json::Value::as_u64),
+            });
+        }
+    } else if kind.contains("video")
+        && let Some(url) = embed
+            .get("playlist")
+            .and_then(serde_json::Value::as_str)
+            .filter(|url| valid_media_url(url))
+    {
+        let ratio = embed.get("aspectRatio");
+        output.push(RecordMedia {
+            kind: "video".into(),
+            url: url.into(),
+            thumbnail_url: embed
+                .get("thumbnail")
+                .and_then(serde_json::Value::as_str)
+                .filter(|url| valid_media_url(url))
+                .map(str::to_owned),
+            alt: embed
+                .get("alt")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .chars()
+                .take(2_000)
+                .collect(),
+            width: ratio
+                .and_then(|v| v.get("width"))
+                .and_then(serde_json::Value::as_u64),
+            height: ratio
+                .and_then(|v| v.get("height"))
+                .and_then(serde_json::Value::as_u64),
+        });
+    }
+}
+
+fn valid_media_url(value: &str) -> bool {
+    let Ok(url) = url::Url::parse(value) else {
+        return false;
+    };
+    url.scheme() == "https"
+        && url.port().is_none()
+        && matches!(url.host_str(), Some("cdn.bsky.app" | "video.bsky.app"))
+        && url.username().is_empty()
+        && url.password().is_none()
+}
+
 fn internal_error(error: anyhow::Error) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
 }
@@ -889,6 +1075,44 @@ mod tests {
         assert!(!is_at_uri(
             "at://did:plc:alice/app.bsky.feed.post/key/extra"
         ));
+    }
+
+    #[test]
+    fn extracts_only_allowlisted_ephemeral_media() {
+        let embed = serde_json::json!({
+            "$type": "app.bsky.embed.images#view",
+            "images": [
+                {"fullsize":"https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:test/cid@jpeg", "thumb":"https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:test/cid@jpeg", "alt":"description", "aspectRatio":{"width":1200,"height":800}},
+                {"fullsize":"https://127.0.0.1/private", "alt":"unsafe"},
+                {"fullsize":"https://cdn.bsky.app.evil.test/image", "alt":"lookalike"}
+            ]
+        });
+        assert_eq!(
+            extract_record_media(&embed),
+            vec![RecordMedia {
+                kind: "image".into(),
+                url: "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:test/cid@jpeg".into(),
+                thumbnail_url: Some(
+                    "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:test/cid@jpeg".into()
+                ),
+                alt: "description".into(),
+                width: Some(1200),
+                height: Some(800),
+            }]
+        );
+        assert!(!valid_media_url("http://cdn.bsky.app/image"));
+        assert!(!valid_media_url("https://user@cdn.bsky.app/image"));
+    }
+
+    #[test]
+    fn extracts_video_from_record_with_media() {
+        let embed = serde_json::json!({
+            "$type":"app.bsky.embed.recordWithMedia#view",
+            "media":{"$type":"app.bsky.embed.video#view", "playlist":"https://video.bsky.app/watch/did/cid/playlist.m3u8", "thumbnail":"https://video.bsky.app/watch/did/cid/thumbnail.jpg"}
+        });
+        let media = extract_record_media(&embed);
+        assert_eq!(media.len(), 1);
+        assert_eq!(media[0].kind, "video");
     }
 
     #[test]
