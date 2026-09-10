@@ -73,6 +73,33 @@ pub struct StoredAccountEvent {
     pub target: String,
     pub text: String,
 }
+#[derive(Debug, Clone, Default, Deserialize, Row, Serialize)]
+pub struct FollowWindowStats {
+    pub seconds: u64,
+    pub outbound_follows: u64,
+    pub inbound_follows: u64,
+    pub outbound_unfollows_resolved: u64,
+    pub inbound_unfollows_resolved: u64,
+    pub outbound_unfollows_unresolved: u64,
+    pub outbound_net: i64,
+    pub inbound_net: i64,
+}
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct StoredFollowEvent {
+    pub event_id: String,
+    pub timestamp_ms: i64,
+    pub actor_did: String,
+    pub target_did: String,
+    pub kind: String,
+    pub direction: String,
+    pub target_resolved: bool,
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountFollowAnalytics {
+    pub windows: Vec<FollowWindowStats>,
+    pub recent_events: Vec<StoredFollowEvent>,
+    pub unresolved_note: &'static str,
+}
 #[derive(Debug, Clone, Deserialize, Row, Serialize)]
 pub struct SearchEvent {
     pub event_id: String,
@@ -293,6 +320,58 @@ impl Storage {
             "SELECT event_id, time_us, actor_did, kind, at_uri, target, text FROM events WHERE actor_did = ? ORDER BY time_us DESC LIMIT ?"
         ).bind(did).bind(limit.min(200))
         .fetch_all::<StoredAccountEvent>().await?)
+    }
+    /// Returns bounded follow analytics from normalized events. Jetstream delete
+    /// commits normally omit the deleted follow record, so target-less outbound
+    /// unfollows are reported separately instead of being misattributed.
+    pub async fn account_follow_analytics(&self, did: &str) -> Result<AccountFollowAnalytics> {
+        let window_query = self.client.query(
+            "WITH ? AS account_did
+             SELECT toUInt64(window_seconds) AS seconds,
+               countIf(kind='follow' AND actor_did=account_did AND timestamp >= now64(3)-toIntervalSecond(window_seconds)) AS outbound_follows,
+               countIf(kind='follow' AND target_did=account_did AND timestamp >= now64(3)-toIntervalSecond(window_seconds)) AS inbound_follows,
+               countIf(kind='unfollow' AND actor_did=account_did AND target_did!='' AND timestamp >= now64(3)-toIntervalSecond(window_seconds)) AS outbound_unfollows_resolved,
+               countIf(kind='unfollow' AND target_did=account_did AND timestamp >= now64(3)-toIntervalSecond(window_seconds)) AS inbound_unfollows_resolved,
+               countIf(kind='unfollow' AND actor_did=account_did AND target_did='' AND timestamp >= now64(3)-toIntervalSecond(window_seconds)) AS outbound_unfollows_unresolved,
+               toInt64(outbound_follows)-toInt64(outbound_unfollows_resolved)-toInt64(outbound_unfollows_unresolved) AS outbound_net,
+               toInt64(inbound_follows)-toInt64(inbound_unfollows_resolved) AS inbound_net
+             FROM events ARRAY JOIN [60,300,3600,86400] AS window_seconds
+             WHERE collection='app.bsky.graph.follow'
+               AND timestamp >= now64(3)-INTERVAL 1 DAY
+               AND (actor_did=account_did OR target_did=account_did)
+             GROUP BY window_seconds ORDER BY window_seconds"
+        ).bind(did).fetch_all::<FollowWindowStats>();
+        let events_query = self
+            .client
+            .query(
+                "WITH ? AS account_did
+             SELECT event_id, toUnixTimestamp64Milli(timestamp) AS timestamp_ms,
+               actor_did, target_did, kind,
+               if(actor_did=account_did,'outbound','inbound') AS direction,
+               toBool(target_did!='') AS target_resolved
+             FROM events
+             WHERE collection='app.bsky.graph.follow'
+               AND timestamp >= now64(3)-INTERVAL 30 DAY
+               AND (actor_did=account_did OR target_did=account_did)
+             ORDER BY timestamp DESC LIMIT 100",
+            )
+            .bind(did)
+            .fetch_all::<StoredFollowEvent>();
+        let (mut windows, recent_events) = tokio::try_join!(window_query, events_query)?;
+        for seconds in [60, 300, 3_600, 86_400] {
+            if !windows.iter().any(|window| window.seconds == seconds) {
+                windows.push(FollowWindowStats {
+                    seconds,
+                    ..FollowWindowStats::default()
+                });
+            }
+        }
+        windows.sort_by_key(|window| window.seconds);
+        Ok(AccountFollowAnalytics {
+            windows,
+            recent_events,
+            unresolved_note: "Jetstream delete events may omit the original follow target. Those outbound unfollows are counted as unknown-target removals; they reduce outbound net change but cannot be attributed to a specific account. Inbound net change can therefore overstate growth when an incoming unfollow target was unavailable.",
+        })
     }
     /// Searches retained normalized events. Exact identifiers search the full
     /// retention period; free-text searches are deliberately bounded to the

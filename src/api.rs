@@ -79,6 +79,7 @@ pub fn router(s: AppState) -> Router {
         .route("/api/clusters/{id}", get(cluster))
         .route("/api/accounts/{did}", get(account))
         .route("/api/accounts/{did}/events", get(account_events))
+        .route("/api/accounts/{did}/follows", get(account_follows))
         .route("/api/records", get(record))
         .route("/api/records/media", get(record_media))
         .route("/api/identities", get(identities))
@@ -762,6 +763,20 @@ async fn account_events(
     }
     s.storage
         .account_recent_events(&did, 100)
+        .await
+        .map(Json)
+        .map_err(internal_error)
+}
+
+async fn account_follows(
+    State(s): State<AppState>,
+    Path(did): Path<String>,
+) -> Result<Json<crate::storage::AccountFollowAnalytics>, (StatusCode, String)> {
+    if !did.starts_with("did:") {
+        return Err((StatusCode::BAD_REQUEST, "invalid DID".into()));
+    }
+    s.storage
+        .account_follow_analytics(&did)
         .await
         .map(Json)
         .map_err(internal_error)
