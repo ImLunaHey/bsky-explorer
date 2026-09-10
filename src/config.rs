@@ -78,7 +78,7 @@ pub struct Config {
     pub identity_cache_ttl_seconds: u64,
     #[arg(long, env = "IDENTITY_NEGATIVE_TTL_SECONDS", default_value_t = 300)]
     pub identity_negative_ttl_seconds: u64,
-    #[arg(long, env = "IDENTITY_REQUESTS_PER_SECOND", default_value_t = 10)]
+    #[arg(long, env = "IDENTITY_REQUESTS_PER_SECOND", default_value_t = 2)]
     pub identity_requests_per_second: u32,
     #[arg(long, env = "IDENTITY_QUEUE_DIR")]
     pub identity_queue_dir: Option<PathBuf>,
