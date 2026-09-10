@@ -205,7 +205,12 @@ fn live_cursor(
                 "Last-Event-ID must be an integer time_us".into(),
             )
         })?;
-    let cursor = query_cursor.or(header_cursor);
+    // A reconnect retains the original URL query while EventSource adds a
+    // newer Last-Event-ID. Always resume from the furthest known position.
+    let cursor = match (query_cursor, header_cursor) {
+        (Some(query), Some(header)) => Some(query.max(header)),
+        (query, header) => query.or(header),
+    };
     if cursor.is_some_and(|value| value < 0) {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -852,10 +857,11 @@ mod tests {
     }
 
     #[test]
-    fn live_cursor_prefers_query_and_accepts_event_source_header() {
+    fn live_cursor_uses_furthest_resume_position() {
         let header = HeaderValue::from_static("123");
         assert_eq!(live_cursor(None, Some(&header)).unwrap(), Some(123));
         assert_eq!(live_cursor(Some(456), Some(&header)).unwrap(), Some(456));
+        assert_eq!(live_cursor(Some(100), Some(&header)).unwrap(), Some(123));
         assert!(live_cursor(Some(-1), None).is_err());
         assert!(live_cursor(None, Some(&HeaderValue::from_static("oops"))).is_err());
     }
