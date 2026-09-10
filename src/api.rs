@@ -43,6 +43,7 @@ pub fn router(s: AppState) -> Router {
         .route("/readyz", get(ready))
         .route("/metrics", get(metrics))
         .route("/api/stats", get(stats))
+        .route("/api/firehose", get(firehose))
         .route("/api/trending/urls", get(urls))
         .route("/api/trending/domains", get(domains))
         .route("/api/trending/fingerprints", get(fingerprints))
@@ -101,6 +102,55 @@ async fn metrics(State(s): State<AppState>) -> String {
 }
 async fn stats(State(s): State<AppState>) -> Json<crate::analysis::Rates> {
     Json(s.analysis.rates())
+}
+#[derive(Deserialize)]
+struct FirehoseQuery {
+    #[serde(default = "default_firehose_limit")]
+    limit: usize,
+    kind: Option<String>,
+    q: Option<String>,
+    after_time_us: Option<i64>,
+}
+
+fn default_firehose_limit() -> usize {
+    100
+}
+
+async fn firehose(
+    State(s): State<AppState>,
+    Query(query): Query<FirehoseQuery>,
+) -> Result<Json<crate::analysis::RecentEvents>, (StatusCode, String)> {
+    if query.limit == 0 || query.limit > 500 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "limit must be between 1 and 500".into(),
+        ));
+    }
+    if query.after_time_us.is_some_and(|value| value < 0) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "after_time_us cannot be negative".into(),
+        ));
+    }
+    if let Some(kind) = query.kind.as_deref().filter(|kind| !kind.is_empty()) {
+        const KINDS: &[&str] = &[
+            "post", "like", "repost", "follow", "unfollow", "reply", "quote", "delete", "other",
+        ];
+        if !KINDS.contains(&kind.to_ascii_lowercase().as_str()) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("unknown event kind: {kind}"),
+            ));
+        }
+    }
+    Ok(Json(s.analysis.recent_events(
+        crate::analysis::RecentEventFilter {
+            after_time_us: query.after_time_us,
+            kind: query.kind,
+            query: query.q,
+            limit: query.limit,
+        },
+    )))
 }
 async fn urls(State(s): State<AppState>) -> Json<Vec<(String, u64)>> {
     Json(s.analysis.top(false))

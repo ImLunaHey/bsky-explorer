@@ -91,6 +91,20 @@ pub struct ClusterDetail {
     pub timeline: Vec<TimelineBucket>,
     pub graph_edges: Vec<GraphEdge>,
 }
+#[derive(Clone, Default)]
+pub struct RecentEventFilter {
+    pub after_time_us: Option<i64>,
+    pub kind: Option<String>,
+    pub query: Option<String>,
+    pub limit: usize,
+}
+#[derive(Clone, Serialize)]
+pub struct RecentEvents {
+    pub events: Vec<NormalizedEvent>,
+    pub next_after_time_us: Option<i64>,
+    pub retained_event_count: usize,
+    pub has_more: bool,
+}
 #[derive(Clone)]
 pub struct Analyzer {
     inner: Arc<RwLock<State>>,
@@ -250,6 +264,56 @@ impl Analyzer {
         };
         s.detections.insert(cluster_id, d.clone());
         Some(d)
+    }
+
+    /// Returns a bounded, chronological view over the already-retained hot
+    /// analysis window. This deliberately does not create a second firehose
+    /// buffer, so its memory bound remains the configured analyzer retention.
+    pub fn recent_events(&self, filter: RecentEventFilter) -> RecentEvents {
+        const MAX_LIMIT: usize = 500;
+        let s = self.inner.read();
+        let limit = filter.limit.clamp(1, MAX_LIMIT);
+        let query = filter
+            .query
+            .as_deref()
+            .map(str::trim)
+            .filter(|query| !query.is_empty())
+            .map(str::to_lowercase);
+        let kind = filter
+            .kind
+            .as_deref()
+            .map(str::trim)
+            .filter(|kind| !kind.is_empty())
+            .map(str::to_lowercase);
+
+        let matches = |event: &&NormalizedEvent| {
+            filter
+                .after_time_us
+                .is_none_or(|after| event.time_us > after)
+                && kind
+                    .as_deref()
+                    .is_none_or(|kind| event.kind.as_str() == kind)
+                && query
+                    .as_deref()
+                    .is_none_or(|query| event_matches(event, query))
+        };
+        let matching_count = s.events.iter().filter(matches).count();
+        let skip = matching_count.saturating_sub(limit);
+        let events = s
+            .events
+            .iter()
+            .filter(matches)
+            .skip(skip)
+            .cloned()
+            .collect();
+        RecentEvents {
+            events,
+            // Advance over unrelated events as well; otherwise a selective
+            // poll repeatedly scans the same portion of the retained window.
+            next_after_time_us: s.events.back().map(|event| event.time_us),
+            retained_event_count: s.events.len(),
+            has_more: matching_count > limit,
+        }
     }
     pub fn rates(&self) -> Rates {
         let s = self.inner.read();
@@ -669,6 +733,20 @@ fn counts<I: Iterator<Item = String>>(it: I, n: usize) -> Vec<String> {
     v.into_iter().take(n).map(|x| x.0).collect()
 }
 
+fn event_matches(event: &NormalizedEvent, query: &str) -> bool {
+    let contains = |value: &str| value.to_lowercase().contains(query);
+    contains(&event.actor_did)
+        || contains(&event.at_uri)
+        || event.text.as_deref().is_some_and(contains)
+        || event.target.as_deref().is_some_and(contains)
+        || event.target_did.as_deref().is_some_and(contains)
+        || event.reply_parent.as_deref().is_some_and(contains)
+        || event.reply_root.as_deref().is_some_and(contains)
+        || event.quote_target.as_deref().is_some_and(contains)
+        || event.urls.iter().any(|value| contains(value))
+        || event.domains.iter().any(|value| contains(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -895,5 +973,57 @@ mod tests {
                 .iter()
                 .all(|edge| edge.target == "did:plc:target")
         );
+    }
+
+    #[test]
+    fn recent_events_are_bounded_ordered_and_filterable() {
+        let a = Analyzer::new(30, 100, 100, 24);
+        for (actor, time, kind, text, domain) in [
+            (
+                "did:plc:alice",
+                100,
+                EventKind::Post,
+                "hello world",
+                "example.test",
+            ),
+            ("did:plc:bob", 101, EventKind::Like, "", ""),
+            (
+                "did:plc:carol",
+                102,
+                EventKind::Post,
+                "campaign",
+                "news.test",
+            ),
+        ] {
+            let mut event = e(actor, time);
+            event.kind = kind;
+            event.text = (!text.is_empty()).then(|| text.into());
+            event.domains = (!domain.is_empty())
+                .then(|| domain.into())
+                .into_iter()
+                .collect();
+            a.observe(event);
+        }
+
+        let initial = a.recent_events(RecentEventFilter {
+            limit: 2,
+            ..Default::default()
+        });
+        assert_eq!(
+            initial.events.iter().map(|e| e.time_us).collect::<Vec<_>>(),
+            vec![101_000_000, 102_000_000]
+        );
+        assert!(initial.has_more);
+        assert_eq!(initial.retained_event_count, 3);
+
+        let filtered = a.recent_events(RecentEventFilter {
+            after_time_us: Some(99_000_000),
+            kind: Some("post".into()),
+            query: Some("EXAMPLE".into()),
+            limit: 5000,
+        });
+        assert_eq!(filtered.events.len(), 1);
+        assert_eq!(filtered.events[0].actor_did, "did:plc:alice");
+        assert_eq!(filtered.next_after_time_us, Some(102_000_000));
     }
 }
