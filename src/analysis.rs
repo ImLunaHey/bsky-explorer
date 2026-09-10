@@ -35,6 +35,38 @@ pub struct AccountSummary {
     pub unique_targets: usize,
     pub automation_score: f64,
 }
+#[derive(Clone, Serialize)]
+pub struct TrendingItem {
+    pub key: String,
+    pub count: u64,
+    pub recent_count: u64,
+    pub growth: i64,
+    pub sample: Option<String>,
+}
+#[derive(Clone, Serialize)]
+pub struct CategorizedAnomalies {
+    pub coordination_clusters: Vec<Detection>,
+    pub unusual_posting: Vec<AccountSummary>,
+    pub repeated_content_campaigns: Vec<Detection>,
+}
+#[derive(Clone, Serialize)]
+pub struct GraphEdge {
+    pub source: String,
+    pub target: String,
+    pub event_count: usize,
+}
+#[derive(Clone, Serialize)]
+pub struct TimelineBucket {
+    pub timestamp: chrono::DateTime<Utc>,
+    pub event_count: usize,
+}
+#[derive(Clone, Serialize)]
+pub struct ClusterDetail {
+    #[serde(flatten)]
+    pub detection: Detection,
+    pub timeline: Vec<TimelineBucket>,
+    pub graph_edges: Vec<GraphEdge>,
+}
 #[derive(Clone)]
 pub struct Analyzer {
     inner: Arc<RwLock<State>>,
@@ -217,6 +249,149 @@ impl Analyzer {
     pub fn detection(&self, id: &str) -> Option<Detection> {
         self.inner.read().detections.get(id).cloned()
     }
+    pub fn cluster_detail(&self, id: &str) -> Option<ClusterDetail> {
+        let s = self.inner.read();
+        let detection = s.detections.get(id)?.clone();
+        let evidence_ids: HashSet<_> = detection
+            .sample_events
+            .iter()
+            .map(|e| &e.event_id)
+            .collect();
+        let events: Vec<_> = s
+            .events
+            .iter()
+            .filter(|e| evidence_ids.contains(&e.event_id))
+            .collect();
+        let mut timeline = HashMap::new();
+        let mut edges = HashMap::new();
+        for event in events {
+            let seconds = event.timestamp.timestamp();
+            let bucket = chrono::DateTime::from_timestamp(seconds - seconds.rem_euclid(60), 0)
+                .unwrap_or(event.timestamp);
+            *timeline.entry(bucket).or_insert(0usize) += 1;
+            if let Some(target) = event.target_did.as_ref().or(event.target.as_ref()) {
+                *edges
+                    .entry((event.actor_did.clone(), target.clone()))
+                    .or_insert(0usize) += 1;
+            }
+        }
+        let mut timeline: Vec<_> = timeline
+            .into_iter()
+            .map(|(timestamp, event_count)| TimelineBucket {
+                timestamp,
+                event_count,
+            })
+            .collect();
+        timeline.sort_by_key(|b| b.timestamp);
+        let mut graph_edges: Vec<_> = edges
+            .into_iter()
+            .map(|((source, target), event_count)| GraphEdge {
+                source,
+                target,
+                event_count,
+            })
+            .collect();
+        graph_edges.sort_by_key(|e| std::cmp::Reverse(e.event_count));
+        Some(ClusterDetail {
+            detection,
+            timeline,
+            graph_edges,
+        })
+    }
+    pub fn trending_fingerprints(&self) -> Vec<TrendingItem> {
+        let s = self.inner.read();
+        let end = s.watermark.unwrap_or_else(Utc::now);
+        let cutoff = end - Duration::hours(1);
+        let mut grouped: HashMap<u64, (u64, Option<String>)> = HashMap::new();
+        for event in s.events.iter().filter(|e| e.timestamp >= cutoff) {
+            if let Some(hash) = event.normalized_text_hash {
+                let item = grouped.entry(hash).or_default();
+                item.0 += 1;
+                if item.1.is_none() {
+                    item.1 = event.text.as_deref().map(truncate_sample);
+                }
+            }
+        }
+        let mut result: Vec<_> = grouped
+            .into_iter()
+            .map(|(hash, (count, sample))| TrendingItem {
+                key: format!("{hash:016x}"),
+                count,
+                recent_count: count,
+                growth: count as i64,
+                sample,
+            })
+            .collect();
+        result.sort_by_key(|x| std::cmp::Reverse(x.count));
+        result.truncate(20);
+        result
+    }
+    pub fn growing_conversations(&self) -> Vec<TrendingItem> {
+        let s = self.inner.read();
+        let end = s.watermark.unwrap_or_else(Utc::now);
+        let recent = end - Duration::minutes(5);
+        let previous = end - Duration::minutes(10);
+        let mut grouped: HashMap<String, (u64, u64)> = HashMap::new();
+        for event in s.events.iter().filter(|e| e.timestamp >= previous) {
+            let key = event.reply_root.as_ref().or(event.reply_parent.as_ref());
+            if let Some(key) = key {
+                let counts = grouped.entry(key.clone()).or_default();
+                if event.timestamp >= recent {
+                    counts.0 += 1
+                } else {
+                    counts.1 += 1
+                }
+            }
+        }
+        let mut result: Vec<_> = grouped
+            .into_iter()
+            .map(|(key, (now, before))| TrendingItem {
+                key,
+                count: now + before,
+                recent_count: now,
+                growth: now as i64 - before as i64,
+                sample: None,
+            })
+            .filter(|x| x.recent_count > 0)
+            .collect();
+        result.sort_by_key(|x| {
+            (
+                std::cmp::Reverse(x.growth),
+                std::cmp::Reverse(x.recent_count),
+            )
+        });
+        result.truncate(20);
+        result
+    }
+    pub fn categorized_anomalies(&self) -> CategorizedAnomalies {
+        let s = self.inner.read();
+        let mut dids: HashSet<_> = s.events.iter().map(|e| e.actor_did.clone()).collect();
+        let mut unusual_posting: Vec<_> = dids
+            .drain()
+            .map(|did| self.account_from_state(&s, &did))
+            .filter(|a| a.automation_score >= 0.65)
+            .collect();
+        unusual_posting.sort_by(|a, b| b.automation_score.total_cmp(&a.automation_score));
+        let mut coordination_clusters: Vec<_> = s.detections.values().cloned().collect();
+        coordination_clusters.sort_by(|a, b| {
+            b.scores
+                .coordination_score
+                .total_cmp(&a.scores.coordination_score)
+        });
+        let repeated_content_campaigns = coordination_clusters
+            .iter()
+            .filter(|d| {
+                d.repeated_content_count >= self.min_events
+                    && d.scores.content_similarity_score >= 0.5
+            })
+            .cloned()
+            .collect();
+        CategorizedAnomalies {
+            coordination_clusters,
+            unusual_posting,
+            repeated_content_campaigns,
+        }
+    }
     pub fn top(&self, domains: bool) -> Vec<(String, u64)> {
         let s = self.inner.read();
         let m = if domains {
@@ -231,6 +406,9 @@ impl Analyzer {
     }
     pub fn account(&self, did: &str) -> AccountSummary {
         let s = self.inner.read();
+        self.account_from_state(&s, did)
+    }
+    fn account_from_state(&self, s: &State, did: &str) -> AccountSummary {
         let cutoff = s.watermark.unwrap_or_else(Utc::now) - Duration::hours(24);
         let e: Vec<_> = s
             .events
@@ -283,6 +461,9 @@ impl Analyzer {
             automation_score: 0.5 * volume + 0.3 * regularity + 0.2 * coverage,
         }
     }
+}
+fn truncate_sample(text: &str) -> String {
+    text.chars().take(160).collect()
 }
 fn window_rates(
     events: &VecDeque<NormalizedEvent>,
@@ -515,5 +696,44 @@ mod tests {
         let broad = round_the_clock.account("always-on").automation_score;
         let narrow = daytime.account("daytime").automation_score;
         assert!(broad > narrow + 0.1, "broad={broad}, narrow={narrow}");
+    }
+
+    #[test]
+    fn fingerprints_and_conversation_growth_use_event_time() {
+        let a = Analyzer::new(30, 10, 10, 24);
+        for (i, offset) in [-400, -350, -30, -20, -10].into_iter().enumerate() {
+            let mut event = e(&format!("actor-{i}"), 10_000 + offset);
+            event.kind = EventKind::Reply;
+            event.reply_root = Some("at://conversation/root".into());
+            event.normalized_text_hash = Some(42);
+            event.text = Some("A repeated phrase".into());
+            a.observe(event);
+        }
+        let fingerprint = &a.trending_fingerprints()[0];
+        assert_eq!(fingerprint.count, 5);
+        assert_eq!(fingerprint.sample.as_deref(), Some("A repeated phrase"));
+        let conversation = &a.growing_conversations()[0];
+        assert_eq!(conversation.recent_count, 3);
+        assert_eq!(conversation.growth, 1);
+    }
+
+    #[test]
+    fn cluster_detail_has_timeline_and_graph_edges() {
+        let a = Analyzer::new(30, 3, 3, 24);
+        let mut id = None;
+        for (i, actor) in ["a", "b", "c"].into_iter().enumerate() {
+            let mut event = e(actor, 100 + i as i64);
+            event.target_did = Some("did:plc:target".into());
+            id = a.observe(event).map(|d| d.cluster_id);
+        }
+        let detail = a.cluster_detail(&id.unwrap()).unwrap();
+        assert_eq!(detail.timeline[0].event_count, 3);
+        assert_eq!(detail.graph_edges.len(), 3);
+        assert!(
+            detail
+                .graph_edges
+                .iter()
+                .all(|edge| edge.target == "did:plc:target")
+        );
     }
 }

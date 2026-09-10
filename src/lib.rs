@@ -6,4 +6,5 @@ pub mod ingest;
 pub mod metrics;
 pub mod model;
 pub mod normalize;
+pub mod replay;
 pub mod storage;

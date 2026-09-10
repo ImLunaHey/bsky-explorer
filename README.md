@@ -18,6 +18,14 @@ Open <http://localhost:3000>. Prometheus metrics are at `/metrics`; JSON endpoin
 
 Jetstream JSON is flushed into rotating `.jsonl.zst` files before the microsecond cursor is atomically advanced. Reconnects request that cursor; a duplicate boundary is possible and preferable to upstream loss. The deterministic `event_id` supports future deduplication. Archives are the recovery/reprocessing source if ClickHouse is unavailable, while the bounded ingest channel applies backpressure.
 
+Archive segments can be validated and reprocessed with the replay binary. It defaults to a read-only validation pass; add `--write` to batch normalized rows into ClickHouse. Replay snapshots segments in filename order, fails with file/line context on corrupt input, and never reads or advances the live Jetstream cursor. Stop ingestion or replay only completed/copied segments if the newest archive file is still being written. Replaying overlapping ranges may create duplicate physical rows, so use time bounds deliberately.
+
+```bash
+cargo run --bin replay -- --archive-dir /mnt/storage/bsky-observatory/archive
+cargo run --bin replay -- --archive-dir /mnt/storage/bsky-observatory/archive \
+  --since-time-us 1789060000000000 --until-time-us 1789063600000000 --write
+```
+
 ClickHouse uses monthly `MergeTree` partitions, time/kind/actor ordering, Zstd text/evidence compression, arrays for URLs/domains, and skip indexes. Raw records and normalized rows default to 30 and 365 day retention respectively. No schema column stores a blob.
 
 ## API
