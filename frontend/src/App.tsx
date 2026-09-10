@@ -45,6 +45,18 @@ function AccountDrawer({did,onClose}:{did:string;onClose:()=>void}) {
 
 function MiniStat({label,value}:{label:string;value:string}) { return <div className="rounded-xl border border-line bg-panel p-4"><div className="text-xl font-semibold">{value}</div><div className="eyebrow mt-1">{label}</div></div> }
 const didFromTarget = (target:string) => target.startsWith('at://') ? target.slice(5).split('/')[0] : target.startsWith('did:') ? target : undefined
+function blueskyPostUrl(uri?:string,handles?:Map<string,string|undefined>) {
+  if(!uri?.startsWith('at://')) return undefined
+  const [did,collection,rkey]=uri.slice(5).split('/')
+  if(collection!=='app.bsky.feed.post'||!rkey) return undefined
+  return `https://bsky.app/profile/${encodeURIComponent(handles?.get(did)||did)}/post/${encodeURIComponent(rkey)}`
+}
+
+function EvidenceLink({uri,handles,label}:{uri?:string;handles:Map<string,string|undefined>;label:string}) {
+  const href=blueskyPostUrl(uri,handles)
+  if(!href)return null
+  return <a href={href} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-cyan hover:text-mint">{label}<ExternalLink className="size-3"/></a>
+}
 
 function useApi<T>(key:string, path:string, interval=3000) { return useQuery({ queryKey:[key], queryFn:()=>api<T>(path), refetchInterval:interval }) }
 function useIdentityMap(values:string[]) {
@@ -102,7 +114,7 @@ function ClusterTable({data,onOpen}:{data:Detection[];onOpen:(x:Detection)=>void
 function ClusterDrawer({cluster,onClose,onAccount}:{cluster:Detection;onClose:()=>void;onAccount:(did:string)=>void}) {
   const {data,isLoading}=useQuery({queryKey:['cluster',cluster.cluster_id],queryFn:()=>api<ClusterDetail>(`/api/clusters/${encodeURIComponent(cluster.cluster_id)}`)})
   const d=data||cluster
-  const handles=useIdentityMap([...d.accounts,...d.common_targets,...(data?.graph_edges.flatMap(x=>[x.source,x.target])||[])])
+  const handles=useIdentityMap([...d.accounts,...d.common_targets,...d.sample_events.flatMap(x=>[x.actor_did,x.at_uri||'',x.target||'',x.reply_parent||'',x.reply_root||'',x.quote_target||'']),...(data?.graph_edges.flatMap(x=>[x.source,x.target])||[])])
   const graphEdges=data?.graph_edges.filter(x=>x.source!==x.target)||[]
   const selfEdges=(data?.graph_edges.length||0)-graphEdges.length
   return <div className="fixed inset-0 z-50 flex justify-end bg-black/70 backdrop-blur-sm" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><aside className="scrollbar h-full w-full max-w-2xl overflow-y-auto border-l border-line bg-ink p-6 shadow-2xl"><button onClick={onClose} className="float-right rounded-lg border border-line p-2 text-dim hover:text-white" aria-label="Close"><X className="size-4"/></button><p className="eyebrow">Detection evidence</p><h2 className="mt-2 font-mono text-xl text-cyan">{d.cluster_id}</h2><p className="mt-2 text-xs text-dim">Observed {new Date(d.first_seen).toLocaleString()} — {new Date(d.last_seen).toLocaleString()}</p>
@@ -110,7 +122,7 @@ function ClusterDrawer({cluster,onClose,onAccount}:{cluster:Detection;onClose:()
     <h3 className="eyebrow mt-8 mb-3">Participating identities · {d.accounts.length}</h3><div className="flex flex-wrap gap-2">{d.accounts.map(x=><div key={x} className="max-w-full rounded-xl border border-line bg-panel px-3 py-2 text-xs"><AccountIdentity did={x} identities={new Map([[x,{did:x,handle:handles.get(x),observed_at:'',source:''}]])} onOpen={onAccount}/></div>)}</div>
     <div className="mt-8 grid gap-5 sm:grid-cols-2"><div><h3 className="eyebrow mb-3">Evidence summary</h3><dl className="space-y-2 text-sm"><Row k="Shared target ratio" v={pct(d.shared_target_ratio)}/><Row k="Median timing" v={`${n.format(d.median_timing_difference_ms)} ms`}/><Row k="Repeated content" v={n.format(d.repeated_content_count)}/><Row k="Events" v={n.format(d.event_count)}/></dl></div><div><h3 className="eyebrow mb-3">Common domains</h3>{d.common_domains.length?<div className="flex flex-wrap gap-2">{d.common_domains.map(x=><span className="rounded bg-mint/10 px-2 py-1 text-xs text-mint" key={x}>{x}</span>)}</div>:<span className="text-sm text-dim">None</span>}</div></div>
     <h3 className="eyebrow mt-8 mb-3">Interaction graph</h3>{isLoading?<Empty>Loading evidence…</Empty>:graphEdges.length?<><div className="space-y-2">{graphEdges.map((x,i)=><div className="grid grid-cols-[minmax(0,1fr)_1rem_minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-line p-3 text-xs" key={`${x.source}:${x.target}:${i}`}><IdentityLabel value={x.source} handles={handles} onOpen={onAccount}/><span className="text-mint">→</span><IdentityLabel value={x.target} handles={handles} onOpen={onAccount}/><b>×{x.event_count}</b></div>)}</div>{selfEdges>0&&<p className="mt-3 text-xs text-dim">{selfEdges} self-interaction {selfEdges===1?'edge':'edges'} omitted from the coordination graph.</p>}</>:<Empty>{selfEdges?'Only self-interactions were retained; these are not coordination evidence.':'No directed edges retained'}</Empty>}
-    <h3 className="eyebrow mt-8 mb-3">Sample events</h3><div className="space-y-2">{d.sample_events.map(x=><div key={x.event_id} className="grid grid-cols-[6rem_1fr] gap-3 rounded-lg border border-line p-3 text-xs"><span className="uppercase text-mint">{x.kind}</span><span className="flex min-w-0 items-center gap-2"><button onClick={()=>onAccount(x.actor_did)} className="truncate font-medium text-cyan hover:text-mint">{handles.get(x.actor_did)?`@${handles.get(x.actor_did)}`:shortDid(x.actor_did)}</button><span className="shrink-0 text-dim">· {new Date(x.timestamp).toLocaleTimeString()}</span></span></div>)}</div>
+    <h3 className="eyebrow mt-8 mb-3">Sample events</h3><div className="space-y-2">{d.sample_events.map(x=><article key={x.event_id} className="rounded-lg border border-line p-3 text-xs"><div className="flex flex-wrap items-center gap-2"><span className="uppercase text-mint">{x.kind}</span><button onClick={()=>onAccount(x.actor_did)} className="truncate font-medium text-cyan hover:text-mint">{handles.get(x.actor_did)?`@${handles.get(x.actor_did)}`:shortDid(x.actor_did)}</button><span className="text-dim">· {new Date(x.timestamp).toLocaleTimeString()}</span><span className="ml-auto"><EvidenceLink uri={x.at_uri||x.target} handles={handles} label="View post"/></span></div>{x.text&&<p className="mt-2 line-clamp-3 leading-relaxed text-white/80">{x.text}</p>}<div className="mt-2 flex flex-wrap gap-3"><EvidenceLink uri={x.target} handles={handles} label="Target"/><EvidenceLink uri={x.reply_parent} handles={handles} label="Reply parent"/><EvidenceLink uri={x.reply_root} handles={handles} label="Thread root"/><EvidenceLink uri={x.quote_target} handles={handles} label="Quoted post"/></div></article>)}</div>
   </aside></div>
 }
 

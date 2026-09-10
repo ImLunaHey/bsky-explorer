@@ -1,5 +1,5 @@
 export type Scores = { automation_score:number; coordination_score:number; shared_target_score:number; timing_similarity_score:number; content_similarity_score:number }
-export type EvidenceEvent = { event_id:string; actor_did:string; kind:string; timestamp:string; target?:string }
+export type EvidenceEvent = { event_id:string; actor_did:string; kind:string; timestamp:string; target?:string; at_uri?:string; text?:string; reply_parent?:string; reply_root?:string; quote_target?:string }
 export type Detection = { cluster_id:string; first_seen:string; last_seen:string; accounts:string[]; event_count:number; scores:Scores; shared_target_ratio:number; median_timing_difference_ms:number; repeated_content_count:number; common_urls:string[]; common_domains:string[]; common_targets:string[]; sample_events:EvidenceEvent[] }
 export type ClusterDetail = Detection & { timeline:{timestamp:string;event_count:number}[]; graph_edges:{source:string;target:string;event_count:number}[] }
 export type WindowRates = { seconds:number; events_per_sec:number; posts_per_sec:number; likes_per_sec:number; follows_per_sec:number; interactions_per_sec:number }
