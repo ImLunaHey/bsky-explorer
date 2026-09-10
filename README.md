@@ -64,6 +64,34 @@ curl -fsS localhost:3000/readyz
 
 System scope is explicit in the API: load, CPU utilization, and machine uptime are container-visible host kernel values; process and cgroup CPU percentages are sampled from their respective cumulative counters. Memory includes both this process and its cgroup where available, and array capacity is measured on the archive bind mount. ClickHouse reports active rows/parts and compressed versus uncompressed bytes per table, plus pending mutations, active queries, and server errors since restart.
 
+## Account and relationship backfill
+
+The optional `backfill_account` CLI reads one public repository through its PDS
+using `describeRepo` and paginated `listRecords`. It normalizes every collection,
+removes blob values, preserves valid record `createdAt` timestamps, and skips AT
+URIs already in ClickHouse.
+
+`backfill_associations` is a deliberately account-scoped second stage. It reads
+only post URIs already retained for the selected DID, then queries the fixed
+public Bluesky AppView for paginated likes, reposters and quotes plus a depth-one
+thread view. It never crawls the repositories of interacting accounts. Progress
+is atomically checkpointed on disk and deterministic event IDs make restarts
+idempotent.
+
+```bash
+cargo run --release --bin backfill_associations -- \
+  --did did:plc:example \
+  --checkpoint /mnt/storage/bsky-observatory/backfill/example-associations.json
+```
+
+AppView's `getPostThread` response is not cursor-paginated. Consequently reply
+coverage is bounded to the direct replies returned by a depth-one request and
+must not be interpreted as an exhaustive reply history. `getRepostedBy` does
+not expose the repost event timestamp, so those derived observations use the
+time they were observed. Likes preserve `createdAt` (or `indexedAt`), while
+quotes and replies preserve the post record's `createdAt` when valid. Media and
+blob data are never retained.
+
 ## MVP boundaries
 
 Hot state is process-local and rebuilds from new traffic; detections persist in ClickHouse. Growth rates are measured from the process-start disk-size baseline, so they read zero until new durable bytes arrive and reset after restart. Exact, normalized, and SimHash fingerprints are stored, while initial cluster generation uses repeated targets, normalized content and domains in temporal windows. Natural next steps are SimHash locality buckets, richer graph/community analysis, ClickHouse materialized rollups, and authentication. Semantic analysis should remain optional and limited to flagged/trending content.

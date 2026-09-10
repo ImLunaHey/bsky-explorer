@@ -118,6 +118,34 @@ pub struct AccountAnalytics {
     pub event_kinds: Vec<AccountKindCount>,
 }
 #[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct AccountCollectionStat {
+    pub collection: String,
+    pub event_count: u64,
+    pub first_seen_ms: i64,
+    pub last_seen_ms: i64,
+}
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct AccountCollectionSample {
+    pub collection: String,
+    pub at_uri: String,
+    pub operation: String,
+    pub timestamp_ms: i64,
+    pub record_json: String,
+}
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct AccountListMembership {
+    pub listitem_uri: String,
+    pub list_uri: String,
+    pub creator_did: String,
+    pub observed_at_ms: i64,
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountLexiconInventory {
+    pub collections: Vec<AccountCollectionStat>,
+    pub samples: Vec<AccountCollectionSample>,
+    pub inbound_list_memberships: Vec<AccountListMembership>,
+}
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
 pub struct SearchEvent {
     pub event_id: String,
     pub timestamp_ms: i64,
@@ -141,6 +169,10 @@ pub struct SearchIdentity {
 #[derive(Debug, Clone, Deserialize, Row)]
 struct StoredUri {
     at_uri: String,
+}
+#[derive(Debug, Clone, Deserialize, Row)]
+struct StoredEventId {
+    event_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -425,6 +457,36 @@ impl Storage {
             event_kinds,
         })
     }
+
+    /// A bounded repository inventory for account/profile exploration. The
+    /// aggregate and samples are separate so large record JSON is never read
+    /// while computing counts.
+    pub async fn account_lexicon_inventory(&self, did: &str) -> Result<AccountLexiconInventory> {
+        #[derive(Debug, Deserialize, Row)]
+        struct MembershipRow {
+            listitem_uri: String,
+            list_uri: String,
+            observed_at_ms: i64,
+        }
+        let stats = self.client.query(
+            "SELECT collection, count() AS event_count, toUnixTimestamp64Milli(min(timestamp)) AS first_seen_ms, toUnixTimestamp64Milli(max(timestamp)) AS last_seen_ms FROM events WHERE actor_did=? GROUP BY collection ORDER BY event_count DESC, collection LIMIT 200"
+        ).bind(did).fetch_all::<AccountCollectionStat>();
+        let samples = self.client.query(
+            "SELECT collection, at_uri, operation, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, record_json FROM events WHERE actor_did=? AND record_json!='' ORDER BY timestamp DESC LIMIT 3 BY collection LIMIT 600"
+        ).bind(did).fetch_all::<AccountCollectionSample>();
+        // A listitem delete has no record body. Collapse each listitem URI to
+        // its latest operation, but retain the latest non-empty record so an
+        // observed membership can be attributed without inventing history.
+        let memberships = self.client.query(
+            "SELECT listitem_uri, JSONExtractString(record_json, 'list') AS list_uri, toUnixTimestamp64Milli(observed_at) AS observed_at_ms FROM (SELECT at_uri AS listitem_uri, argMax(operation,time_us) AS latest_operation, argMaxIf(record_json,time_us,record_json!='') AS record_json, max(timestamp) AS observed_at FROM events WHERE collection='app.bsky.graph.listitem' GROUP BY at_uri HAVING latest_operation!='delete') WHERE JSONExtractString(record_json,'subject')=? AND list_uri!='' ORDER BY observed_at DESC LIMIT 200"
+        ).bind(did).fetch_all::<MembershipRow>();
+        let (collections, samples, memberships) = tokio::try_join!(stats, samples, memberships)?;
+        let inbound_list_memberships = memberships.into_iter().map(|row| {
+            let creator_did = row.list_uri.strip_prefix("at://").and_then(|value| value.split('/').next()).unwrap_or_default().to_owned();
+            AccountListMembership { listitem_uri: row.listitem_uri, list_uri: row.list_uri, creator_did, observed_at_ms: row.observed_at_ms }
+        }).collect();
+        Ok(AccountLexiconInventory { collections, samples, inbound_list_memberships })
+    }
     /// Searches retained normalized events. Exact identifiers search the full
     /// retention period; free-text searches are deliberately bounded to the
     /// last 30 days so an interactive request cannot scan every partition.
@@ -559,6 +621,34 @@ impl Storage {
             .await?
             .into_iter()
             .map(|row| row.at_uri)
+            .collect())
+    }
+    pub async fn account_post_uris(&self, did: &str) -> Result<Vec<String>> {
+        Ok(self
+            .client
+            .query("SELECT DISTINCT at_uri FROM events WHERE actor_did = ? AND collection = 'app.bsky.feed.post' AND operation != 'delete' ORDER BY at_uri")
+            .bind(did)
+            .fetch_all::<StoredUri>()
+            .await?
+            .into_iter()
+            .map(|row| row.at_uri)
+            .collect())
+    }
+    pub async fn existing_event_ids(
+        &self,
+        event_ids: &[String],
+    ) -> Result<std::collections::HashSet<String>> {
+        if event_ids.is_empty() {
+            return Ok(std::collections::HashSet::new());
+        }
+        Ok(self
+            .client
+            .query("SELECT DISTINCT event_id FROM events WHERE has(?, event_id)")
+            .bind(event_ids)
+            .fetch_all::<StoredEventId>()
+            .await?
+            .into_iter()
+            .map(|row| row.event_id)
             .collect())
     }
     pub async fn record_interaction_counts(&self, uri: &str) -> Result<RecordInteractionCounts> {
