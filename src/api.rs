@@ -1,0 +1,85 @@
+use crate::{analysis::Analyzer, archive::Archive, metrics::Metrics, storage::Storage};
+use axum::{
+    Json, Router,
+    extract::{Path, State},
+    http::StatusCode,
+    response::{Html, IntoResponse},
+    routing::get,
+};
+use serde::Serialize;
+use std::{path::PathBuf, sync::Arc};
+#[derive(Clone)]
+pub struct AppState {
+    pub analysis: Analyzer,
+    pub metrics: Arc<Metrics>,
+    pub storage: Storage,
+    pub archive_dir: PathBuf,
+}
+pub fn router(s: AppState) -> Router {
+    Router::new()
+        .route("/", get(index))
+        .route("/metrics", get(metrics))
+        .route("/api/stats", get(stats))
+        .route("/api/trending/urls", get(urls))
+        .route("/api/trending/domains", get(domains))
+        .route("/api/anomalies", get(anomalies))
+        .route("/api/clusters", get(anomalies))
+        .route("/api/clusters/{id}", get(cluster))
+        .route("/api/accounts/{did}", get(account))
+        .route("/api/storage", get(storage))
+        .with_state(s)
+}
+async fn index() -> Html<&'static str> {
+    Html(include_str!("../static/index.html"))
+}
+async fn metrics(State(s): State<AppState>) -> String {
+    s.metrics.render()
+}
+async fn stats(State(s): State<AppState>) -> Json<crate::analysis::Rates> {
+    Json(s.analysis.rates())
+}
+async fn urls(State(s): State<AppState>) -> Json<Vec<(String, u64)>> {
+    Json(s.analysis.top(false))
+}
+async fn domains(State(s): State<AppState>) -> Json<Vec<(String, u64)>> {
+    Json(s.analysis.top(true))
+}
+async fn anomalies(State(s): State<AppState>) -> Json<Vec<crate::model::Detection>> {
+    Json(s.analysis.detections())
+}
+async fn cluster(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    s.analysis
+        .detection(&id)
+        .map(Json)
+        .map(IntoResponse::into_response)
+        .unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
+}
+async fn account(
+    State(s): State<AppState>,
+    Path(did): Path<String>,
+) -> Json<crate::analysis::AccountSummary> {
+    Json(s.analysis.account(&did))
+}
+#[derive(Serialize)]
+struct StorageStats {
+    raw_archive_bytes: u64,
+    clickhouse_bytes: u64,
+    derived_bytes: u64,
+    bytes_ingested_per_hour: f64,
+    projected_monthly_bytes: f64,
+    projected_yearly_bytes: f64,
+}
+async fn storage(State(s): State<AppState>) -> Json<StorageStats> {
+    let raw = Archive::total_size(&s.archive_dir);
+    let ch = s.storage.bytes().await.unwrap_or(0);
+    s.metrics.clickhouse_bytes.set(ch as i64);
+    let hourly = s.analysis.rates().events_per_sec * 3600.0 * 400.0;
+    Json(StorageStats {
+        raw_archive_bytes: raw,
+        clickhouse_bytes: ch,
+        derived_bytes: 0,
+        bytes_ingested_per_hour: hourly,
+        projected_monthly_bytes: hourly * 24.0 * 30.0,
+        projected_yearly_bytes: hourly * 24.0 * 365.0,
+    })
+}

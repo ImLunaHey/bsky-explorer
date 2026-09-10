@@ -1,0 +1,355 @@
+use crate::model::{Detection, EvidenceEvent, NormalizedEvent, ScoreBreakdown};
+use chrono::{Duration, Utc};
+use parking_lot::RwLock;
+use serde::Serialize;
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    sync::Arc,
+};
+
+#[derive(Clone, Serialize)]
+pub struct Rates {
+    pub events_per_sec: f64,
+    pub posts_per_sec: f64,
+    pub likes_per_sec: f64,
+    pub follows_per_sec: f64,
+    pub interactions_per_sec: f64,
+}
+#[derive(Clone, Serialize)]
+pub struct AccountSummary {
+    pub did: String,
+    pub events_24h: usize,
+    pub posts_24h: usize,
+    pub unique_targets: usize,
+    pub automation_score: f64,
+}
+#[derive(Clone)]
+pub struct Analyzer {
+    inner: Arc<RwLock<State>>,
+    coordination_secs: i64,
+    min_accounts: usize,
+    min_events: usize,
+    retention_hours: i64,
+}
+struct State {
+    events: VecDeque<NormalizedEvent>,
+    /// Highest event timestamp observed. Retention follows event time so that
+    /// archives can be replayed without every historical event being evicted.
+    watermark: Option<chrono::DateTime<Utc>>,
+    detections: HashMap<String, Detection>,
+    url_counts: HashMap<String, u64>,
+    domain_counts: HashMap<String, u64>,
+}
+impl Analyzer {
+    pub fn new(
+        coordination_secs: i64,
+        min_accounts: usize,
+        min_events: usize,
+        retention_hours: i64,
+    ) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(State {
+                events: VecDeque::new(),
+                watermark: None,
+                detections: HashMap::new(),
+                url_counts: HashMap::new(),
+                domain_counts: HashMap::new(),
+            })),
+            coordination_secs,
+            min_accounts,
+            min_events,
+            retention_hours,
+        }
+    }
+    pub fn observe(&self, e: NormalizedEvent) -> Option<Detection> {
+        let mut s = self.inner.write();
+        for x in &e.urls {
+            *s.url_counts.entry(x.clone()).or_default() += 1
+        }
+        for x in &e.domains {
+            *s.domain_counts.entry(x.clone()).or_default() += 1
+        }
+        s.events.push_back(e.clone());
+        s.watermark = Some(s.watermark.map_or(e.timestamp, |w| w.max(e.timestamp)));
+        let cutoff = s.watermark.unwrap() - Duration::hours(self.retention_hours);
+        // Jetstream normally arrives ordered, but retain correct behavior for
+        // replayed/out-of-order events too.
+        s.events.retain(|x| x.timestamp >= cutoff);
+        let key = e
+            .target
+            .clone()
+            .or_else(|| e.normalized_text_hash.map(|h| format!("text:{h}")))
+            .or_else(|| e.domains.first().map(|d| format!("domain:{d}")))?;
+        let near: Vec<_> = s
+            .events
+            .iter()
+            .filter(|x| {
+                x.actor_did != e.actor_did
+                    && (x.timestamp - e.timestamp).num_seconds().abs() <= self.coordination_secs
+                    && (x.target.as_ref() == e.target.as_ref() && e.target.is_some()
+                        || x.normalized_text_hash.map(|h| format!("text:{h}")) == Some(key.clone())
+                        || near_simhash(x.simhash, e.simhash)
+                        || (!e.urls.is_empty() && x.urls.iter().any(|u| e.urls.contains(u)))
+                        || x.domains.iter().any(|d| key == format!("domain:{d}")))
+            })
+            .cloned()
+            .chain(std::iter::once(e.clone()))
+            .collect();
+        let accounts: HashSet<_> = near.iter().map(|x| x.actor_did.clone()).collect();
+        if accounts.len() < self.min_accounts || near.len() < self.min_events {
+            return None;
+        }
+        let mut accounts: Vec<_> = accounts.into_iter().collect();
+        accounts.sort();
+        let cluster_id = format!(
+            "coord-{:016x}",
+            xxhash_rust::xxh3::xxh3_64(format!("{}:{}", key, accounts.join(",")).as_bytes())
+        );
+        let first = near.iter().map(|x| x.timestamp).min().unwrap();
+        let last = near.iter().map(|x| x.timestamp).max().unwrap();
+        let repeat = near
+            .iter()
+            .filter(|x| x.normalized_text_hash.is_some())
+            .count();
+        let timing = median_timing_difference_ms(&near);
+        let target_ratio = dominant_ratio(near.iter().filter_map(|x| x.target.as_deref()));
+        let content = content_similarity(&near);
+        let timing_score =
+            (1.0 - timing / (self.coordination_secs as f64 * 1000.0)).clamp(0.0, 1.0);
+        let coordination =
+            (0.45 * target_ratio + 0.3 * timing_score + 0.25 * content).clamp(0.0, 1.0);
+        let urls = counts(near.iter().flat_map(|x| x.urls.clone()), 5);
+        let domains = counts(near.iter().flat_map(|x| x.domains.clone()), 5);
+        let targets = counts(near.iter().filter_map(|x| x.target.clone()), 5);
+        let d = Detection {
+            cluster_id: cluster_id.clone(),
+            first_seen: first,
+            last_seen: last,
+            accounts,
+            event_count: near.len(),
+            scores: ScoreBreakdown {
+                automation_score: 0.0,
+                coordination_score: coordination,
+                shared_target_score: target_ratio,
+                timing_similarity_score: timing_score,
+                content_similarity_score: content,
+            },
+            shared_target_ratio: target_ratio,
+            median_timing_difference_ms: timing,
+            repeated_content_count: repeat,
+            common_urls: urls,
+            common_domains: domains,
+            common_targets: targets,
+            sample_events: near
+                .iter()
+                .take(12)
+                .map(|x| EvidenceEvent {
+                    event_id: x.event_id.clone(),
+                    actor_did: x.actor_did.clone(),
+                    kind: x.kind.as_str().into(),
+                    timestamp: x.timestamp,
+                    target: x.target.clone(),
+                })
+                .collect(),
+        };
+        s.detections.insert(cluster_id, d.clone());
+        Some(d)
+    }
+    pub fn rates(&self) -> Rates {
+        let s = self.inner.read();
+        let cutoff = Utc::now() - Duration::seconds(60);
+        let xs: Vec<_> = s.events.iter().filter(|e| e.timestamp >= cutoff).collect();
+        let n = |k: &str| xs.iter().filter(|e| e.kind.as_str() == k).count() as f64 / 60.0;
+        Rates {
+            events_per_sec: xs.len() as f64 / 60.0,
+            posts_per_sec: n("post") + n("reply") + n("quote"),
+            likes_per_sec: n("like"),
+            follows_per_sec: n("follow"),
+            interactions_per_sec: xs
+                .iter()
+                .filter(|e| !matches!(e.kind, crate::model::EventKind::Post))
+                .count() as f64
+                / 60.0,
+        }
+    }
+    pub fn detections(&self) -> Vec<Detection> {
+        self.inner.read().detections.values().cloned().collect()
+    }
+    pub fn detection(&self, id: &str) -> Option<Detection> {
+        self.inner.read().detections.get(id).cloned()
+    }
+    pub fn top(&self, domains: bool) -> Vec<(String, u64)> {
+        let s = self.inner.read();
+        let m = if domains {
+            &s.domain_counts
+        } else {
+            &s.url_counts
+        };
+        let mut v: Vec<_> = m.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        v.sort_by_key(|x| std::cmp::Reverse(x.1));
+        v.truncate(20);
+        v
+    }
+    pub fn account(&self, did: &str) -> AccountSummary {
+        let s = self.inner.read();
+        let cutoff = s.watermark.unwrap_or_else(Utc::now) - Duration::hours(24);
+        let e: Vec<_> = s
+            .events
+            .iter()
+            .filter(|e| e.actor_did == did && e.timestamp >= cutoff)
+            .collect();
+        let posts = e
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.kind,
+                    crate::model::EventKind::Post
+                        | crate::model::EventKind::Reply
+                        | crate::model::EventKind::Quote
+                )
+            })
+            .count();
+        let targets: HashSet<_> = e.iter().filter_map(|e| e.target.clone()).collect();
+        let mut timestamps: Vec<_> = e.iter().map(|e| e.timestamp).collect();
+        timestamps.sort_unstable();
+        let mut intervals: Vec<_> = timestamps
+            .windows(2)
+            .map(|w| (w[1] - w[0]).num_seconds())
+            .collect();
+        let regularity = if intervals.len() > 3 {
+            let mean = intervals.iter().sum::<i64>() as f64 / intervals.len() as f64;
+            let variance = intervals
+                .drain(..)
+                .map(|x| (x as f64 - mean).powi(2))
+                .sum::<f64>()
+                / e.len() as f64;
+            (1.0 - variance.sqrt() / (mean.abs() + 1.0)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let volume = (e.len() as f64 / 500.0).min(1.0);
+        AccountSummary {
+            did: did.into(),
+            events_24h: e.len(),
+            posts_24h: posts,
+            unique_targets: targets.len(),
+            automation_score: 0.6 * volume + 0.4 * regularity,
+        }
+    }
+}
+fn near_simhash(a: Option<u64>, b: Option<u64>) -> bool {
+    matches!((a, b), (Some(a), Some(b)) if (a ^ b).count_ones() <= 3)
+}
+
+fn dominant_ratio<'a>(items: impl Iterator<Item = &'a str>) -> f64 {
+    let mut counts = HashMap::new();
+    let mut total = 0usize;
+    for item in items {
+        *counts.entry(item).or_insert(0usize) += 1;
+        total += 1;
+    }
+    counts.values().copied().max().unwrap_or(0) as f64 / total.max(1) as f64
+}
+
+fn content_similarity(events: &[NormalizedEvent]) -> f64 {
+    let with_content: Vec<_> = events
+        .iter()
+        .filter(|e| e.normalized_text_hash.is_some() || e.simhash.is_some())
+        .collect();
+    if with_content.is_empty() {
+        return 0.0;
+    }
+    let best = with_content
+        .iter()
+        .map(|candidate| {
+            with_content
+                .iter()
+                .filter(|other| {
+                    candidate.normalized_text_hash == other.normalized_text_hash
+                        || near_simhash(candidate.simhash, other.simhash)
+                })
+                .count()
+        })
+        .max()
+        .unwrap_or(0);
+    best as f64 / with_content.len() as f64
+}
+
+fn median_timing_difference_ms(events: &[NormalizedEvent]) -> f64 {
+    let mut timestamps: Vec<_> = events.iter().map(|e| e.timestamp).collect();
+    timestamps.sort_unstable();
+    let mut gaps: Vec<_> = timestamps
+        .windows(2)
+        .map(|w| (w[1] - w[0]).num_milliseconds().unsigned_abs())
+        .collect();
+    if gaps.is_empty() {
+        return 0.0;
+    }
+    gaps.sort_unstable();
+    let mid = gaps.len() / 2;
+    if gaps.len() % 2 == 0 {
+        (gaps[mid - 1] + gaps[mid]) as f64 / 2.0
+    } else {
+        gaps[mid] as f64
+    }
+}
+fn counts<I: Iterator<Item = String>>(it: I, n: usize) -> Vec<String> {
+    let mut m = HashMap::new();
+    for x in it {
+        *m.entry(x).or_insert(0usize) += 1
+    }
+    let mut v: Vec<_> = m.into_iter().collect();
+    v.sort_by_key(|x| std::cmp::Reverse(x.1));
+    v.into_iter().take(n).map(|x| x.0).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::EventKind;
+    fn e(actor: &str, t: i64) -> NormalizedEvent {
+        NormalizedEvent {
+            event_id: format!("{actor}{t}"),
+            time_us: t * 1_000_000,
+            timestamp: chrono::DateTime::from_timestamp(t, 0).unwrap(),
+            actor_did: actor.into(),
+            kind: EventKind::Repost,
+            collection: "x".into(),
+            rkey: "r".into(),
+            at_uri: "u".into(),
+            target: Some("at://target".into()),
+            target_did: None,
+            text: None,
+            reply_parent: None,
+            reply_root: None,
+            quote_target: None,
+            urls: vec![],
+            domains: vec![],
+            languages: vec![],
+            text_hash: None,
+            normalized_text_hash: None,
+            simhash: None,
+        }
+    }
+    #[test]
+    fn coordinated_group_scores() {
+        let a = Analyzer::new(30, 3, 3, 24);
+        assert!(a.observe(e("a", 100)).is_none());
+        assert!(a.observe(e("b", 101)).is_none());
+        let d = a.observe(e("c", 102)).unwrap();
+        assert_eq!(d.accounts.len(), 3);
+        assert!(d.scores.coordination_score > 0.6)
+    }
+    #[test]
+    fn organic_burst_does_not_form_cluster() {
+        let a = Analyzer::new(30, 3, 3, 24);
+        for (i, target) in ["at://one", "at://two", "at://three", "at://four"]
+            .iter()
+            .enumerate()
+        {
+            let mut event = e(&format!("did:plc:organic{i}"), 100 + i as i64);
+            event.target = Some((*target).into());
+            assert!(a.observe(event).is_none());
+        }
+    }
+}

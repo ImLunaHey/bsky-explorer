@@ -1,0 +1,15 @@
+{"scenario":"organic","actor":"did:plc:organic1","second":1,"kind":"post","text":"What a match tonight"}
+{"scenario":"organic","actor":"did:plc:organic2","second":2,"kind":"reply","target":"at://organic1/post/1","text":"Absolutely!"}
+{"scenario":"organic","actor":"did:plc:organic3","second":3,"kind":"like","target":"at://organic1/post/1"}
+{"scenario":"high_volume","actor":"did:plc:clockwork","second":10,"kind":"post","text":"scheduled update 1"}
+{"scenario":"high_volume","actor":"did:plc:clockwork","second":20,"kind":"post","text":"scheduled update 2"}
+{"scenario":"high_volume","actor":"did:plc:clockwork","second":30,"kind":"post","text":"scheduled update 3"}
+{"scenario":"synchronized_repost","actor":"did:plc:sync1","second":40,"kind":"repost","target":"at://target/feed/post/a"}
+{"scenario":"synchronized_repost","actor":"did:plc:sync2","second":41,"kind":"repost","target":"at://target/feed/post/a"}
+{"scenario":"synchronized_repost","actor":"did:plc:sync3","second":42,"kind":"repost","target":"at://target/feed/post/a"}
+{"scenario":"duplicate_spam","actor":"did:plc:spam1","second":50,"kind":"post","text":"Amazing offer https://campaign.invalid/a"}
+{"scenario":"duplicate_spam","actor":"did:plc:spam2","second":51,"kind":"post","text":"AMAZING OFFER https://campaign.invalid/b"}
+{"scenario":"duplicate_spam","actor":"did:plc:spam3","second":52,"kind":"post","text":"Amazing  offer https://campaign.invalid/c"}
+{"scenario":"url_amplification","actor":"did:plc:url1","second":60,"kind":"post","text":"read https://example.invalid/campaign"}
+{"scenario":"url_amplification","actor":"did:plc:url2","second":61,"kind":"post","text":"look https://example.invalid/campaign"}
+{"scenario":"url_amplification","actor":"did:plc:url3","second":62,"kind":"post","text":"news https://example.invalid/campaign"}
