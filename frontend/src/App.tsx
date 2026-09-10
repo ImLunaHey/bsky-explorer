@@ -543,7 +543,7 @@ function RankList({
               className="min-w-0 flex-1 truncate hover:text-orange-300"
               title={item.key}
             >
-              {item.sample || "No textual content retained"}
+              {item.sample || item.key}
             </span>
             <span className="font-mono text-xs text-mint">
               {compact.format(item.count)}

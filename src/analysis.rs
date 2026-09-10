@@ -590,7 +590,7 @@ impl Analyzer {
         let end = s.watermark.unwrap_or_else(Utc::now);
         let recent = end - Duration::minutes(5);
         let previous = end - Duration::minutes(10);
-        let mut grouped: HashMap<String, (u64, u64)> = HashMap::new();
+        let mut grouped: HashMap<String, (u64, u64, Option<String>)> = HashMap::new();
         let retained_posts: HashMap<&str, &NormalizedEvent> = s
             .events
             .iter()
@@ -606,15 +606,20 @@ impl Analyzer {
                 } else {
                     counts.1 += 1
                 }
+                if let Some(text) = event.text.as_deref().filter(|text| !text.trim().is_empty()) {
+                    counts.2 = Some(truncate_sample(text));
+                }
             }
         }
         let mut result: Vec<_> = grouped
             .into_iter()
-            .map(|(key, (now, before))| TrendingItem {
+            .map(|(key, (now, before, reply_sample))| TrendingItem {
                 sample: retained_posts
                     .get(key.as_str())
                     .and_then(|event| event.text.as_deref())
-                    .map(truncate_sample),
+                    .filter(|text| !text.trim().is_empty())
+                    .map(truncate_sample)
+                    .or(reply_sample),
                 key,
                 count: now + before,
                 recent_count: now,
