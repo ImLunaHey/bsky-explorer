@@ -74,6 +74,46 @@ function IdentityLabel({value,handles,onOpen}:{value:string;handles:Map<string,s
   return <span className="min-w-0" title={value}><button type="button" onClick={()=>onOpen(did)} className="block max-w-full truncate font-medium text-cyan hover:text-mint">{handle?`@${handle}`:shortDid(did)}</button>{handle&&<span className="block truncate font-mono text-[10px] text-dim">{shortDid(did)}</span>}{suffix&&<span className="block truncate font-mono text-[10px] text-dim">{suffix}</span>}</span>
 }
 
+type GraphEdge = ClusterDetail['graph_edges'][number]
+
+function InteractionGraph({edges,handles,onAccount}:{edges:GraphEdge[];handles:Map<string,string|undefined>;onAccount:(did:string)=>void}) {
+  const [hovered,setHovered]=useState<string>()
+  const nodes=useMemo(()=>{
+    const weights=new Map<string,number>()
+    edges.forEach(edge=>{
+      weights.set(edge.source,(weights.get(edge.source)||0)+edge.event_count)
+      weights.set(edge.target,(weights.get(edge.target)||0)+edge.event_count)
+    })
+    const ordered=[...weights].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0]))
+    const center={x:400,y:225}, radius=Math.min(165,80+ordered.length*7)
+    return ordered.map(([id,weight],index)=>{
+      const angle=-Math.PI/2+(index/ordered.length)*Math.PI*2
+      return {id,weight,x:center.x+Math.cos(angle)*radius,y:center.y+Math.sin(angle)*radius}
+    })
+  },[edges])
+  const positions=new Map(nodes.map(node=>[node.id,node]))
+  const maxEdge=Math.max(...edges.map(edge=>edge.event_count),1)
+  const maxNode=Math.max(...nodes.map(node=>node.weight),1)
+  const label=(value:string)=>{const did=didFromTarget(value);return did?(handles.get(did)?`@${handles.get(did)}`:shortDid(did)):value}
+  const activeEdges=hovered?edges.filter(edge=>edge.source===hovered||edge.target===hovered):[]
+  const activeWeight=activeEdges.reduce((sum,edge)=>sum+edge.event_count,0)
+  return <div className="overflow-hidden rounded-xl border border-line bg-black">
+    <svg viewBox="0 0 800 450" className="block aspect-[16/9] min-h-72 w-full" role="img" aria-label={`Interaction network with ${nodes.length} accounts and ${edges.length} directed connections`}>
+      <defs><marker id="graph-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#ff8a1f"/></marker></defs>
+      <g>
+        {edges.map((edge,index)=>{const source=positions.get(edge.source),target=positions.get(edge.target);if(!source||!target)return null;const selected=!hovered||edge.source===hovered||edge.target===hovered;return <line key={`${edge.source}:${edge.target}:${index}`} x1={source.x} y1={source.y} x2={target.x} y2={target.y} stroke="#ff8a1f" strokeWidth={1+5*edge.event_count/maxEdge} strokeOpacity={selected ? .72 : .09} markerEnd="url(#graph-arrow)" className="transition-opacity"/>})}
+      </g>
+      <g>{nodes.map(node=>{const did=didFromTarget(node.id),selected=hovered===node.id,connected=!hovered||selected||activeEdges.some(edge=>edge.source===node.id||edge.target===node.id);const size=8+10*Math.sqrt(node.weight/maxNode);return <g key={node.id} transform={`translate(${node.x} ${node.y})`} role={did?'button':undefined} tabIndex={did?0:undefined} aria-label={`${label(node.id)}, ${node.weight} interactions`} onMouseEnter={()=>setHovered(node.id)} onMouseLeave={()=>setHovered(undefined)} onFocus={()=>setHovered(node.id)} onBlur={()=>setHovered(undefined)} onClick={()=>did&&onAccount(did)} onKeyDown={event=>{if(did&&(event.key==='Enter'||event.key===' ')){event.preventDefault();onAccount(did)}}} className={did?'cursor-pointer outline-none':'outline-none'} opacity={connected?1:.22}>
+        <circle r={size+7} fill="transparent"/><circle r={size} fill={selected?'#ffb15c':'#160d06'} stroke={selected?'#fff2e5':'#ff8a1f'} strokeWidth={selected?3:2}/><text y={size+16} textAnchor="middle" fill={selected?'#fff2e5':'#cbbeb3'} fontSize="11" fontFamily="ui-monospace, monospace" paintOrder="stroke" stroke="#000" strokeWidth="4">{label(node.id).length>23?`${label(node.id).slice(0,21)}…`:label(node.id)}</text>
+      </g>})}</g>
+    </svg>
+    <div className="flex min-h-11 flex-wrap items-center gap-x-5 gap-y-2 border-t border-line px-4 py-2 text-xs text-dim">
+      <span><i className="mr-1.5 inline-block size-2.5 rounded-full border-2 border-mint"/>Account · size = interaction volume</span><span><i className="mr-1.5 inline-block h-0.5 w-5 bg-mint align-middle"/>Directed edge · width = event count</span>
+      {hovered&&<span className="ml-auto text-white"><b className="text-cyan">{label(hovered)}</b> · {n.format(activeWeight)} connected events · click for account</span>}
+    </div>
+  </div>
+}
+
 function Stat({label,value,unit,icon:Icon,tone='mint'}:{label:string;value:string;unit?:string;icon:typeof Activity;tone?:'mint'|'cyan'|'amber'}) {
   const color=tone==='cyan'?'text-cyan':tone==='amber'?'text-amber-300':'text-mint'
   return <div className="panel p-5"><div className="flex items-center justify-between"><span className="eyebrow">{label}</span><Icon className={`${color} size-4`} /></div><div className="mt-4 flex items-baseline gap-2"><span className="text-3xl font-semibold tracking-tight">{value}</span>{unit&&<span className="text-xs text-dim">{unit}</span>}</div></div>
@@ -125,7 +165,7 @@ function ClusterPage({clusterId,onAccount,onRecord}:{clusterId:string;onAccount:
     <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-5">{Object.entries(d.scores).map(([k,v])=><div className="rounded-xl border border-line p-3" key={k}><div className="text-lg font-semibold">{v.toFixed(2)}</div><div className="mt-1 text-[10px] uppercase tracking-wide text-dim">{k.replaceAll('_',' ')}</div></div>)}</div>
     <h3 className="eyebrow mt-8 mb-3">Participating identities · {d.accounts.length}</h3><div className="flex flex-wrap gap-2">{d.accounts.map(x=><div key={x} className="max-w-full rounded-xl border border-line bg-panel px-3 py-2 text-xs"><AccountIdentity did={x} identities={new Map([[x,{did:x,handle:handles.get(x),observed_at:'',source:''}]])} onOpen={onAccount}/></div>)}</div>
     <div className="mt-8 grid gap-5 sm:grid-cols-2"><div><h3 className="eyebrow mb-3">Evidence summary</h3><dl className="space-y-2 text-sm"><Row k="Shared target ratio" v={pct(d.shared_target_ratio)}/><Row k="Median timing" v={`${n.format(d.median_timing_difference_ms)} ms`}/><Row k="Repeated content" v={n.format(d.repeated_content_count)}/><Row k="Events" v={n.format(d.event_count)}/></dl></div><div><h3 className="eyebrow mb-3">Common domains</h3>{d.common_domains.length?<div className="flex flex-wrap gap-2">{d.common_domains.map(x=><span className="rounded bg-mint/10 px-2 py-1 text-xs text-mint" key={x}>{x}</span>)}</div>:<span className="text-sm text-dim">None</span>}</div></div>
-    <h3 className="eyebrow mt-8 mb-3">Interaction graph</h3>{graphEdges.length?<><div className="space-y-2">{graphEdges.map((x,i)=><div className="grid grid-cols-[minmax(0,1fr)_1rem_minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-line p-3 text-xs" key={`${x.source}:${x.target}:${i}`}><IdentityLabel value={x.source} handles={handles} onOpen={onAccount}/><span className="text-mint">→</span><IdentityLabel value={x.target} handles={handles} onOpen={onAccount}/><b>×{x.event_count}</b></div>)}</div>{selfEdges>0&&<p className="mt-3 text-xs text-dim">{selfEdges} self-interaction {selfEdges===1?'edge':'edges'} omitted from the coordination graph.</p>}</>:<Empty>{selfEdges?'Only self-interactions were retained; these are not coordination evidence.':'No directed edges retained'}</Empty>}
+    <h3 className="eyebrow mt-8 mb-3">Interaction graph</h3>{graphEdges.length?<><InteractionGraph edges={graphEdges} handles={handles} onAccount={onAccount}/>{selfEdges>0&&<p className="mt-3 text-xs text-dim">{selfEdges} self-interaction {selfEdges===1?'edge':'edges'} omitted from the coordination graph.</p>}</>:<Empty>{selfEdges?'Only self-interactions were retained; these are not coordination evidence.':'No directed edges retained'}</Empty>}
     <h3 className="eyebrow mt-8 mb-3">Sample events</h3><div className="space-y-2">{d.sample_events.map(x=><article key={x.event_id} className="rounded-lg border border-line p-3 text-xs"><div className="flex flex-wrap items-center gap-2"><span className="uppercase text-mint">{x.kind}</span><button onClick={()=>onAccount(x.actor_did)} className="truncate font-medium text-cyan hover:text-mint">{handles.get(x.actor_did)?`@${handles.get(x.actor_did)}`:shortDid(x.actor_did)}</button><span className="text-dim">· {new Date(x.timestamp).toLocaleTimeString()}</span><span className="ml-auto"><EvidenceLink uri={x.at_uri||x.target} label="View post" onOpen={onRecord}/></span></div>{x.text&&<p className="mt-2 line-clamp-3 leading-relaxed text-white/80">{x.text}</p>}<div className="mt-2 flex flex-wrap gap-3"><EvidenceLink uri={x.target} label="Target" onOpen={onRecord}/><EvidenceLink uri={x.reply_parent} label="Reply parent" onOpen={onRecord}/><EvidenceLink uri={x.reply_root} label="Thread root" onOpen={onRecord}/><EvidenceLink uri={x.quote_target} label="Quoted post" onOpen={onRecord}/></div></article>)}</div>
   </section>
 }
