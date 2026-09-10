@@ -49,6 +49,10 @@ export function LiveUpdates() {
       } catch { /* Ignore an invalid frame; EventSource remains connected. */ }
     })
     source.addEventListener('firehose', event => {
+      // The global connection also carries rates. Avoid JSON parsing, cache
+      // churn, and main-thread work for the high-volume feed on every other
+      // route; the Firehose page catches up from its initial HTTP snapshot.
+      if (window.location.pathname !== '/firehose') return
       try {
         const incoming = JSON.parse(event.data) as FirehoseEvent
         pendingEvents.current.push(incoming)

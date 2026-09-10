@@ -401,7 +401,6 @@ async fn account(
     if !did.starts_with("did:") {
         return Err((StatusCode::BAD_REQUEST, "invalid DID".into()));
     }
-    let mut activity = s.analysis.account_activity(&did);
     let (current_identity, identity_history, stored, stored_clusters) = tokio::try_join!(
         s.identities.resolve_local(&did),
         s.storage.identity_history(&did, 50),
@@ -409,17 +408,61 @@ async fn account(
         s.storage.account_cluster_ids(&did, 50),
     )
     .map_err(internal_error)?;
-    for cluster_id in stored_clusters {
-        if !activity.cluster_ids.contains(&cluster_id) {
-            activity.cluster_ids.push(cluster_id);
-        }
-    }
+    // Account pages must not contend with the ingest writer for the global hot
+    // analyzer lock. ClickHouse is indexed for this lookup and remains responsive
+    // while the collector is catching up.
+    let activity = account_activity_from_storage(&did, stored.as_ref(), stored_clusters);
     Ok(Json(AccountDetail {
         current_identity,
         identity_history,
         activity,
         stored,
     }))
+}
+
+fn account_activity_from_storage(
+    did: &str,
+    stored: Option<&crate::storage::AccountStoredStats>,
+    cluster_ids: Vec<String>,
+) -> crate::analysis::AccountActivity {
+    use crate::analysis::{AccountActivity, AccountSummary};
+    use crate::model::ScoreBreakdown;
+
+    let (events, posts, targets, first_seen, last_seen, domains, urls) =
+        stored.map_or((0, 0, 0, None, None, Vec::new(), Vec::new()), |row| {
+            (
+                row.event_count as usize,
+                row.post_count as usize,
+                row.unique_targets as usize,
+                chrono::DateTime::from_timestamp_millis(row.first_seen_ms),
+                chrono::DateTime::from_timestamp_millis(row.last_seen_ms),
+                row.domains.clone(),
+                row.urls.clone(),
+            )
+        });
+    AccountActivity {
+        summary: AccountSummary {
+            did: did.to_owned(),
+            events_24h: events,
+            posts_24h: posts,
+            unique_targets: targets,
+            automation_score: 0.0,
+        },
+        first_seen,
+        last_seen,
+        windows: Vec::new(),
+        unique_domains: domains,
+        unique_urls: urls,
+        recent_events: Vec::new(),
+        cluster_ids,
+        scores: ScoreBreakdown {
+            automation_score: 0.0,
+            coordination_score: 0.0,
+            shared_target_score: 0.0,
+            timing_similarity_score: 0.0,
+            content_similarity_score: 0.0,
+        },
+    }
 }
 
 async fn account_events(

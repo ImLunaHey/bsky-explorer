@@ -101,6 +101,7 @@ async fn consume(
         }
         archive.checkpoint()
     });
+    let mut processed_since_yield = 0_u16;
     while let Some(msg) = read.next().await {
         let msg = msg?;
         let raw = match msg {
@@ -157,6 +158,11 @@ async fn consume(
             tracing::error!(error=%e,"persist detection")
         }
         tx.send(event).await.context("storage worker stopped")?;
+        processed_since_yield += 1;
+        if processed_since_yield >= 128 {
+            processed_since_yield = 0;
+            tokio::task::yield_now().await;
+        }
     }
     drop(archive_tx);
     archive_task.await.context("archive worker panicked")??;
