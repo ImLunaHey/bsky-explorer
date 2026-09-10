@@ -24,8 +24,24 @@ pub async fn run(
     let batch_size = cfg.batch_size;
     tokio::spawn(async move {
         let mut batch = Vec::with_capacity(batch_size);
+        let mut flush_tick = tokio::time::interval(interval);
+        flush_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            tokio::select! { Some(e)=rx.recv()=>{batch.push(e);if batch.len()>=batch_size{if let Err(x)=st.insert_events(&batch).await{tracing::error!(error=%x,"ClickHouse insert failed");sleep(std::time::Duration::from_secs(2)).await;continue}batch.clear();}}, _=sleep(interval)=>{if !batch.is_empty(){if let Err(x)=st.insert_events(&batch).await{tracing::error!(error=%x,"ClickHouse insert failed")}else{batch.clear()}}} }
+            let flush_due = tokio::select! {
+                item = rx.recv() => match item {
+                    Some(e) => { batch.push(e); false },
+                    None => {
+                        persist_batch(&st, &mut batch).await;
+                        break;
+                    }
+                },
+                _ = flush_tick.tick() => true,
+            };
+            if batch.len() >= batch_size || (flush_due && !batch.is_empty()) {
+                // Retrying this same bounded batch applies backpressure during an outage
+                // instead of accumulating an unbounded in-process backlog.
+                persist_batch(&st, &mut batch).await;
+            }
         }
     });
     loop {
@@ -42,6 +58,18 @@ pub async fn run(
         sleep(std::time::Duration::from_secs(2)).await;
     }
 }
+
+async fn persist_batch(storage: &Storage, batch: &mut Vec<crate::model::NormalizedEvent>) {
+    while !batch.is_empty() {
+        match storage.insert_events(batch).await {
+            Ok(()) => batch.clear(),
+            Err(error) => {
+                tracing::error!(%error, events = batch.len(), "ClickHouse insert failed; retrying");
+                sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
+    }
+}
 async fn consume(
     url: &str,
     cfg: &Config,
@@ -54,6 +82,9 @@ async fn consume(
     metrics.connected.set(1);
     let (_, mut read) = ws.split();
     let mut archive = Archive::open(&cfg.data_dir, cfg.archive_segment_mib)?;
+    if let Err(error) = Archive::prune(&cfg.data_dir, cfg.archive_retention_days) {
+        tracing::warn!(%error, "archive retention pass failed");
+    }
     while let Some(msg) = read.next().await {
         let msg = msg?;
         let raw = match msg {
