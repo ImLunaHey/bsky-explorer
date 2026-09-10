@@ -15,7 +15,7 @@ use axum::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::get,
+    routing::{get, get_service},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -47,8 +47,17 @@ pub struct AppState {
 pub type SystemHistory = Arc<RwLock<VecDeque<SystemSample>>>;
 pub fn router(s: AppState) -> Router {
     let index = s.web_dist_dir.join("index.html");
-    let frontend = ServeDir::new(&s.web_dist_dir).not_found_service(ServeFile::new(index));
+    let spa = || get_service(ServeFile::new(index.clone()));
+    let frontend = ServeDir::new(&s.web_dist_dir).not_found_service(ServeFile::new(index.clone()));
     Router::new()
+        .route_service("/", spa())
+        .route_service("/firehose", spa())
+        .route_service("/detections", spa())
+        .route_service("/system", spa())
+        .route_service("/accounts/{did}", spa())
+        .route_service("/records/{uri}", spa())
+        .route_service("/clusters/{cluster_id}", spa())
+        .route_service("/trends/{dimension}", spa())
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
         .route("/metrics", get(metrics))
