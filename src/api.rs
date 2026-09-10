@@ -217,6 +217,9 @@ struct RuntimeStats {
     container_cpu_seconds: Option<f64>,
     host_cpu_total_jiffies: Option<u64>,
     host_cpu_idle_jiffies: Option<u64>,
+    process_cpu_utilization_percent: Option<f64>,
+    container_cpu_utilization_percent: Option<f64>,
+    host_cpu_utilization_percent: Option<f64>,
     host_load_average: Option<[f64; 3]>,
     host_uptime_seconds: Option<f64>,
 }
@@ -240,6 +243,19 @@ pub struct SystemSample {
     container_memory_used_bytes: Option<u64>,
     clickhouse_rows: Option<u64>,
     clickhouse_compressed_bytes: Option<u64>,
+    process_cpu_utilization_percent: Option<f64>,
+    container_cpu_utilization_percent: Option<f64>,
+    host_cpu_utilization_percent: Option<f64>,
+    #[serde(skip)]
+    cpu_counters: CpuCounters,
+}
+
+#[derive(Clone, Copy, Default)]
+struct CpuCounters {
+    process_seconds: Option<f64>,
+    container_seconds: Option<f64>,
+    host_total_jiffies: Option<u64>,
+    host_idle_jiffies: Option<u64>,
 }
 
 async fn system_history(State(s): State<AppState>) -> Json<Vec<SystemSample>> {
@@ -253,8 +269,21 @@ pub async fn sample_system_history(state: AppState) {
         interval.tick().await;
         let rates = state.analysis.rates();
         let clickhouse = state.storage.stats().await.ok();
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let cpu_counters = read_cpu_counters();
+        let mut history = state.system_history.write().await;
+        let percentages = history
+            .back()
+            .map(|previous| {
+                cpu_percentages(
+                    previous.cpu_counters,
+                    cpu_counters,
+                    (timestamp - previous.timestamp) as f64 / 1_000.0,
+                )
+            })
+            .unwrap_or_default();
         let sample = SystemSample {
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp,
             events_per_second: rates.events_per_sec,
             posts_per_second: rates.posts_per_sec,
             interactions_per_second: rates.interactions_per_sec,
@@ -266,8 +295,11 @@ pub async fn sample_system_history(state: AppState) {
             clickhouse_compressed_bytes: clickhouse
                 .as_ref()
                 .map(|s| s.tables.iter().map(|t| t.compressed_bytes).sum()),
+            process_cpu_utilization_percent: percentages.process,
+            container_cpu_utilization_percent: percentages.container,
+            host_cpu_utilization_percent: percentages.host,
+            cpu_counters,
         };
-        let mut history = state.system_history.write().await;
         history.push_back(sample);
         while history.len() > MAX_SAMPLES {
             history.pop_front();
@@ -280,6 +312,17 @@ async fn system(State(s): State<AppState>) -> Json<SystemStats> {
         Ok(stats) => (Some(stats), None),
         Err(error) => (None, Some(error.to_string())),
     };
+    let latest_cpu = s
+        .system_history
+        .read()
+        .await
+        .back()
+        .map(|sample| CpuPercentages {
+            process: sample.process_cpu_utilization_percent,
+            container: sample.container_cpu_utilization_percent,
+            host: sample.host_cpu_utilization_percent,
+        })
+        .unwrap_or_default();
     Json(SystemStats {
         scope_note: "load and host uptime use the container-visible /proc; memory uses this process and its cgroup; filesystem capacity is for the archive mount",
         runtime: RuntimeStats {
@@ -291,6 +334,9 @@ async fn system(State(s): State<AppState>) -> Json<SystemStats> {
             container_cpu_seconds: cgroup_cpu_seconds(),
             host_cpu_total_jiffies: host_cpu_jiffies().map(|v| v.0),
             host_cpu_idle_jiffies: host_cpu_jiffies().map(|v| v.1),
+            process_cpu_utilization_percent: latest_cpu.process,
+            container_cpu_utilization_percent: latest_cpu.container,
+            host_cpu_utilization_percent: latest_cpu.host,
             host_load_average: load_average(),
             host_uptime_seconds: fs::read_to_string("/proc/uptime")
                 .ok()
@@ -371,6 +417,53 @@ fn host_cpu_jiffies() -> Option<(u64, u64)> {
     Some((total, idle))
 }
 
+fn read_cpu_counters() -> CpuCounters {
+    let host = host_cpu_jiffies();
+    CpuCounters {
+        process_seconds: process_cpu_seconds(),
+        container_seconds: cgroup_cpu_seconds(),
+        host_total_jiffies: host.map(|value| value.0),
+        host_idle_jiffies: host.map(|value| value.1),
+    }
+}
+
+#[derive(Default)]
+struct CpuPercentages {
+    process: Option<f64>,
+    container: Option<f64>,
+    host: Option<f64>,
+}
+
+fn cpu_percentages(previous: CpuCounters, current: CpuCounters, elapsed: f64) -> CpuPercentages {
+    if elapsed <= 0.0 || !elapsed.is_finite() {
+        return CpuPercentages::default();
+    }
+    let counter_percent = |before: Option<f64>, after: Option<f64>| match (before, after) {
+        (Some(before), Some(after)) if after >= before => Some((after - before) / elapsed * 100.0),
+        _ => None,
+    };
+    let host = match (
+        previous.host_total_jiffies,
+        previous.host_idle_jiffies,
+        current.host_total_jiffies,
+        current.host_idle_jiffies,
+    ) {
+        (Some(old_total), Some(old_idle), Some(new_total), Some(new_idle))
+            if new_total > old_total && new_idle >= old_idle =>
+        {
+            let total = new_total - old_total;
+            let idle = (new_idle - old_idle).min(total);
+            Some((total - idle) as f64 / total as f64 * 100.0)
+        }
+        _ => None,
+    };
+    CpuPercentages {
+        process: counter_percent(previous.process_seconds, current.process_seconds),
+        container: counter_percent(previous.container_seconds, current.container_seconds),
+        host,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,5 +484,31 @@ mod tests {
             "public, max-age=31536000, immutable"
         );
         assert_eq!(cache_policy("/clusters/example"), "no-cache");
+    }
+
+    #[test]
+    fn calculates_cpu_percentages_and_rejects_counter_resets() {
+        let previous = CpuCounters {
+            process_seconds: Some(10.0),
+            container_seconds: Some(20.0),
+            host_total_jiffies: Some(1_000),
+            host_idle_jiffies: Some(600),
+        };
+        let current = CpuCounters {
+            process_seconds: Some(10.5),
+            container_seconds: Some(21.0),
+            host_total_jiffies: Some(1_200),
+            host_idle_jiffies: Some(700),
+        };
+        let usage = cpu_percentages(previous, current, 2.0);
+        assert_eq!(usage.process, Some(25.0));
+        assert_eq!(usage.container, Some(50.0));
+        assert_eq!(usage.host, Some(50.0));
+
+        let reset = cpu_percentages(current, previous, 2.0);
+        assert!(reset.process.is_none());
+        assert!(reset.container.is_none());
+        assert!(reset.host.is_none());
+        assert!(cpu_percentages(previous, current, 0.0).host.is_none());
     }
 }

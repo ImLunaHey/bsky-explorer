@@ -62,7 +62,7 @@ curl -fsS localhost:3000/readyz
 
 `fixtures/synthetic.jsonl` covers organic conversation, regular high-volume activity, synchronized reposts, normalized duplicate spam, and URL amplification. Tests cover parsing, normalization/fingerprints, archive/cursor behavior, coordination scoring, organic-burst resistance, and storage serialization.
 
-System scope is explicit in the API: load and machine uptime are the container-visible host kernel values, memory includes both this process and its cgroup where available, and array capacity is measured on the archive bind mount. ClickHouse reports active rows/parts and compressed versus uncompressed bytes per table, plus pending mutations, active queries, and server errors since restart.
+System scope is explicit in the API: load, CPU utilization, and machine uptime are container-visible host kernel values; process and cgroup CPU percentages are sampled from their respective cumulative counters. Memory includes both this process and its cgroup where available, and array capacity is measured on the archive bind mount. ClickHouse reports active rows/parts and compressed versus uncompressed bytes per table, plus pending mutations, active queries, and server errors since restart.
 
 ## MVP boundaries
 
