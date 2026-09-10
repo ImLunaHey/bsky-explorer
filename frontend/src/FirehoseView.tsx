@@ -14,7 +14,7 @@ function useHandles(events:FirehoseEvent[]) {
   return new Map(queries.flatMap(query=>query.data||[]).map(identity=>[identity.did,identity.handle]))
 }
 
-const tones:Record<string,string>={post:'bg-cyan/10 text-cyan',reply:'bg-cyan/10 text-cyan',like:'bg-pink-300/10 text-pink-300',repost:'bg-violet-300/10 text-violet-300',follow:'bg-mint/10 text-mint',unfollow:'bg-amber-300/10 text-amber-300',delete:'bg-red-300/10 text-red-300',quote:'bg-sky-300/10 text-sky-300'}
+const tones:Record<string,string>={post:'bg-cyan/10 text-cyan',reply:'bg-cyan/10 text-cyan',like:'bg-pink-300/10 text-pink-300',repost:'bg-violet-300/10 text-violet-300',follow:'bg-mint/10 text-mint',unfollow:'bg-amber-300/10 text-amber-300',delete:'bg-red-300/10 text-red-300',quote:'bg-orange-300/10 text-orange-300'}
 
 export function FirehoseView({onAccount,onRecord}:{onAccount:(did:string)=>void;onRecord:(uri:string)=>void}) {
   const [paused,setPaused]=useState(false)

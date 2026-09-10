@@ -174,20 +174,39 @@ impl Analyzer {
         for x in &e.domains {
             *s.domain_counts.entry(x.clone()).or_default() += 1
         }
+        let ordered = s.watermark.is_none_or(|watermark| e.timestamp >= watermark);
         s.events.push_back(e.clone());
         s.watermark = Some(s.watermark.map_or(e.timestamp, |w| w.max(e.timestamp)));
         let cutoff = s.watermark.unwrap() - Duration::hours(self.retention_hours);
-        // Jetstream normally arrives ordered, but retain correct behavior for
-        // replayed/out-of-order events too.
-        s.events.retain(|x| x.timestamp >= cutoff);
+        if ordered {
+            while s
+                .events
+                .front()
+                .is_some_and(|event| event.timestamp < cutoff)
+            {
+                s.events.pop_front();
+            }
+        } else {
+            // Replay may be out of order; keep its slower correctness path away
+            // from the latency-sensitive ordered firehose.
+            s.events.retain(|event| event.timestamp >= cutoff);
+        }
         let key = e
             .target
             .clone()
             .or_else(|| e.normalized_text_hash.map(|h| format!("text:{h}")))
             .or_else(|| e.domains.first().map(|d| format!("domain:{d}")))?;
-        let near: Vec<_> = s
-            .events
-            .iter()
+        let candidates: Box<dyn Iterator<Item = &NormalizedEvent>> = if ordered {
+            Box::new(s.events.iter().rev().take_while(|event| {
+                e.timestamp
+                    .signed_duration_since(event.timestamp)
+                    .num_seconds()
+                    <= self.coordination_secs
+            }))
+        } else {
+            Box::new(s.events.iter())
+        };
+        let near: Vec<_> = candidates
             .filter(|x| {
                 x.actor_did != e.actor_did
                     && (x.timestamp - e.timestamp).num_seconds().abs() <= self.coordination_secs
