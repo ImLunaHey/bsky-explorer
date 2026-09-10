@@ -40,6 +40,36 @@ pub struct AccountStoredStats {
     pub domains: Vec<String>,
     pub urls: Vec<String>,
 }
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct StoredRecord {
+    pub at_uri: String,
+    pub actor_did: String,
+    pub timestamp_ms: i64,
+    pub kind: String,
+    pub text: String,
+    pub reply_parent: String,
+    pub reply_root: String,
+    pub quote_target: String,
+    pub urls: Vec<String>,
+    pub domains: Vec<String>,
+    pub languages: Vec<String>,
+}
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct StoredInteraction {
+    pub event_id: String,
+    pub actor_did: String,
+    pub kind: String,
+    pub timestamp_ms: i64,
+    pub at_uri: String,
+    pub target: String,
+}
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct RecordInteractionCounts {
+    pub likes: u64,
+    pub reposts: u64,
+    pub replies: u64,
+    pub quotes: u64,
+}
 #[derive(Row, Serialize)]
 struct EventRow {
     event_id: String,
@@ -200,6 +230,33 @@ impl Storage {
             .bind(needle).bind(limit)
             .fetch_all::<ClusterResult>().await?
             .into_iter().map(|row| row.cluster_id).collect())
+    }
+    pub async fn record(&self, uri: &str) -> Result<Option<StoredRecord>> {
+        Ok(self.client.query(
+            "SELECT at_uri, actor_did, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, kind, text, reply_parent, reply_root, quote_target, urls, domains, languages FROM events WHERE at_uri = ? AND kind IN ('post','reply','quote') ORDER BY timestamp DESC LIMIT 1"
+        ).bind(uri).fetch_optional::<StoredRecord>().await?)
+    }
+    pub async fn record_interaction_counts(&self, uri: &str) -> Result<RecordInteractionCounts> {
+        Ok(self.client.query(
+            "SELECT countIf(kind='like' AND target=?) AS likes, countIf(kind='repost' AND target=?) AS reposts, countIf(kind='reply' AND reply_parent=?) AS replies, countIf(kind='quote' AND quote_target=?) AS quotes FROM events"
+        ).bind(uri).bind(uri).bind(uri).bind(uri)
+        .fetch_one::<RecordInteractionCounts>().await?)
+    }
+    pub async fn record_interactions(
+        &self,
+        uri: &str,
+        limit: u64,
+    ) -> Result<Vec<StoredInteraction>> {
+        Ok(self.client.query(
+            "SELECT event_id, actor_did, kind, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, at_uri, target FROM events WHERE (kind IN ('like','repost') AND target=?) OR (kind='reply' AND reply_parent=?) OR (kind='quote' AND quote_target=?) ORDER BY timestamp DESC LIMIT ?"
+        ).bind(uri).bind(uri).bind(uri).bind(limit)
+        .fetch_all::<StoredInteraction>().await?)
+    }
+    pub async fn conversation_context(&self, root: &str, limit: u64) -> Result<Vec<StoredRecord>> {
+        Ok(self.client.query(
+            "SELECT at_uri, actor_did, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, kind, text, reply_parent, reply_root, quote_target, urls, domains, languages FROM events WHERE at_uri=? OR reply_root=? ORDER BY timestamp ASC LIMIT ?"
+        ).bind(root).bind(root).bind(limit)
+        .fetch_all::<StoredRecord>().await?)
     }
     pub async fn bytes(&self) -> Result<u64> {
         self.table_bytes(None).await

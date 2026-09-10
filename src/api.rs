@@ -51,6 +51,7 @@ pub fn router(s: AppState) -> Router {
         .route("/api/clusters", get(clusters))
         .route("/api/clusters/{id}", get(cluster))
         .route("/api/accounts/{did}", get(account))
+        .route("/api/records", get(record))
         .route("/api/identities", get(identities))
         .route("/api/storage", get(storage))
         .route("/api/system", get(system))
@@ -174,6 +175,66 @@ struct AccountDetail {
     activity: crate::analysis::AccountActivity,
     /// Full-retention totals from ClickHouse. `activity` is the hot rolling view.
     stored: Option<crate::storage::AccountStoredStats>,
+}
+
+#[derive(Deserialize)]
+struct RecordQuery {
+    uri: String,
+}
+
+#[derive(Serialize)]
+struct RecordDetail {
+    record: crate::storage::StoredRecord,
+    interaction_counts: crate::storage::RecordInteractionCounts,
+    recent_interactions: Vec<crate::storage::StoredInteraction>,
+    conversation: Vec<crate::storage::StoredRecord>,
+}
+
+async fn record(
+    State(s): State<AppState>,
+    Query(query): Query<RecordQuery>,
+) -> Result<Json<RecordDetail>, (StatusCode, String)> {
+    if !is_at_uri(&query.uri) {
+        return Err((StatusCode::BAD_REQUEST, "uri must be a valid AT URI".into()));
+    }
+    let record = s
+        .storage
+        .record(&query.uri)
+        .await
+        .map_err(internal_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "record not retained".into()))?;
+    let root = if record.reply_root.is_empty() {
+        &query.uri
+    } else {
+        &record.reply_root
+    };
+    let (interaction_counts, recent_interactions, conversation) = tokio::try_join!(
+        s.storage.record_interaction_counts(&query.uri),
+        s.storage.record_interactions(&query.uri, 100),
+        s.storage.conversation_context(root, 200),
+    )
+    .map_err(internal_error)?;
+    Ok(Json(RecordDetail {
+        record,
+        interaction_counts,
+        recent_interactions,
+        conversation,
+    }))
+}
+
+fn is_at_uri(uri: &str) -> bool {
+    let Some(rest) = uri.strip_prefix("at://") else {
+        return false;
+    };
+    let mut parts = rest.split('/');
+    matches!(parts.next(), Some(authority) if authority.starts_with("did:") || authority.contains('.'))
+        && matches!(parts.next(), Some(collection) if !collection.is_empty())
+        && matches!(parts.next(), Some(rkey) if !rkey.is_empty())
+        && parts.next().is_none()
+}
+
+fn internal_error(error: anyhow::Error) -> (StatusCode, String) {
+    (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
 }
 
 #[derive(Deserialize)]
@@ -527,6 +588,17 @@ mod tests {
             "public, max-age=31536000, immutable"
         );
         assert_eq!(cache_policy("/clusters/example"), "no-cache");
+    }
+
+    #[test]
+    fn validates_record_at_uris() {
+        assert!(is_at_uri("at://did:plc:alice/app.bsky.feed.post/3kexample"));
+        assert!(is_at_uri("at://alice.test/app.bsky.feed.post/3kexample"));
+        assert!(!is_at_uri("https://bsky.app/profile/alice.test/post/3k"));
+        assert!(!is_at_uri("at://did:plc:alice/app.bsky.feed.post"));
+        assert!(!is_at_uri(
+            "at://did:plc:alice/app.bsky.feed.post/key/extra"
+        ));
     }
 
     #[test]
