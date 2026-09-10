@@ -69,7 +69,7 @@ pub fn router(s: AppState) -> Router {
         .route("/metrics", get(metrics))
         .route("/api/stats", get(stats))
         .route("/api/search", get(search))
-        .route("/api/backfills", get(backfills))
+        .route("/api/backfills", get(backfills).post(enqueue_backfill))
         .route("/api/backfills/{id}/status", get(backfill_status))
         .route("/api/backfills/{id}/cancel", post(backfill_cancel))
         .route("/api/backfills/{id}/retry", post(backfill_retry))
@@ -407,6 +407,41 @@ async fn backfills(
     Json(
         serde_json::json!({"jobs":jobs,"total":total,"offset":offset,"limit":limit,"has_more":has_more}),
     )
+}
+#[derive(Deserialize)]
+struct EnqueueBackfill {
+    query: String,
+    did: Option<String>,
+    include_associations: Option<bool>,
+    job_type: Option<String>,
+}
+async fn enqueue_backfill(
+    State(s): State<AppState>,
+    Json(body): Json<EnqueueBackfill>,
+) -> Result<Json<crate::backfill::BackfillJob>, (StatusCode, String)> {
+    let q = body.query.trim();
+    if q.len() < 2
+        || q.len() > 253
+        || q.chars().any(char::is_control)
+        || body.did.as_ref().is_some_and(|d| !d.starts_with("did:"))
+    {
+        return Err((StatusCode::BAD_REQUEST, "invalid backfill identity".into()));
+    }
+    let kind = match body.job_type.as_deref().unwrap_or("repository") {
+        "repository" => crate::backfill::JobType::Repository,
+        "associations" => crate::backfill::JobType::Associations,
+        _ => return Err((StatusCode::BAD_REQUEST, "invalid job_type".into())),
+    };
+    s.backfills
+        .enqueue(
+            q,
+            body.did.as_deref(),
+            kind,
+            None,
+            body.include_associations.unwrap_or(true),
+        )
+        .map(Json)
+        .map_err(internal_error)
 }
 async fn backfill_status(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
     if !crate::backfill::valid_job_id(&id) {
