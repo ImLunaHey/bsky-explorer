@@ -84,10 +84,23 @@ async fn consume(
     let (ws, _) = connect_async(url).await.context("connect Jetstream")?;
     metrics.connected.set(1);
     let (_, mut read) = ws.split();
-    let mut archive = Archive::open(&cfg.data_dir, cfg.archive_segment_mib)?;
-    if let Err(error) = Archive::prune(&cfg.data_dir, cfg.archive_retention_days) {
-        tracing::warn!(%error, "archive retention pass failed");
-    }
+    let (archive_tx, mut archive_rx) = mpsc::channel::<(i64, Vec<u8>)>(20_000);
+    let archive_dir = cfg.data_dir.clone();
+    let segment_mib = cfg.archive_segment_mib;
+    let retention_days = cfg.archive_retention_days;
+    let archive_gauge = metrics.archive_bytes.clone();
+    let archive_task = tokio::task::spawn_blocking(move || -> Result<()> {
+        let mut archive = Archive::open(&archive_dir, segment_mib)?;
+        if let Err(error) = Archive::prune(&archive_dir, retention_days) {
+            tracing::warn!(%error, "archive retention pass failed");
+        }
+        while let Some((time_us, raw)) = archive_rx.blocking_recv() {
+            if archive.append(time_us, &raw)? {
+                archive_gauge.set(Archive::total_size(&archive_dir) as i64);
+            }
+        }
+        archive.checkpoint()
+    });
     while let Some(msg) = read.next().await {
         let msg = msg?;
         let raw = match msg {
@@ -104,13 +117,10 @@ async fn consume(
                 continue;
             }
         };
-        let checkpointed = tokio::task::block_in_place(|| archive.append(time_us, &raw))?;
-        if checkpointed {
-            // Directory scans are cheap once per group commit, but catastrophic
-            // at full-firehose frequency.
-            let archive_bytes = tokio::task::block_in_place(|| Archive::total_size(&cfg.data_dir));
-            metrics.archive_bytes.set(archive_bytes as i64);
-        }
+        archive_tx
+            .send((time_us, raw.clone()))
+            .await
+            .context("archive worker stopped")?;
         match parse_identity_event(&raw) {
             Ok(Some(identity)) => {
                 if let Err(error) = identities.observe(identity).await {
@@ -148,6 +158,7 @@ async fn consume(
         }
         tx.send(event).await.context("storage worker stopped")?;
     }
-    tokio::task::block_in_place(|| archive.checkpoint())?;
+    drop(archive_tx);
+    archive_task.await.context("archive worker panicked")??;
     Ok(())
 }

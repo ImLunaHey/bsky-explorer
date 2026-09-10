@@ -64,7 +64,7 @@ function EvidenceLink({uri,label,onOpen}:{uri?:string;label:string;onOpen:(uri:s
   return <button onClick={()=>onOpen(uri!)} className="inline-flex items-center gap-1 text-cyan hover:text-mint">{label}<ChevronRight className="size-3"/></button>
 }
 
-function useApi<T>(key:string, path:string, interval=3000) { return useQuery({ queryKey:[key], queryFn:()=>api<T>(path), refetchInterval:interval }) }
+function useApi<T>(key:string, path:string, enabled:boolean, interval:false|number=false) { return useQuery({ queryKey:[key], queryFn:()=>api<T>(path), enabled, refetchInterval:interval }) }
 function useIdentityMap(values:string[]) {
   const dids=[...new Set(values.map(x=>didFromTarget(x)).filter((x):x is string=>Boolean(x)))].sort()
   const batches=Array.from({length:Math.ceil(dids.length/100)},(_,i)=>dids.slice(i*100,(i+1)*100))
@@ -169,7 +169,8 @@ export default function App({route}:{route:AppRoute}) {
  const openRecord=(uri:string)=>navigate({to:'/records/$uri',params:{uri}})
  const openCluster=(cluster:Detection)=>navigate({to:'/clusters/$clusterId',params:{clusterId:cluster.cluster_id}})
  const openTrend=(dimension:string,item:TrendingItem)=>navigate({to:'/trends/$dimension',params:{dimension},search:{key:item.key}})
- const rates=useApi<Rates>('rates','/api/stats'); const urls=useApi<[string,number][]>('urls','/api/trending/urls'); const domains=useApi<[string,number][]>('domains','/api/trending/domains'); const prints=useApi<TrendingItem[]>('prints','/api/trending/fingerprints'); const conversations=useApi<TrendingItem[]>('conversations','/api/trending/conversations'); const clusters=useApi<Detection[]>('clusters','/api/clusters'); const anomalies=useApi<Anomalies>('anomalies','/api/anomalies'); const storage=useApi<StorageStats>('storage','/api/storage',10000); const system=useApi<SystemStats>('system','/api/system',5000); const history=useApi<SystemSample[]>('system-history','/api/system/history',15000)
+ const network=route.view==='network', detections=route.view==='anomalies', systemPage=route.view==='system'
+ const rates=useApi<Rates>('rates','/api/stats',network); const urls=useApi<[string,number][]>('urls','/api/trending/urls',network); const domains=useApi<[string,number][]>('domains','/api/trending/domains',network); const prints=useApi<TrendingItem[]>('prints','/api/trending/fingerprints',network); const conversations=useApi<TrendingItem[]>('conversations','/api/trending/conversations',network); const clusters=useApi<Detection[]>('clusters','/api/clusters',detections); const anomalies=useApi<Anomalies>('anomalies','/api/anomalies',detections); const storage=useApi<StorageStats>('storage','/api/storage',network||systemPage); const system=useApi<SystemStats>('system','/api/system',systemPage,15000); const history=useApi<SystemSample[]>('system-history','/api/system/history',systemPage,15000)
  const anomalyHandles=useIdentityMap((anomalies.data?.unusual_posting||[]).map(x=>x.did))
  const r=rates.data
  const normalized=(x?:[string,number][]):TrendingItem[] => (x||[]).map(([key,count])=>({key,count,recent_count:count,growth:0}))

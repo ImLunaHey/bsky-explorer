@@ -7,7 +7,7 @@ import { LiveUpdates } from './live'
 import './index.css'
 
 const queryClient = new QueryClient({
-  defaultOptions: { queries: { refetchInterval: 3_000, retry: 2, staleTime: 1_000 } },
+  defaultOptions: { queries: { retry: 2, staleTime: 5_000, refetchOnWindowFocus: false } },
 })
 
 createRoot(document.getElementById('root')!).render(
