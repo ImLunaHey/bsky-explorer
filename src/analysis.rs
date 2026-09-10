@@ -92,6 +92,48 @@ pub struct ClusterDetail {
     pub timeline: Vec<TimelineBucket>,
     pub graph_edges: Vec<GraphEdge>,
 }
+impl ClusterDetail {
+    /// Builds detail directly from the evidence persisted with a detection.
+    /// This is intentionally independent of the hot analyzer event buffer so
+    /// historical cluster pages stay available after that buffer expires.
+    pub fn from_persisted(detection: Detection) -> Self {
+        let mut timeline = HashMap::new();
+        let mut edges = HashMap::new();
+        for event in &detection.sample_events {
+            let seconds = event.timestamp.timestamp();
+            let bucket = chrono::DateTime::from_timestamp(seconds - seconds.rem_euclid(60), 0)
+                .unwrap_or(event.timestamp);
+            *timeline.entry(bucket).or_insert(0usize) += 1;
+            if let Some(target) = event.target.as_ref() {
+                *edges
+                    .entry((event.actor_did.clone(), target.clone()))
+                    .or_insert(0usize) += 1;
+            }
+        }
+        let mut timeline: Vec<_> = timeline
+            .into_iter()
+            .map(|(timestamp, event_count)| TimelineBucket {
+                timestamp,
+                event_count,
+            })
+            .collect();
+        timeline.sort_by_key(|bucket| bucket.timestamp);
+        let mut graph_edges: Vec<_> = edges
+            .into_iter()
+            .map(|((source, target), event_count)| GraphEdge {
+                source,
+                target,
+                event_count,
+            })
+            .collect();
+        graph_edges.sort_by_key(|edge| std::cmp::Reverse(edge.event_count));
+        Self {
+            detection,
+            timeline,
+            graph_edges,
+        }
+    }
+}
 #[derive(Clone, Default)]
 pub struct RecentEventFilter {
     pub after_time_us: Option<i64>,

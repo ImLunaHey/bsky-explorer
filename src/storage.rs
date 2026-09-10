@@ -161,6 +161,31 @@ impl Storage {
         self.client.query("INSERT INTO detections (cluster_id, first_seen, last_seen, account_count, event_count, coordination_score, evidence_json) VALUES (?, fromUnixTimestamp64Milli(?), fromUnixTimestamp64Milli(?), ?, ?, ?, ?)").bind(&d.cluster_id).bind(d.first_seen.timestamp_millis()).bind(d.last_seen.timestamp_millis()).bind(d.accounts.len() as u32).bind(d.event_count as u64).bind(d.scores.coordination_score).bind(body).execute().await?;
         Ok(())
     }
+    /// Loads the newest persisted version of a coordination detection.
+    ///
+    /// `cluster_id` is the leading sorting-key column, so this remains a
+    /// narrow lookup even as the append-only detections table grows. Avoiding
+    /// `FINAL` also prevents ClickHouse from merging every matching part on
+    /// the request path; ordering by the replacement version gives us the
+    /// same latest-row semantics.
+    pub async fn detection(&self, cluster_id: &str) -> Result<Option<Detection>> {
+        #[derive(Row, Deserialize)]
+        struct DetectionJson {
+            evidence_json: String,
+        }
+
+        let row = self
+            .client
+            .query(
+                "SELECT evidence_json FROM detections WHERE cluster_id = ? ORDER BY last_seen DESC LIMIT 1",
+            )
+            .bind(cluster_id)
+            .fetch_optional::<DetectionJson>()
+            .await?;
+        row.map(|row| serde_json::from_str(&row.evidence_json))
+            .transpose()
+            .context("decode persisted detection evidence")
+    }
     pub async fn insert_identity(&self, identity: &IdentityRecord) -> Result<()> {
         for table in ["identity_history", "identities"] {
             self.client

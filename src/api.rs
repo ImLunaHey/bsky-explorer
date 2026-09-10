@@ -388,11 +388,13 @@ async fn clusters(State(s): State<AppState>) -> Json<Vec<crate::model::Detection
     Json(s.analysis.detections())
 }
 async fn cluster(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
-    s.analysis
-        .cluster_detail(&id)
-        .map(Json)
-        .map(IntoResponse::into_response)
-        .unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
+    match s.storage.detection(&id).await {
+        Ok(Some(detection)) => {
+            Json(crate::analysis::ClusterDetail::from_persisted(detection)).into_response()
+        }
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => internal_error(error).into_response(),
+    }
 }
 async fn account(
     State(s): State<AppState>,
