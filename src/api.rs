@@ -15,7 +15,7 @@ use axum::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::{get, get_service},
+    routing::{get, get_service, post},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -47,6 +47,7 @@ pub struct AppState {
     pub storage_budget_bytes: u64,
     pub system_history: SystemHistory,
     pub identities: IdentityService,
+    pub backfills: crate::backfill::BackfillQueue,
 }
 pub type SystemHistory = Arc<RwLock<VecDeque<SystemSample>>>;
 pub fn router(s: AppState) -> Router {
@@ -68,6 +69,10 @@ pub fn router(s: AppState) -> Router {
         .route("/metrics", get(metrics))
         .route("/api/stats", get(stats))
         .route("/api/search", get(search))
+        .route("/api/backfills", get(backfills))
+        .route("/api/backfills/{id}/status", get(backfill_status))
+        .route("/api/backfills/{id}/cancel", post(backfill_cancel))
+        .route("/api/backfills/{id}/retry", post(backfill_retry))
         .route("/api/firehose", get(firehose))
         .route("/api/live", get(live))
         .route("/api/trending/urls", get(urls))
@@ -165,6 +170,8 @@ struct SearchResponse {
     limit: u64,
     has_more: bool,
     results: Vec<SearchResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    backfill_job: Option<crate::backfill::BackfillJob>,
 }
 
 #[derive(Debug, Serialize)]
@@ -332,6 +339,21 @@ async fn search(
                 .cloned();
         }
     }
+    let backfill_job = if page.is_empty()
+        && (requested_term.starts_with("did:") || requested_term.contains('.'))
+    {
+        s.backfills
+            .enqueue(
+                requested_term,
+                term.starts_with("did:").then_some(term.as_str()),
+                crate::backfill::JobType::Repository,
+                None,
+                true,
+            )
+            .ok()
+    } else {
+        None
+    };
     Ok(Json(SearchResponse {
         query: requested_term.to_owned(),
         result_type: query.result_type,
@@ -339,7 +361,75 @@ async fn search(
         limit,
         has_more,
         results: page,
+        backfill_job,
     }))
+}
+
+#[derive(Deserialize)]
+struct BackfillListQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+    status: Option<String>,
+    job_type: Option<String>,
+}
+async fn backfills(
+    State(s): State<AppState>,
+    Query(q): Query<BackfillListQuery>,
+) -> Json<serde_json::Value> {
+    let limit = q.limit.unwrap_or(25).clamp(1, 100);
+    let offset = q.offset.unwrap_or(0).min(10_000);
+    let all = s.backfills.list(10_000);
+    let mut filtered: Vec<_> = all
+        .iter()
+        .filter(|j| {
+            q.status.as_ref().is_none_or(|v| {
+                serde_json::to_value(&j.status)
+                    .ok()
+                    .and_then(|x| x.as_str().map(str::to_owned))
+                    .as_ref()
+                    == Some(v)
+            })
+        })
+        .filter(|j| {
+            q.job_type.as_ref().is_none_or(|v| {
+                serde_json::to_value(&j.job_type)
+                    .ok()
+                    .and_then(|x| x.as_str().map(str::to_owned))
+                    .as_ref()
+                    == Some(v)
+            })
+        })
+        .cloned()
+        .collect();
+    let total = filtered.len();
+    let jobs: Vec<_> = filtered.drain(offset.min(total)..).take(limit).collect();
+    let has_more = offset + jobs.len() < total;
+    Json(
+        serde_json::json!({"jobs":jobs,"total":total,"offset":offset,"limit":limit,"has_more":has_more}),
+    )
+}
+async fn backfill_status(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    if !crate::backfill::valid_job_id(&id) {
+        return (StatusCode::BAD_REQUEST, "invalid job id").into_response();
+    }
+    match s.backfills.get(&id) {
+        Some(job) => Json(job).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+async fn backfill_cancel(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match s.backfills.cancel(&id) {
+        Ok(Some(j)) => Json(j).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => (StatusCode::CONFLICT, e.to_string()).into_response(),
+    }
+}
+async fn backfill_retry(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match s.backfills.retry(&id) {
+        Ok(Some(j)) => Json(j).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => (StatusCode::CONFLICT, e.to_string()).into_response(),
+    }
 }
 
 fn normalized_search_term(term: &str) -> String {

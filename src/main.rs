@@ -40,6 +40,14 @@ async fn main() -> Result<()> {
         std::time::Duration::from_secs(cfg.identity_negative_ttl_seconds),
         cfg.identity_requests_per_second,
     );
+    let backfill_dir = cfg
+        .backfill_queue_dir
+        .clone()
+        .unwrap_or_else(|| cfg.data_dir.join("backfill-queue"));
+    let backfills = bsky_observatory::backfill::BackfillQueue::open(backfill_dir)?;
+    for _ in 0..cfg.backfill_worker_concurrency.clamp(1, 4) {
+        tokio::spawn(bsky_observatory::backfill::run_worker(backfills.clone()));
+    }
     let state = AppState {
         analysis: analysis.clone(),
         metrics: metrics.clone(),
@@ -53,6 +61,7 @@ async fn main() -> Result<()> {
         storage_budget_bytes: cfg.effective_storage_budget_bytes(),
         system_history: Default::default(),
         identities: identities.clone(),
+        backfills,
     };
     let listener = tokio::net::TcpListener::bind(&cfg.listen_addr).await?;
     tokio::spawn(api::sample_system_history(state.clone()));

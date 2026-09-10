@@ -24,6 +24,10 @@ pub struct Config {
         default_value = "/mnt/storage/bsky-observatory/archive"
     )]
     pub data_dir: PathBuf,
+    #[arg(long, env = "BACKFILL_QUEUE_DIR")]
+    pub backfill_queue_dir: Option<PathBuf>,
+    #[arg(long, env = "BACKFILL_WORKER_CONCURRENCY", default_value_t = 1)]
+    pub backfill_worker_concurrency: usize,
     /// Logical allocation for this observatory. `STORAGE_BUDGET_BYTES`, when
     /// set, takes precedence over this TiB value.
     #[arg(long, env = "STORAGE_BUDGET_TIB", default_value_t = 25.0)]
