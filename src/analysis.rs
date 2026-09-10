@@ -14,6 +14,18 @@ pub struct Rates {
     pub likes_per_sec: f64,
     pub follows_per_sec: f64,
     pub interactions_per_sec: f64,
+    /// Rates for every configured sliding window. The legacy top-level fields
+    /// remain the 60-second (or nearest configured) view.
+    pub windows: Vec<WindowRates>,
+}
+#[derive(Clone, Serialize)]
+pub struct WindowRates {
+    pub seconds: u64,
+    pub events_per_sec: f64,
+    pub posts_per_sec: f64,
+    pub likes_per_sec: f64,
+    pub follows_per_sec: f64,
+    pub interactions_per_sec: f64,
 }
 #[derive(Clone, Serialize)]
 pub struct AccountSummary {
@@ -30,6 +42,7 @@ pub struct Analyzer {
     min_accounts: usize,
     min_events: usize,
     retention_hours: i64,
+    windows_seconds: Arc<Vec<u64>>,
 }
 struct State {
     events: VecDeque<NormalizedEvent>,
@@ -47,6 +60,27 @@ impl Analyzer {
         min_events: usize,
         retention_hours: i64,
     ) -> Self {
+        Self::with_windows(
+            coordination_secs,
+            min_accounts,
+            min_events,
+            retention_hours,
+            vec![60, 300, 3600, 86400],
+        )
+    }
+    pub fn with_windows(
+        coordination_secs: i64,
+        min_accounts: usize,
+        min_events: usize,
+        retention_hours: i64,
+        mut windows_seconds: Vec<u64>,
+    ) -> Self {
+        windows_seconds.retain(|seconds| *seconds > 0);
+        windows_seconds.sort_unstable();
+        windows_seconds.dedup();
+        if windows_seconds.is_empty() {
+            windows_seconds.push(60);
+        }
         Self {
             inner: Arc::new(RwLock::new(State {
                 events: VecDeque::new(),
@@ -59,6 +93,7 @@ impl Analyzer {
             min_accounts,
             min_events,
             retention_hours,
+            windows_seconds: Arc::new(windows_seconds),
         }
     }
     pub fn observe(&self, e: NormalizedEvent) -> Option<Detection> {
@@ -157,19 +192,23 @@ impl Analyzer {
     }
     pub fn rates(&self) -> Rates {
         let s = self.inner.read();
-        let cutoff = Utc::now() - Duration::seconds(60);
-        let xs: Vec<_> = s.events.iter().filter(|e| e.timestamp >= cutoff).collect();
-        let n = |k: &str| xs.iter().filter(|e| e.kind.as_str() == k).count() as f64 / 60.0;
+        let now = Utc::now();
+        let windows: Vec<_> = self
+            .windows_seconds
+            .iter()
+            .map(|seconds| window_rates(&s.events, now, *seconds))
+            .collect();
+        let primary = windows
+            .iter()
+            .min_by_key(|window| window.seconds.abs_diff(60))
+            .unwrap();
         Rates {
-            events_per_sec: xs.len() as f64 / 60.0,
-            posts_per_sec: n("post") + n("reply") + n("quote"),
-            likes_per_sec: n("like"),
-            follows_per_sec: n("follow"),
-            interactions_per_sec: xs
-                .iter()
-                .filter(|e| !matches!(e.kind, crate::model::EventKind::Post))
-                .count() as f64
-                / 60.0,
+            events_per_sec: primary.events_per_sec,
+            posts_per_sec: primary.posts_per_sec,
+            likes_per_sec: primary.likes_per_sec,
+            follows_per_sec: primary.follows_per_sec,
+            interactions_per_sec: primary.interactions_per_sec,
+            windows,
         }
     }
     pub fn detections(&self) -> Vec<Detection> {
@@ -228,13 +267,46 @@ impl Analyzer {
             0.0
         };
         let volume = (e.len() as f64 / 500.0).min(1.0);
+        let active_hours: HashSet<_> = e
+            .iter()
+            .map(|event| event.timestamp.format("%Y-%m-%dT%H").to_string())
+            .collect();
+        // Require enough samples as well as broad hour coverage: two isolated
+        // night-time posts should not look like sustained round-the-clock use.
+        let coverage =
+            (active_hours.len() as f64 / 24.0).min(1.0) * (e.len() as f64 / 24.0).min(1.0);
         AccountSummary {
             did: did.into(),
             events_24h: e.len(),
             posts_24h: posts,
             unique_targets: targets.len(),
-            automation_score: 0.6 * volume + 0.4 * regularity,
+            automation_score: 0.5 * volume + 0.3 * regularity + 0.2 * coverage,
         }
+    }
+}
+fn window_rates(
+    events: &VecDeque<NormalizedEvent>,
+    now: chrono::DateTime<Utc>,
+    seconds: u64,
+) -> WindowRates {
+    let cutoff = now - Duration::seconds(seconds.min(i64::MAX as u64) as i64);
+    let xs: Vec<_> = events
+        .iter()
+        .filter(|event| event.timestamp >= cutoff)
+        .collect();
+    let divisor = seconds as f64;
+    let count = |kind: &str| xs.iter().filter(|e| e.kind.as_str() == kind).count() as f64;
+    WindowRates {
+        seconds,
+        events_per_sec: xs.len() as f64 / divisor,
+        posts_per_sec: (count("post") + count("reply") + count("quote")) / divisor,
+        likes_per_sec: count("like") / divisor,
+        follows_per_sec: count("follow") / divisor,
+        interactions_per_sec: xs
+            .iter()
+            .filter(|e| !matches!(e.kind, crate::model::EventKind::Post))
+            .count() as f64
+            / divisor,
     }
 }
 fn near_simhash(a: Option<u64>, b: Option<u64>) -> bool {
@@ -351,5 +423,97 @@ mod tests {
             event.target = Some((*target).into());
             assert!(a.observe(event).is_none());
         }
+    }
+
+    #[test]
+    fn near_duplicate_simhash_forms_content_cluster() {
+        let a = Analyzer::new(30, 3, 3, 24);
+        for (i, simhash) in [0b1010u64, 0b1011, 0b1110].into_iter().enumerate() {
+            let mut event = e(&format!("did:plc:spam{i}"), 100 + i as i64);
+            event.target = None;
+            event.normalized_text_hash = Some(100 + i as u64);
+            event.simhash = Some(simhash);
+            let detection = a.observe(event);
+            if i < 2 {
+                assert!(detection.is_none());
+            } else {
+                let detection = detection.expect("third near duplicate should form a cluster");
+                assert_eq!(detection.accounts.len(), 3);
+                assert_eq!(detection.scores.content_similarity_score, 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn retention_uses_event_time_for_replay_and_expires_old_state() {
+        let a = Analyzer::new(30, 2, 2, 1);
+        a.observe(e("old", 100));
+        assert_eq!(a.account("old").events_24h, 1);
+
+        a.observe(e("new", 100 + 3601));
+        assert_eq!(a.account("old").events_24h, 0);
+        assert_eq!(a.account("new").events_24h, 1);
+    }
+
+    #[test]
+    fn timing_evidence_is_the_median_consecutive_gap() {
+        let events = vec![e("a", 0), e("b", 1), e("c", 11), e("d", 12)];
+        assert_eq!(median_timing_difference_ms(&events), 1_000.0);
+    }
+
+    #[test]
+    fn dissimilar_content_does_not_match_merely_because_it_has_fingerprints() {
+        let a = Analyzer::new(30, 3, 3, 24);
+        for (i, simhash) in [0u64, u64::MAX, 0xaaaa_aaaa_aaaa_aaaa]
+            .into_iter()
+            .enumerate()
+        {
+            let mut event = e(&format!("did:plc:organic{i}"), 100 + i as i64);
+            event.target = None;
+            event.normalized_text_hash = Some(i as u64 + 1);
+            event.simhash = Some(simhash);
+            assert!(a.observe(event).is_none());
+        }
+    }
+
+    #[test]
+    fn configured_sliding_windows_are_reported_and_independent() {
+        let a = Analyzer::with_windows(30, 3, 3, 24, vec![60, 10, 60, 0]);
+        let now = Utc::now();
+        let mut recent = e("recent", now.timestamp());
+        recent.timestamp = now;
+        recent.time_us = now.timestamp_micros();
+        a.observe(recent);
+        let mut older = e("older", (now - Duration::seconds(30)).timestamp());
+        older.timestamp = now - Duration::seconds(30);
+        older.time_us = older.timestamp.timestamp_micros();
+        a.observe(older);
+
+        let rates = a.rates();
+        assert_eq!(rates.windows.len(), 2);
+        assert_eq!(rates.windows[0].seconds, 10);
+        assert_eq!(rates.windows[1].seconds, 60);
+        assert_eq!(rates.windows[0].events_per_sec, 0.1);
+        assert_eq!(rates.windows[1].events_per_sec, 2.0 / 60.0);
+        assert_eq!(rates.events_per_sec, rates.windows[1].events_per_sec);
+    }
+
+    #[test]
+    fn round_the_clock_coverage_increases_automation_evidence() {
+        let base = chrono::DateTime::from_timestamp(10_000, 0).unwrap();
+        let round_the_clock = Analyzer::new(30, 100, 100, 25);
+        let daytime = Analyzer::new(30, 100, 100, 25);
+        for i in 0..24 {
+            let mut all_hours = e("always-on", (base + Duration::hours(i)).timestamp());
+            all_hours.timestamp = base + Duration::hours(i);
+            round_the_clock.observe(all_hours);
+
+            let mut office_hours = e("daytime", (base + Duration::minutes(i * 20)).timestamp());
+            office_hours.timestamp = base + Duration::minutes(i * 20);
+            daytime.observe(office_hours);
+        }
+        let broad = round_the_clock.account("always-on").automation_score;
+        let narrow = daytime.account("daytime").automation_score;
+        assert!(broad > narrow + 0.1, "broad={broad}, narrow={narrow}");
     }
 }

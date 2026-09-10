@@ -1,7 +1,8 @@
 use anyhow::Result;
 use bsky_observatory::{
     analysis::Analyzer,
-    api::{self, AppState},
+    api::{self, AppState, GrowthBaseline},
+    archive::Archive,
     config::Config,
     metrics::Metrics,
     storage::Storage,
@@ -21,17 +22,22 @@ async fn main() -> Result<()> {
         &cfg.clickhouse_user,
         &cfg.clickhouse_password,
     );
-    let analysis = Analyzer::new(
+    let analysis = Analyzer::with_windows(
         cfg.coordination_window_seconds,
         cfg.min_cluster_accounts,
         cfg.min_cluster_events,
         cfg.state_retention_hours,
+        cfg.windows_seconds.clone(),
     );
     let state = AppState {
         analysis: analysis.clone(),
         metrics: metrics.clone(),
         storage: storage.clone(),
         archive_dir: cfg.data_dir.clone(),
+        growth_baseline: GrowthBaseline {
+            measured_at: std::time::Instant::now(),
+            bytes: Archive::total_size(&cfg.data_dir) + storage.bytes().await.unwrap_or(0),
+        },
     };
     let listener = tokio::net::TcpListener::bind(&cfg.listen_addr).await?;
     tokio::spawn(bsky_observatory::ingest::run(
