@@ -27,7 +27,10 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::RwLock;
-use tower_http::services::{ServeDir, ServeFile};
+use tower_http::{
+    compression::CompressionLayer,
+    services::{ServeDir, ServeFile},
+};
 #[derive(Clone)]
 pub struct GrowthBaseline {
     pub measured_at: Instant,
@@ -80,6 +83,7 @@ pub fn router(s: AppState) -> Router {
         .route("/api/system", get(system))
         .route("/api/system/history", get(system_history))
         .fallback_service(frontend)
+        .layer(CompressionLayer::new())
         .layer(middleware::from_fn(cache_headers))
         .with_state(s)
 }
