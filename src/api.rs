@@ -129,8 +129,51 @@ async fn cluster(State(s): State<AppState>, Path(id): Path<String>) -> impl Into
 async fn account(
     State(s): State<AppState>,
     Path(did): Path<String>,
-) -> Json<crate::analysis::AccountSummary> {
-    Json(s.analysis.account(&did))
+) -> Result<Json<AccountDetail>, (StatusCode, String)> {
+    if !did.starts_with("did:") {
+        return Err((StatusCode::BAD_REQUEST, "invalid DID".into()));
+    }
+    let mut activity = s.analysis.account_activity(&did);
+    let current_identity = s
+        .identities
+        .resolve(&did)
+        .await
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
+    let identity_history = s
+        .storage
+        .identity_history(&did, 50)
+        .await
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let stored = s
+        .storage
+        .account_stats(&did)
+        .await
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    for cluster_id in s
+        .storage
+        .account_cluster_ids(&did, 50)
+        .await
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+    {
+        if !activity.cluster_ids.contains(&cluster_id) {
+            activity.cluster_ids.push(cluster_id);
+        }
+    }
+    Ok(Json(AccountDetail {
+        current_identity,
+        identity_history,
+        activity,
+        stored,
+    }))
+}
+
+#[derive(Serialize)]
+struct AccountDetail {
+    current_identity: IdentityRecord,
+    identity_history: Vec<IdentityRecord>,
+    activity: crate::analysis::AccountActivity,
+    /// Full-retention totals from ClickHouse. `activity` is the hot rolling view.
+    stored: Option<crate::storage::AccountStoredStats>,
 }
 
 #[derive(Deserialize)]

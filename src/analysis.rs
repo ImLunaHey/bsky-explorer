@@ -36,6 +36,30 @@ pub struct AccountSummary {
     pub automation_score: f64,
 }
 #[derive(Clone, Serialize)]
+pub struct AccountWindowActivity {
+    pub seconds: u64,
+    pub events: usize,
+    pub posts: usize,
+    pub likes: usize,
+    pub reposts: usize,
+    pub follows: usize,
+    pub interactions: usize,
+    pub events_per_second: f64,
+}
+#[derive(Clone, Serialize)]
+pub struct AccountActivity {
+    #[serde(flatten)]
+    pub summary: AccountSummary,
+    pub first_seen: Option<chrono::DateTime<Utc>>,
+    pub last_seen: Option<chrono::DateTime<Utc>>,
+    pub windows: Vec<AccountWindowActivity>,
+    pub unique_domains: Vec<String>,
+    pub unique_urls: Vec<String>,
+    pub recent_events: Vec<NormalizedEvent>,
+    pub cluster_ids: Vec<String>,
+    pub scores: ScoreBreakdown,
+}
+#[derive(Clone, Serialize)]
 pub struct TrendingItem {
     pub key: String,
     pub count: u64,
@@ -408,6 +432,90 @@ impl Analyzer {
         let s = self.inner.read();
         self.account_from_state(&s, did)
     }
+    pub fn account_activity(&self, did: &str) -> AccountActivity {
+        let s = self.inner.read();
+        let account_events: Vec<_> = s.events.iter().filter(|e| e.actor_did == did).collect();
+        let now = s.watermark.unwrap_or_else(Utc::now);
+        let mut domains: HashSet<_> = account_events
+            .iter()
+            .flat_map(|e| e.domains.clone())
+            .collect();
+        let mut urls: HashSet<_> = account_events.iter().flat_map(|e| e.urls.clone()).collect();
+        let mut unique_domains: Vec<_> = domains.drain().collect();
+        let mut unique_urls: Vec<_> = urls.drain().collect();
+        unique_domains.sort();
+        unique_urls.sort();
+        unique_domains.truncate(50);
+        unique_urls.truncate(50);
+        let windows = self
+            .windows_seconds
+            .iter()
+            .map(|seconds| {
+                let cutoff = now - Duration::seconds(*seconds as i64);
+                let events: Vec<_> = account_events
+                    .iter()
+                    .filter(|e| e.timestamp >= cutoff)
+                    .collect();
+                let count = |kind: &str| events.iter().filter(|e| e.kind.as_str() == kind).count();
+                AccountWindowActivity {
+                    seconds: *seconds,
+                    events: events.len(),
+                    posts: count("post") + count("reply") + count("quote"),
+                    likes: count("like"),
+                    reposts: count("repost"),
+                    follows: count("follow"),
+                    interactions: events
+                        .iter()
+                        .filter(|e| !matches!(e.kind, crate::model::EventKind::Post))
+                        .count(),
+                    events_per_second: events.len() as f64 / *seconds as f64,
+                }
+            })
+            .collect();
+        let mut recent_events: Vec<_> = account_events
+            .iter()
+            .rev()
+            .take(50)
+            .map(|e| (*e).clone())
+            .collect();
+        recent_events.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
+        let mut cluster_ids: Vec<_> = s
+            .detections
+            .values()
+            .filter(|d| d.accounts.iter().any(|account| account == did))
+            .map(|d| d.cluster_id.clone())
+            .collect();
+        cluster_ids.sort();
+        let summary = self.account_from_state(&s, did);
+        let member_detections: Vec<_> = s
+            .detections
+            .values()
+            .filter(|d| d.accounts.iter().any(|account| account == did))
+            .collect();
+        let max_score = |score: fn(&Detection) -> f64| {
+            member_detections
+                .iter()
+                .map(|d| score(d))
+                .fold(0.0, f64::max)
+        };
+        AccountActivity {
+            scores: ScoreBreakdown {
+                automation_score: summary.automation_score,
+                coordination_score: max_score(|d| d.scores.coordination_score),
+                shared_target_score: max_score(|d| d.scores.shared_target_score),
+                timing_similarity_score: max_score(|d| d.scores.timing_similarity_score),
+                content_similarity_score: max_score(|d| d.scores.content_similarity_score),
+            },
+            summary,
+            first_seen: account_events.iter().map(|e| e.timestamp).min(),
+            last_seen: account_events.iter().map(|e| e.timestamp).max(),
+            windows,
+            unique_domains,
+            unique_urls,
+            recent_events,
+            cluster_ids,
+        }
+    }
     fn account_from_state(&self, s: &State, did: &str) -> AccountSummary {
         let cutoff = s.watermark.unwrap_or_else(Utc::now) - Duration::hours(24);
         let e: Vec<_> = s
@@ -592,6 +700,23 @@ mod tests {
         let d = a.observe(e("c", 102)).unwrap();
         assert_eq!(d.accounts.len(), 3);
         assert!(d.scores.coordination_score > 0.6)
+    }
+    #[test]
+    fn account_activity_exposes_windows_evidence_and_clusters() {
+        let a = Analyzer::with_windows(30, 3, 3, 24, vec![60, 300]);
+        for (actor, time) in [("alice", 100), ("bob", 101), ("carol", 102)] {
+            let mut event = e(actor, time);
+            event.urls = vec!["https://example.test/campaign".into()];
+            event.domains = vec!["example.test".into()];
+            a.observe(event);
+        }
+        let detail = a.account_activity("alice");
+        assert_eq!(detail.first_seen.unwrap().timestamp(), 100);
+        assert_eq!(detail.windows.len(), 2);
+        assert_eq!(detail.unique_domains, ["example.test"]);
+        assert_eq!(detail.recent_events.len(), 1);
+        assert_eq!(detail.cluster_ids.len(), 1);
+        assert!(detail.scores.coordination_score > 0.0);
     }
     #[test]
     fn organic_burst_does_not_form_cluster() {

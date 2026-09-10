@@ -27,6 +27,19 @@ pub struct ClickHouseStats {
     pub errors_since_restart: u64,
     pub active_queries: u64,
 }
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct AccountStoredStats {
+    pub event_count: u64,
+    pub post_count: u64,
+    pub like_count: u64,
+    pub repost_count: u64,
+    pub follow_count: u64,
+    pub unique_targets: u64,
+    pub first_seen_ms: i64,
+    pub last_seen_ms: i64,
+    pub domains: Vec<String>,
+    pub urls: Vec<String>,
+}
 #[derive(Row, Serialize)]
 struct EventRow {
     event_id: String,
@@ -143,6 +156,50 @@ impl Storage {
                 source: row.source,
             })
         }))
+    }
+    pub async fn identity_history(&self, did: &str, limit: u64) -> Result<Vec<IdentityRecord>> {
+        #[derive(Row, Deserialize)]
+        struct IdentityResult {
+            did: String,
+            handle: String,
+            observed_at_ms: i64,
+            source: String,
+        }
+        let rows = self.client
+            .query("SELECT did, handle, toUnixTimestamp64Milli(observed_at) AS observed_at_ms, source FROM identity_history WHERE did = ? ORDER BY observed_at DESC LIMIT ?")
+            .bind(did).bind(limit)
+            .fetch_all::<IdentityResult>().await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                Some(IdentityRecord {
+                    did: row.did,
+                    handle: (!row.handle.is_empty()).then_some(row.handle),
+                    observed_at: chrono::DateTime::from_timestamp_millis(row.observed_at_ms)?,
+                    source: row.source,
+                })
+            })
+            .collect())
+    }
+    pub async fn account_stats(&self, did: &str) -> Result<Option<AccountStoredStats>> {
+        let row = self.client.query(
+            "SELECT count() AS event_count, countIf(kind IN ('post','reply','quote')) AS post_count, countIf(kind='like') AS like_count, countIf(kind='repost') AS repost_count, countIf(kind='follow') AS follow_count, uniqExactIf(target, target != '') AS unique_targets, toUnixTimestamp64Milli(min(timestamp)) AS first_seen_ms, toUnixTimestamp64Milli(max(timestamp)) AS last_seen_ms, arraySlice(groupUniqArrayArray(100)(domains), 1, 50) AS domains, arraySlice(groupUniqArrayArray(100)(urls), 1, 50) AS urls FROM events WHERE actor_did = ? HAVING event_count > 0"
+        ).bind(did).fetch_optional::<AccountStoredStats>().await?;
+        Ok(row)
+    }
+    pub async fn account_cluster_ids(&self, did: &str, limit: u64) -> Result<Vec<String>> {
+        #[derive(Row, Deserialize)]
+        struct ClusterResult {
+            cluster_id: String,
+        }
+        // DIDs cannot contain JSON quote characters, so matching their encoded
+        // account-array value avoids substring matches against evidence text.
+        let needle = format!("%\"{}\"%", did);
+        Ok(self.client
+            .query("SELECT cluster_id FROM detections FINAL WHERE evidence_json LIKE ? ORDER BY last_seen DESC LIMIT ?")
+            .bind(needle).bind(limit)
+            .fetch_all::<ClusterResult>().await?
+            .into_iter().map(|row| row.cluster_id).collect())
     }
     pub async fn bytes(&self) -> Result<u64> {
         self.table_bytes(None).await
