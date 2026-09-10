@@ -105,6 +105,20 @@ pub struct RecentEvents {
     pub retained_event_count: usize,
     pub has_more: bool,
 }
+#[derive(Clone, Copy)]
+pub enum TrendDimension {
+    Domain,
+    Url,
+    Fingerprint(u64),
+}
+#[derive(Clone, Serialize)]
+pub struct TrendDrilldown {
+    pub events: Vec<NormalizedEvent>,
+    pub total: usize,
+    pub offset: usize,
+    pub limit: usize,
+    pub cluster_ids: Vec<String>,
+}
 #[derive(Clone)]
 pub struct Analyzer {
     inner: Arc<RwLock<State>>,
@@ -332,6 +346,59 @@ impl Analyzer {
             next_after_time_us: s.events.back().map(|event| event.time_us),
             retained_event_count: s.events.len(),
             has_more: matching_count > limit,
+        }
+    }
+    pub fn trend_drilldown(
+        &self,
+        dimension: TrendDimension,
+        key: &str,
+        kind: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> TrendDrilldown {
+        let s = self.inner.read();
+        let matches_dimension = |event: &&NormalizedEvent| match dimension {
+            TrendDimension::Domain => event
+                .domains
+                .iter()
+                .any(|domain| domain.eq_ignore_ascii_case(key)),
+            TrendDimension::Url => event.urls.iter().any(|url| url == key),
+            TrendDimension::Fingerprint(hash) => event.normalized_text_hash == Some(hash),
+        };
+        let matches_kind = |event: &&NormalizedEvent| {
+            kind.is_none_or(|kind| event.kind.as_str().eq_ignore_ascii_case(kind))
+        };
+        let matching: Vec<_> = s
+            .events
+            .iter()
+            .rev()
+            .filter(matches_dimension)
+            .filter(matches_kind)
+            .collect();
+        let event_ids: HashSet<_> = matching.iter().map(|event| &event.event_id).collect();
+        let mut cluster_ids: Vec<_> = s
+            .detections
+            .values()
+            .filter(|detection| {
+                detection
+                    .sample_events
+                    .iter()
+                    .any(|event| event_ids.contains(&event.event_id))
+            })
+            .map(|detection| detection.cluster_id.clone())
+            .collect();
+        cluster_ids.sort();
+        TrendDrilldown {
+            total: matching.len(),
+            events: matching
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .cloned()
+                .collect(),
+            offset,
+            limit,
+            cluster_ids,
         }
     }
     pub fn retained_record(&self, uri: &str) -> Option<NormalizedEvent> {
@@ -1059,5 +1126,78 @@ mod tests {
         assert_eq!(filtered.events.len(), 1);
         assert_eq!(filtered.events[0].actor_did, "did:plc:alice");
         assert_eq!(filtered.next_after_time_us, Some(102_000_000));
+    }
+
+    #[test]
+    fn trend_drilldowns_match_exact_values_and_paginate_newest_first() {
+        let a = Analyzer::new(30, 100, 100, 24);
+        for (actor, time, domain, url, hash, kind) in [
+            (
+                "alice",
+                100,
+                "example.test",
+                "https://example.test/a",
+                42,
+                EventKind::Post,
+            ),
+            (
+                "bob",
+                101,
+                "elsewhere.test",
+                "https://elsewhere.test",
+                7,
+                EventKind::Post,
+            ),
+            (
+                "carol",
+                102,
+                "example.test",
+                "https://example.test/a",
+                42,
+                EventKind::Reply,
+            ),
+            (
+                "dave",
+                103,
+                "example.test",
+                "https://example.test/b",
+                42,
+                EventKind::Post,
+            ),
+        ] {
+            let mut event = e(actor, time);
+            event.kind = kind;
+            event.domains = vec![domain.into()];
+            event.urls = vec![url.into()];
+            event.normalized_text_hash = Some(hash);
+            a.observe(event);
+        }
+
+        let page = a.trend_drilldown(TrendDimension::Domain, "EXAMPLE.TEST", None, 1, 1);
+        assert_eq!(page.total, 3);
+        assert_eq!(page.events[0].actor_did, "carol");
+        assert_eq!(page.offset, 1);
+        assert_eq!(page.limit, 1);
+
+        let posts = a.trend_drilldown(
+            TrendDimension::Fingerprint(42),
+            "000000000000002a",
+            Some("post"),
+            0,
+            20,
+        );
+        assert_eq!(posts.total, 2);
+        assert_eq!(
+            posts
+                .events
+                .iter()
+                .map(|event| event.actor_did.as_str())
+                .collect::<Vec<_>>(),
+            ["dave", "alice"]
+        );
+
+        let exact_url =
+            a.trend_drilldown(TrendDimension::Url, "https://example.test/a", None, 0, 20);
+        assert_eq!(exact_url.total, 2);
     }
 }

@@ -47,6 +47,7 @@ pub fn router(s: AppState) -> Router {
         .route("/api/trending/urls", get(urls))
         .route("/api/trending/domains", get(domains))
         .route("/api/trending/fingerprints", get(fingerprints))
+        .route("/api/trending/drilldown", get(trend_drilldown))
         .route("/api/trending/conversations", get(conversations))
         .route("/api/anomalies", get(anomalies))
         .route("/api/clusters", get(clusters))
@@ -160,6 +161,92 @@ async fn domains(State(s): State<AppState>) -> Json<Vec<(String, u64)>> {
 }
 async fn fingerprints(State(s): State<AppState>) -> Json<Vec<crate::analysis::TrendingItem>> {
     Json(s.analysis.trending_fingerprints())
+}
+#[derive(Deserialize)]
+struct TrendDrilldownQuery {
+    dimension: String,
+    key: String,
+    #[serde(default = "default_drilldown_limit")]
+    limit: usize,
+    #[serde(default)]
+    offset: usize,
+    kind: Option<String>,
+}
+
+fn default_drilldown_limit() -> usize {
+    50
+}
+
+async fn trend_drilldown(
+    State(s): State<AppState>,
+    Query(query): Query<TrendDrilldownQuery>,
+) -> Result<Json<crate::analysis::TrendDrilldown>, (StatusCode, String)> {
+    if query.key.trim().is_empty() || query.key.len() > 2_048 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "key must be between 1 and 2048 bytes".into(),
+        ));
+    }
+    if query.limit == 0 || query.limit > 200 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "limit must be between 1 and 200".into(),
+        ));
+    }
+    if query.offset > 10_000 {
+        return Err((StatusCode::BAD_REQUEST, "offset cannot exceed 10000".into()));
+    }
+    let kind = query
+        .kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    if kind.is_some_and(|kind| !valid_event_kind(kind)) {
+        return Err((StatusCode::BAD_REQUEST, "unknown event kind".into()));
+    }
+    let dimension = parse_trend_dimension(&query.dimension, &query.key)?;
+    Ok(Json(s.analysis.trend_drilldown(
+        dimension,
+        query.key.trim(),
+        kind,
+        query.offset,
+        query.limit,
+    )))
+}
+
+fn parse_trend_dimension(
+    dimension: &str,
+    key: &str,
+) -> Result<crate::analysis::TrendDimension, (StatusCode, String)> {
+    match dimension {
+        "domain" => Ok(crate::analysis::TrendDimension::Domain),
+        "url" => Ok(crate::analysis::TrendDimension::Url),
+        "fingerprint" if key.len() == 16 => u64::from_str_radix(key, 16)
+            .map(crate::analysis::TrendDimension::Fingerprint)
+            .map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    "fingerprint key must be a 16-character hexadecimal value".into(),
+                )
+            }),
+        "fingerprint" => Err((
+            StatusCode::BAD_REQUEST,
+            "fingerprint key must be a 16-character hexadecimal value".into(),
+        )),
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            "dimension must be domain, url, or fingerprint".into(),
+        )),
+    }
+}
+
+fn valid_event_kind(kind: &str) -> bool {
+    const KINDS: &[&str] = &[
+        "post", "like", "repost", "follow", "unfollow", "reply", "quote", "delete", "other",
+    ];
+    KINDS
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(kind))
 }
 async fn conversations(State(s): State<AppState>) -> Json<Vec<crate::analysis::TrendingItem>> {
     Json(s.analysis.growing_conversations())
@@ -663,6 +750,22 @@ mod tests {
         assert!(!is_at_uri(
             "at://did:plc:alice/app.bsky.feed.post/key/extra"
         ));
+    }
+
+    #[test]
+    fn validates_trend_dimensions_and_fingerprints() {
+        assert!(matches!(
+            parse_trend_dimension("domain", "example.test"),
+            Ok(crate::analysis::TrendDimension::Domain)
+        ));
+        assert!(matches!(
+            parse_trend_dimension("fingerprint", "000000000000002a"),
+            Ok(crate::analysis::TrendDimension::Fingerprint(42))
+        ));
+        assert!(parse_trend_dimension("fingerprint", "42").is_err());
+        assert!(parse_trend_dimension("account", "did:plc:test").is_err());
+        assert!(valid_event_kind("RePoSt"));
+        assert!(!valid_event_kind("subscribe"));
     }
 
     #[test]
