@@ -1,0 +1,106 @@
+import { useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { createColumnHelper, flexRender, getCoreRowModel, getFilteredRowModel, getPaginationRowModel, getSortedRowModel, type SortingState, useReactTable } from '@tanstack/react-table'
+import { Activity, ArrowDownUp, Bot, ChevronRight, CircleAlert, Gauge, Network, Search, TrendingUp, X } from 'lucide-react'
+import { Chart } from '@tanstack/charts/react'
+import { defineChart, lineY } from '@tanstack/charts'
+import { scaleLinear } from '@tanstack/charts/scales/linear'
+import { api } from './api'
+import type { Anomalies, ClusterDetail, Detection, Identity, Rates, StorageStats, SystemSample, SystemStats, TrendingItem } from './types'
+
+const n = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 })
+const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
+const bytes = (value?:number) => {
+  if (value == null || !Number.isFinite(value)) return '—'
+  const units = ['B','KiB','MiB','GiB','TiB','PiB']; let i=0; let x=Math.max(0,value)
+  while (x >= 1024 && i < units.length-1) { x/=1024; i++ }
+  return `${x.toLocaleString(undefined,{maximumFractionDigits:i ? 2 : 0})} ${units[i]}`
+}
+const duration = (seconds?:number) => seconds == null ? '—' : seconds < 3600 ? `${Math.floor(seconds/60)}m` : seconds < 86400 ? `${(seconds/3600).toFixed(1)}h` : `${(seconds/86400).toFixed(1)}d`
+const pct = (x?:number) => x == null ? '—' : `${(x*(x<=1?100:1)).toFixed(1)}%`
+const shortDid = (did:string) => did.length > 30 ? `${did.slice(0,18)}…${did.slice(-7)}` : did
+
+function useApi<T>(key:string, path:string, interval=3000) { return useQuery({ queryKey:[key], queryFn:()=>api<T>(path), refetchInterval:interval }) }
+
+function Stat({label,value,unit,icon:Icon,tone='mint'}:{label:string;value:string;unit?:string;icon:typeof Activity;tone?:'mint'|'cyan'|'amber'}) {
+  const color=tone==='cyan'?'text-cyan':tone==='amber'?'text-amber-300':'text-mint'
+  return <div className="panel p-5"><div className="flex items-center justify-between"><span className="eyebrow">{label}</span><Icon className={`${color} size-4`} /></div><div className="mt-4 flex items-baseline gap-2"><span className="text-3xl font-semibold tracking-tight">{value}</span>{unit&&<span className="text-xs text-dim">{unit}</span>}</div></div>
+}
+
+function Panel({title,caption,children,className=''}:{title:string;caption?:string;children:React.ReactNode;className?:string}) {
+  return <section className={`panel min-w-0 p-5 ${className}`}><div className="mb-5"><h2 className="font-semibold tracking-tight">{title}</h2>{caption&&<p className="mt-1 text-xs text-dim">{caption}</p>}</div>{children}</section>
+}
+
+function Empty({children='Waiting for enough activity…'}:{children?:React.ReactNode}) { return <div className="flex min-h-28 items-center justify-center text-sm text-dim">{children}</div> }
+
+function RateChart({rates}:{rates:Rates}) {
+  const definition=useMemo(()=>{const rows=rates.windows.map(w=>({window:w.seconds/60, rate:w.events_per_sec})); return defineChart({ marks:[lineY(rows,{x:'window',y:'rate',stroke:'#74f5c6'})], scales:{x:{scale:scaleLinear},y:{scale:scaleLinear}} })},[rates])
+  return <Chart definition={definition} height={150} ariaLabel="Events per second by analysis window" />
+}
+
+function RankList({items}:{items:TrendingItem[]}) {
+  if(!items.length)return <Empty />
+  const max=Math.max(...items.map(x=>x.count),1)
+  return <div className="space-y-4">{items.slice(0,8).map((item,i)=><div key={item.key}><div className="mb-1.5 flex items-center gap-3 text-sm"><span className="w-5 text-xs text-dim">{String(i+1).padStart(2,'0')}</span><span className="min-w-0 flex-1 truncate" title={item.key}>{item.sample||item.key}</span><span className="font-mono text-xs text-mint">{compact.format(item.count)}</span></div><div className="ml-8 h-1 overflow-hidden rounded bg-line"><div className="h-full rounded bg-mint/70" style={{width:`${item.count/max*100}%`}} /></div></div>)}</div>
+}
+
+const clusterHelper=createColumnHelper<Detection>()
+const clusterColumns=[
+  clusterHelper.accessor('cluster_id',{header:'Cluster',cell:x=><span className="font-mono text-xs text-cyan">{x.getValue().replace('coord-','')}</span>}),
+  clusterHelper.accessor(x=>x.accounts.length,{id:'accounts',header:'Accounts'}),
+  clusterHelper.accessor('event_count',{header:'Events'}),
+  clusterHelper.accessor(x=>x.scores.coordination_score,{id:'score',header:'Coordination',cell:x=><Score value={x.getValue()} />}),
+  clusterHelper.accessor(x=>x.common_domains[0]||x.common_targets[0]||'—',{id:'evidence',header:'Primary evidence',cell:x=><span className="block max-w-60 truncate text-dim">{x.getValue()}</span>}),
+]
+
+function Score({value}:{value:number}) { return <div className="flex items-center gap-2"><div className="h-1.5 w-16 rounded bg-line"><div className="h-full rounded bg-cyan" style={{width:`${value*100}%`}} /></div><span className="font-mono text-xs">{value.toFixed(2)}</span></div> }
+
+function ClusterTable({data,onOpen}:{data:Detection[];onOpen:(x:Detection)=>void}) {
+  const [sorting,setSorting]=useState<SortingState>([{id:'score',desc:true}]); const [filter,setFilter]=useState('')
+  const table=useReactTable({data,columns:clusterColumns,state:{sorting,globalFilter:filter},initialState:{pagination:{pageIndex:0,pageSize:10}},onSortingChange:setSorting,onGlobalFilterChange:setFilter,getCoreRowModel:getCoreRowModel(),getSortedRowModel:getSortedRowModel(),getFilteredRowModel:getFilteredRowModel(),getPaginationRowModel:getPaginationRowModel()})
+  return <><div className="relative mb-4 max-w-xs"><Search className="absolute left-3 top-2.5 size-4 text-dim"/><input value={filter} onChange={e=>setFilter(e.target.value)} placeholder="Filter clusters…" className="w-full rounded-lg border border-line bg-ink/60 py-2 pl-9 pr-3 text-sm outline-none focus:border-mint/60" /></div><div className="scrollbar overflow-x-auto"><table className="w-full min-w-180 text-left text-sm"><thead className="border-b border-line text-xs text-dim">{table.getHeaderGroups().map(h=><tr key={h.id}>{h.headers.map(x=><th key={x.id} className="px-3 py-3 font-medium"><button className="flex items-center gap-1" onClick={x.column.getToggleSortingHandler()}>{flexRender(x.column.columnDef.header,x.getContext())}{x.column.getCanSort()&&<ArrowDownUp className="size-3"/>}</button></th>)}<th/></tr>)}</thead><tbody>{table.getRowModel().rows.map(row=><tr key={row.id} onClick={()=>onOpen(row.original)} className="cursor-pointer border-b border-line/60 hover:bg-white/[.025]">{row.getVisibleCells().map(cell=><td key={cell.id} className="px-3 py-3.5">{flexRender(cell.column.columnDef.cell,cell.getContext())}</td>)}<td><ChevronRight className="size-4 text-dim"/></td></tr>)}</tbody></table>{!data.length&&<Empty>No active coordination clusters</Empty>}</div>{data.length>0&&<div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-dim"><span>Page {table.getState().pagination.pageIndex+1} of {table.getPageCount()}</span><div className="flex items-center gap-2"><label>Rows <select value={table.getState().pagination.pageSize} onChange={e=>table.setPageSize(Number(e.target.value))} className="rounded border border-line bg-ink px-2 py-1.5 text-white">{[10,20,50].map(x=><option key={x}>{x}</option>)}</select></label><button disabled={!table.getCanPreviousPage()} onClick={()=>table.previousPage()} className="rounded border border-line px-3 py-1.5 text-white disabled:opacity-30">Previous</button><button disabled={!table.getCanNextPage()} onClick={()=>table.nextPage()} className="rounded border border-line px-3 py-1.5 text-white disabled:opacity-30">Next</button></div></div>}</>
+}
+
+function ClusterDrawer({cluster,onClose}:{cluster:Detection;onClose:()=>void}) {
+  const {data,isLoading}=useQuery({queryKey:['cluster',cluster.cluster_id],queryFn:()=>api<ClusterDetail>(`/api/clusters/${encodeURIComponent(cluster.cluster_id)}`)})
+  const identities=useQuery({queryKey:['identities',...cluster.accounts],queryFn:()=>api<Identity[]>(`/api/identities?dids=${encodeURIComponent(cluster.accounts.join(','))}`),staleTime:300_000})
+  const handles=new Map(identities.data?.map(x=>[x.did,x.handle])||[])
+  const d=data||cluster
+  return <div className="fixed inset-0 z-50 flex justify-end bg-black/70 backdrop-blur-sm" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><aside className="scrollbar h-full w-full max-w-2xl overflow-y-auto border-l border-line bg-ink p-6 shadow-2xl"><button onClick={onClose} className="float-right rounded-lg border border-line p-2 text-dim hover:text-white" aria-label="Close"><X className="size-4"/></button><p className="eyebrow">Detection evidence</p><h2 className="mt-2 font-mono text-xl text-cyan">{d.cluster_id}</h2><p className="mt-2 text-xs text-dim">Observed {new Date(d.first_seen).toLocaleString()} — {new Date(d.last_seen).toLocaleString()}</p>
+    <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-5">{Object.entries(d.scores).map(([k,v])=><div className="rounded-xl border border-line p-3" key={k}><div className="text-lg font-semibold">{v.toFixed(2)}</div><div className="mt-1 text-[10px] uppercase tracking-wide text-dim">{k.replaceAll('_',' ')}</div></div>)}</div>
+    <h3 className="eyebrow mt-8 mb-3">Participating identities · {d.accounts.length}</h3><div className="flex flex-wrap gap-2">{d.accounts.map(x=><button key={x} title={x} className="rounded-full border border-line bg-panel px-3 py-1.5 text-xs text-cyan"><span className="font-medium">{handles.get(x)||shortDid(x)}</span>{handles.get(x)&&<span className="ml-2 font-mono text-[10px] text-dim">{shortDid(x)}</span>}</button>)}</div>
+    <div className="mt-8 grid gap-5 sm:grid-cols-2"><div><h3 className="eyebrow mb-3">Evidence summary</h3><dl className="space-y-2 text-sm"><Row k="Shared target ratio" v={pct(d.shared_target_ratio)}/><Row k="Median timing" v={`${n.format(d.median_timing_difference_ms)} ms`}/><Row k="Repeated content" v={n.format(d.repeated_content_count)}/><Row k="Events" v={n.format(d.event_count)}/></dl></div><div><h3 className="eyebrow mb-3">Common domains</h3>{d.common_domains.length?<div className="flex flex-wrap gap-2">{d.common_domains.map(x=><span className="rounded bg-mint/10 px-2 py-1 text-xs text-mint" key={x}>{x}</span>)}</div>:<span className="text-sm text-dim">None</span>}</div></div>
+    <h3 className="eyebrow mt-8 mb-3">Interaction graph</h3>{isLoading?<Empty>Loading evidence…</Empty>:data?.graph_edges.length?<div className="space-y-2">{data.graph_edges.map((x,i)=><div className="flex items-center gap-3 rounded-lg border border-line p-3 text-xs" key={i}><span className="truncate font-mono">{shortDid(x.source)}</span><span className="text-mint">→</span><span className="min-w-0 flex-1 truncate font-mono">{shortDid(x.target)}</span><b>×{x.event_count}</b></div>)}</div>:<Empty>No directed edges retained</Empty>}
+    <h3 className="eyebrow mt-8 mb-3">Sample events</h3><div className="space-y-2">{d.sample_events.map(x=><div key={x.event_id} className="grid grid-cols-[6rem_1fr] gap-3 rounded-lg border border-line p-3 text-xs"><span className="uppercase text-mint">{x.kind}</span><span className="min-w-0 truncate font-mono" title={x.actor_did}>{shortDid(x.actor_did)} · {new Date(x.timestamp).toLocaleTimeString()}</span></div>)}</div>
+  </aside></div>
+}
+
+function Row({k,v}:{k:string;v:string}) { return <div className="flex justify-between gap-4"><dt className="text-dim">{k}</dt><dd className="font-mono">{v}</dd></div> }
+
+function SystemHistoryChart({history}:{history:SystemSample[]}) {
+ const definition=useMemo(()=>{const rows=history.map(x=>({time:x.timestamp,rate:x.events_per_second}));return defineChart({marks:[lineY(rows,{x:'time',y:'rate',stroke:'#72dceb'})],scales:{x:{scale:scaleLinear},y:{scale:scaleLinear}}})},[history])
+ return history.length>1?<Chart definition={definition} height={170} ariaLabel="Live event throughput history"/>:<Empty>Collecting history samples…</Empty>
+}
+
+function SystemView({storage,system,history}:{storage?:StorageStats;system?:SystemStats;history:SystemSample[]}) {
+ const c=system?.clickhouse, tables=c?.tables||[]; const chRows=tables.reduce((a,x)=>a+x.rows,0),chParts=tables.reduce((a,x)=>a+x.active_parts,0),chCompressed=tables.reduce((a,x)=>a+x.compressed_bytes,0),chRaw=tables.reduce((a,x)=>a+x.uncompressed_bytes,0)
+ return <div className="grid gap-5 lg:grid-cols-3"><Panel title="Storage footprint" caption="Binary units; measured from live disk usage"><dl className="space-y-3 text-sm"><Row k="Raw event archive" v={bytes(storage?.raw_archive_bytes)}/><Row k="ClickHouse" v={bytes(storage?.clickhouse_bytes)}/><Row k="Derived detections" v={bytes(storage?.derived_bytes)}/><Row k="Daily growth" v={bytes(storage?.bytes_ingested_per_day)}/><Row k="Monthly projection" v={bytes(storage?.projected_monthly_bytes)}/><Row k="Yearly projection" v={bytes(storage?.projected_yearly_bytes)}/></dl></Panel>
+ <Panel title="Storage array" caption={system?.storage_array.path||'Archive mount capacity'}><dl className="space-y-3 text-sm"><Row k="Used" v={bytes(system?.storage_array.used_bytes)}/><Row k="Available" v={bytes(system?.storage_array.available_bytes)}/><Row k="Total" v={bytes(system?.storage_array.total_bytes)}/><Row k="Process memory" v={bytes(system?.runtime.process_resident_memory_bytes)}/><Row k="Container memory" v={bytes(system?.runtime.container_memory_used_bytes)}/><Row k="Service uptime" v={duration(system?.runtime.process_uptime_seconds)}/></dl></Panel>
+ <Panel title="ClickHouse" caption={system?.clickhouse_error||'Analytical datastore activity'}><dl className="space-y-3 text-sm"><Row k="Rows" v={c?compact.format(chRows):'—'}/><Row k="Parts / tables" v={c?`${n.format(chParts)} / ${n.format(tables.length)}`:'—'}/><Row k="Compressed" v={bytes(c?chCompressed:undefined)}/><Row k="Uncompressed" v={bytes(c?chRaw:undefined)}/><Row k="Compression ratio" v={chCompressed?`${n.format(chRaw/chCompressed)}×`:'—'}/><Row k="Queries / mutations" v={c?`${n.format(c.active_queries)} / ${n.format(c.pending_mutations)}`:'—'}/></dl></Panel>
+ <Panel title="Throughput history" caption="15-second samples retained for 24 hours" className="lg:col-span-3"><SystemHistoryChart history={history}/></Panel></div>
+}
+
+export default function App() {
+ const [view,setView]=useState<'network'|'anomalies'|'system'>('network'); const [selected,setSelected]=useState<Detection>()
+ const rates=useApi<Rates>('rates','/api/stats'); const urls=useApi<[string,number][]>('urls','/api/trending/urls'); const domains=useApi<[string,number][]>('domains','/api/trending/domains'); const prints=useApi<TrendingItem[]>('prints','/api/trending/fingerprints'); const conversations=useApi<TrendingItem[]>('conversations','/api/trending/conversations'); const clusters=useApi<Detection[]>('clusters','/api/clusters'); const anomalies=useApi<Anomalies>('anomalies','/api/anomalies'); const storage=useApi<StorageStats>('storage','/api/storage',10000); const system=useApi<SystemStats>('system','/api/system',5000); const history=useApi<SystemSample[]>('system-history','/api/system/history',15000)
+ const anomalyDids=(anomalies.data?.unusual_posting||[]).slice(0,100).map(x=>x.did)
+ const anomalyIdentities=useQuery({queryKey:['anomaly-identities',...anomalyDids],queryFn:()=>api<Identity[]>(`/api/identities?dids=${encodeURIComponent(anomalyDids.join(','))}`),enabled:anomalyDids.length>0,staleTime:300_000})
+ const anomalyHandles=new Map(anomalyIdentities.data?.map(x=>[x.did,x.handle])||[])
+ const r=rates.data
+ const normalized=(x?:[string,number][]):TrendingItem[] => (x||[]).map(([key,count])=>({key,count,recent_count:count,growth:0}))
+ return <><header className="sticky top-0 z-30 border-b border-line/80 bg-ink/90 backdrop-blur-xl"><div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4"><div className="flex items-center gap-3"><div className="grid size-9 place-items-center rounded-xl bg-mint text-ink"><Network className="size-5"/></div><div><h1 className="text-sm font-semibold tracking-tight">Bluesky Observatory</h1><p className="text-[10px] uppercase tracking-[.16em] text-dim">Live ATProto network intelligence</p></div></div><div className="flex items-center gap-2 text-xs text-dim"><span className={`size-2 rounded-full ${rates.isError?'bg-red-400':'animate-pulse bg-mint'}`}/>{rates.isError?'Disconnected':'Firehose live'}</div></div></header>
+ <main className="mx-auto max-w-7xl px-5 py-7"><nav className="mb-7 flex gap-1 rounded-xl border border-line bg-panel/70 p-1 sm:w-fit">{([['network','Network'],['anomalies','Detections'],['system','System']] as const).map(([id,label])=><button key={id} onClick={()=>setView(id)} className={`rounded-lg px-4 py-2 text-xs font-medium transition ${view===id?'bg-mint text-ink':'text-dim hover:text-white'}`}>{label}</button>)}</nav>
+ {view==='network'&&<><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"><Stat label="Events / sec" value={r?n.format(r.events_per_sec):'—'} icon={Activity}/><Stat label="Posts / sec" value={r?n.format(r.posts_per_sec):'—'} icon={TrendingUp} tone="cyan"/><Stat label="Likes / sec" value={r?n.format(r.likes_per_sec):'—'} icon={Gauge}/><Stat label="Follows / sec" value={r?n.format(r.follows_per_sec):'—'} icon={Network} tone="cyan"/></div><div className="mt-5 grid gap-5 lg:grid-cols-3"><Panel title="Rate by window" caption="Events/sec across configured sliding windows" className="lg:col-span-2">{r?<RateChart rates={r}/>:<Empty/>}</Panel><Panel title="Storage now" caption="Archive and analytical footprint"><div className="text-3xl font-semibold">{bytes((storage.data?.raw_archive_bytes||0)+(storage.data?.clickhouse_bytes||0))}</div><div className="mt-5 space-y-2"><Row k="Archive" v={bytes(storage.data?.raw_archive_bytes)}/><Row k="ClickHouse" v={bytes(storage.data?.clickhouse_bytes)}/><Row k="Growth / day" v={bytes(storage.data?.bytes_ingested_per_day)}/></div></Panel></div><div className="mt-5 grid gap-5 md:grid-cols-2 lg:grid-cols-3"><Panel title="Top domains" caption="Most shared in retained hot state"><RankList items={normalized(domains.data)}/></Panel><Panel title="Top URLs" caption="Shared destinations"><RankList items={normalized(urls.data)}/></Panel><Panel title="Text fingerprints" caption="Repeated normalized phrases"><RankList items={prints.data||[]}/></Panel><Panel title="Growing conversations" caption="Fastest recent reply growth" className="md:col-span-2 lg:col-span-3"><RankList items={conversations.data||[]}/></Panel></div></>}
+ {view==='anomalies'&&<><div className="grid gap-4 sm:grid-cols-3"><Stat label="Active clusters" value={n.format(clusters.data?.length||0)} icon={Network}/><Stat label="Posting anomalies" value={n.format(anomalies.data?.unusual_posting.length||0)} icon={CircleAlert} tone="amber"/><Stat label="Content campaigns" value={n.format(anomalies.data?.repeated_content_campaigns.length||0)} icon={Bot} tone="cyan"/></div><Panel title="Coordination clusters" caption="Evidence-based behavioural signals — never identity labels" className="mt-5"><ClusterTable data={clusters.data||[]} onOpen={setSelected}/></Panel><div className="mt-5 grid gap-5 lg:grid-cols-2"><Panel title="Unusual posting behaviour">{anomalies.data?.unusual_posting.length?<div className="max-h-120 space-y-3 overflow-y-auto pr-1 scrollbar">{anomalies.data.unusual_posting.map(a=><div key={a.did} className="rounded-xl border border-line p-3"><div className="flex justify-between gap-4"><span className="min-w-0 text-xs text-cyan" title={a.did}><b className="block truncate">{anomalyHandles.get(a.did)||shortDid(a.did)}</b>{anomalyHandles.get(a.did)&&<span className="block truncate font-mono text-[10px] text-dim">{a.did}</span>}</span><b>{a.automation_score.toFixed(2)}</b></div><p className="mt-2 text-xs text-dim">{a.events_24h} events · {a.posts_24h} posts · {a.unique_targets} targets</p></div>)}</div>:<Empty>No posting-rate anomalies</Empty>}</Panel><Panel title="Repeated-content campaigns">{anomalies.data?.repeated_content_campaigns.length?<div className="max-h-120 space-y-3 overflow-y-auto pr-1 scrollbar">{anomalies.data.repeated_content_campaigns.map(x=><button key={x.cluster_id} onClick={()=>setSelected(x)} className="flex w-full justify-between rounded-xl border border-line p-3 text-left hover:border-cyan/50"><span className="font-mono text-xs text-cyan">{x.cluster_id}</span><span className="text-xs">{x.repeated_content_count} matches</span></button>)}</div>:<Empty>No repeated-content campaigns</Empty>}</Panel></div></>}
+ {view==='system'&&<SystemView storage={storage.data} system={system.data} history={history.data||[]}/>}</main>{selected&&<ClusterDrawer cluster={selected} onClose={()=>setSelected(undefined)}/>}</>
+}

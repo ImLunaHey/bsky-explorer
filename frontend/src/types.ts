@@ -1,0 +1,19 @@
+export type Scores = { automation_score:number; coordination_score:number; shared_target_score:number; timing_similarity_score:number; content_similarity_score:number }
+export type EvidenceEvent = { event_id:string; actor_did:string; kind:string; timestamp:string; target?:string }
+export type Detection = { cluster_id:string; first_seen:string; last_seen:string; accounts:string[]; event_count:number; scores:Scores; shared_target_ratio:number; median_timing_difference_ms:number; repeated_content_count:number; common_urls:string[]; common_domains:string[]; common_targets:string[]; sample_events:EvidenceEvent[] }
+export type ClusterDetail = Detection & { timeline:{timestamp:string;event_count:number}[]; graph_edges:{source:string;target:string;event_count:number}[] }
+export type WindowRates = { seconds:number; events_per_sec:number; posts_per_sec:number; likes_per_sec:number; follows_per_sec:number; interactions_per_sec:number }
+export type Rates = WindowRates & { windows:WindowRates[] }
+export type TrendingItem = { key:string; count:number; recent_count:number; growth:number; sample?:string }
+export type AccountSummary = { did:string; handle?:string; events_24h:number; posts_24h:number; unique_targets:number; automation_score:number }
+export type Anomalies = { coordination_clusters:Detection[]; unusual_posting:AccountSummary[]; repeated_content_campaigns:Detection[] }
+export type StorageStats = { raw_archive_bytes:number; clickhouse_bytes:number; derived_bytes:number; bytes_ingested_per_hour:number; bytes_ingested_per_day:number; projected_monthly_bytes:number; projected_yearly_bytes:number }
+export type SystemStats = {
+  scope_note:string
+  runtime:{process_uptime_seconds:number;process_resident_memory_bytes:number;container_memory_used_bytes?:number;container_memory_limit_bytes?:number;host_load_average?:number[];host_uptime_seconds?:number}
+  storage_array:{path:string;total_bytes:number;available_bytes:number;used_bytes:number}
+  clickhouse?:{tables:{table:string;rows:number;active_parts:number;compressed_bytes:number;uncompressed_bytes:number}[];pending_mutations:number;errors_since_restart:number;active_queries:number}
+  clickhouse_error?:string
+}
+export type SystemSample = { timestamp:number;events_per_second:number;posts_per_second:number;interactions_per_second:number;process_resident_memory_bytes:number;container_memory_used_bytes?:number;clickhouse_rows?:number;clickhouse_compressed_bytes?:number }
+export type Identity = { did:string;handle?:string;observed_at:string;source:string }

@@ -3,4 +3,5 @@
 /.idea
 /.vscode
 *.swp
-
+/frontend/node_modules
+/frontend/dist
