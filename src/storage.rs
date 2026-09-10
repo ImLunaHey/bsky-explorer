@@ -834,8 +834,7 @@ mod tests {
         let schema = include_str!("../migrations/001_init.sql");
         assert!(schema.contains("ENGINE = MergeTree"));
         assert!(schema.contains("PARTITION BY toYYYYMM(timestamp)"));
-        assert!(schema.contains("TTL timestamp + INTERVAL 365 DAY"));
-        assert!(schema.contains("operation NOT IN ('pds_backfill', 'association_backfill')"));
+        assert!(!schema.contains("TTL timestamp"));
         assert!(schema.contains("CODEC(ZSTD(3))"));
 
         let lowercase = schema.to_ascii_lowercase();
@@ -893,6 +892,6 @@ mod tests {
         let schema = include_str!("../migrations/002_identities.sql");
         assert!(schema.contains("identity_history"));
         assert!(schema.contains("ENGINE = ReplacingMergeTree(observed_at)"));
-        assert!(schema.contains("TTL observed_at + INTERVAL 365 DAY"));
+        assert!(!schema.contains("TTL observed_at"));
     }
 }

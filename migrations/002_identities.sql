@@ -5,8 +5,7 @@ CREATE TABLE IF NOT EXISTS observatory.identity_history
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(observed_at)
-ORDER BY (did, observed_at)
-TTL observed_at + INTERVAL 365 DAY;
+ORDER BY (did, observed_at);
 
 CREATE TABLE IF NOT EXISTS observatory.identities
 (

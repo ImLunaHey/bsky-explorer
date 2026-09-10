@@ -15,7 +15,6 @@ CREATE TABLE IF NOT EXISTS observatory.events
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (toDate(timestamp), kind, actor_did, timestamp, event_id)
-TTL timestamp + INTERVAL 365 DAY DELETE WHERE operation NOT IN ('pds_backfill', 'association_backfill')
 SETTINGS index_granularity = 8192;
 
 CREATE TABLE IF NOT EXISTS observatory.detections
