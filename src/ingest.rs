@@ -104,12 +104,12 @@ async fn consume(
                 continue;
             }
         };
-        if archive.append(time_us, &raw)? {
+        let checkpointed = tokio::task::block_in_place(|| archive.append(time_us, &raw))?;
+        if checkpointed {
             // Directory scans are cheap once per group commit, but catastrophic
             // at full-firehose frequency.
-            metrics
-                .archive_bytes
-                .set(Archive::total_size(&cfg.data_dir) as i64);
+            let archive_bytes = tokio::task::block_in_place(|| Archive::total_size(&cfg.data_dir));
+            metrics.archive_bytes.set(archive_bytes as i64);
         }
         match parse_identity_event(&raw) {
             Ok(Some(identity)) => {
@@ -148,6 +148,6 @@ async fn consume(
         }
         tx.send(event).await.context("storage worker stopped")?;
     }
-    archive.checkpoint()?;
+    tokio::task::block_in_place(|| archive.checkpoint())?;
     Ok(())
 }

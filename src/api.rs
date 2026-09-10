@@ -483,12 +483,17 @@ async fn record(
     } else {
         &record.reply_root
     };
-    let (interaction_counts, recent_interactions, conversation) = tokio::try_join!(
+    let (interaction_counts, recent_interactions, mut conversation) = tokio::try_join!(
         s.storage.record_interaction_counts(&query.uri),
         s.storage.record_interactions(&query.uri, 100),
         s.storage.conversation_context(root, 200),
     )
     .map_err(internal_error)?;
+    // Restarts may replay a small durable checkpoint interval. Hide those
+    // append-only duplicates and do not repeat the primary record as context.
+    conversation.retain(|item| item.at_uri != query.uri);
+    let mut seen = std::collections::HashSet::new();
+    conversation.retain(|item| seen.insert(item.at_uri.clone()));
     Ok(Json(RecordDetail {
         record,
         interaction_counts,
