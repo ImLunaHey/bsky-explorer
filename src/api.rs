@@ -128,7 +128,16 @@ async fn metrics(State(s): State<AppState>) -> String {
     s.metrics.render()
 }
 async fn stats(State(s): State<AppState>) -> Json<crate::analysis::Rates> {
-    Json(s.analysis.rates())
+    Json(analyzer_blocking(s.analysis, |analysis| analysis.rates()).await)
+}
+
+async fn analyzer_blocking<T: Send + 'static>(
+    analysis: Analyzer,
+    operation: impl FnOnce(&Analyzer) -> T + Send + 'static,
+) -> T {
+    tokio::task::spawn_blocking(move || operation(&analysis))
+        .await
+        .expect("analyzer worker panicked")
 }
 
 #[derive(Default, Deserialize)]
@@ -148,12 +157,15 @@ async fn live(
     let mut receiver = s.analysis.subscribe_live();
     let analysis = s.analysis.clone();
     let stream = async_stream::stream! {
-        yield Ok(Event::default().event("rates").json_data(analysis.rates()).expect("rates serialize"));
-        let replay = analysis.recent_events(crate::analysis::RecentEventFilter {
+        let initial_analysis = analysis.clone();
+        let initial_rates = analyzer_blocking(initial_analysis, |a| a.rates()).await;
+        yield Ok(Event::default().event("rates").json_data(initial_rates).expect("rates serialize"));
+        let replay_analysis = analysis.clone();
+        let replay = analyzer_blocking(replay_analysis, move |a| a.recent_events(crate::analysis::RecentEventFilter {
             after_time_us: cursor,
             limit: 500,
             ..Default::default()
-        });
+        })).await;
         for event in replay.events {
             cursor = Some(cursor.map_or(event.time_us, |value| value.max(event.time_us)));
             yield Ok(live_event(&event));
@@ -165,7 +177,9 @@ async fn live(
         loop {
             tokio::select! {
                 _ = rates.tick() => {
-                    yield Ok(Event::default().event("rates").json_data(analysis.rates()).expect("rates serialize"));
+                    let rates_analysis = analysis.clone();
+                    let current_rates = analyzer_blocking(rates_analysis, |a| a.rates()).await;
+                    yield Ok(Event::default().event("rates").json_data(current_rates).expect("rates serialize"));
                 }
                 message = receiver.recv() => match message {
                     Ok(event) => {
@@ -175,11 +189,12 @@ async fn live(
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        let replay = analysis.recent_events(crate::analysis::RecentEventFilter {
+                        let replay_analysis = analysis.clone();
+                        let replay = analyzer_blocking(replay_analysis, move |a| a.recent_events(crate::analysis::RecentEventFilter {
                             after_time_us: cursor,
                             limit: 500,
                             ..Default::default()
-                        });
+                        })).await;
                         for event in replay.events {
                             cursor = Some(cursor.map_or(event.time_us, |value| value.max(event.time_us)));
                             yield Ok(live_event(&event));
