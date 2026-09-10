@@ -18,3 +18,5 @@ export type SystemStats = {
 }
 export type SystemSample = { timestamp:number;events_per_second:number;posts_per_second:number;interactions_per_second:number;process_resident_memory_bytes:number;container_memory_used_bytes?:number;clickhouse_rows?:number;clickhouse_compressed_bytes?:number;process_cpu_utilization_percent?:number;container_cpu_utilization_percent?:number;host_cpu_utilization_percent?:number }
 export type Identity = { did:string;handle?:string;observed_at:string;source:string }
+export type RecordItem = { at_uri:string;actor_did:string;timestamp_ms:number;kind:string;text:string;reply_parent:string;reply_root:string;quote_target:string;urls:string[];domains:string[];languages:string[] }
+export type RecordDetail = { record:RecordItem;interaction_counts:{likes:number;reposts:number;replies:number;quotes:number};recent_interactions:{event_id:string;actor_did:string;kind:string;timestamp_ms:number;at_uri:string;target:string}[];conversation:RecordItem[] }
