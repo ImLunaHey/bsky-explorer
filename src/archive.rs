@@ -125,6 +125,9 @@ impl Archive {
             .sum()
     }
     pub fn prune(root: impl AsRef<Path>, retention_days: u64) -> Result<()> {
+        if retention_days == 0 {
+            return Ok(());
+        }
         let cutoff =
             std::time::SystemTime::now() - std::time::Duration::from_secs(retention_days * 86400);
         for e in fs::read_dir(root).context("read archive")? {
@@ -150,6 +153,15 @@ mod tests {
         a.checkpoint().unwrap();
         assert_eq!(Archive::cursor(d.path()), Some(42));
         assert!(Archive::total_size(d.path()) > 0);
+    }
+
+    #[test]
+    fn zero_retention_never_prunes_archives() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("old.jsonl.zst");
+        std::fs::write(&path, b"archive").unwrap();
+        Archive::prune(d.path(), 0).unwrap();
+        assert!(path.exists());
     }
 
     #[test]

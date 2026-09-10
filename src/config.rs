@@ -44,7 +44,8 @@ pub struct Config {
     pub listen_addr: String,
     #[arg(long, env = "ARCHIVE_SEGMENT_MIB", default_value_t = 256)]
     pub archive_segment_mib: u64,
-    #[arg(long, env = "ARCHIVE_RETENTION_DAYS", default_value_t = 30)]
+    /// Raw archive retention in days. Zero retains compressed segments forever.
+    #[arg(long, env = "ARCHIVE_RETENTION_DAYS", default_value_t = 0)]
     pub archive_retention_days: u64,
     #[arg(long, env = "CLICKHOUSE_BATCH_SIZE", default_value_t = 1000)]
     pub batch_size: usize,
