@@ -10,10 +10,10 @@ export type Anomalies = { coordination_clusters:Detection[]; unusual_posting:Acc
 export type StorageStats = { raw_archive_bytes:number; clickhouse_bytes:number; derived_bytes:number; bytes_ingested_per_hour:number; bytes_ingested_per_day:number; projected_monthly_bytes:number; projected_yearly_bytes:number }
 export type SystemStats = {
   scope_note:string
-  runtime:{process_uptime_seconds:number;process_resident_memory_bytes:number;container_memory_used_bytes?:number;container_memory_limit_bytes?:number;host_load_average?:number[];host_uptime_seconds?:number}
+  runtime:{process_uptime_seconds:number;process_resident_memory_bytes:number;container_memory_used_bytes?:number;container_memory_limit_bytes?:number;process_cpu_utilization_percent?:number;container_cpu_utilization_percent?:number;host_cpu_utilization_percent?:number;host_load_average?:number[];host_uptime_seconds?:number}
   storage_array:{path:string;total_bytes:number;available_bytes:number;used_bytes:number}
   clickhouse?:{tables:{table:string;rows:number;active_parts:number;compressed_bytes:number;uncompressed_bytes:number}[];pending_mutations:number;errors_since_restart:number;active_queries:number}
   clickhouse_error?:string
 }
-export type SystemSample = { timestamp:number;events_per_second:number;posts_per_second:number;interactions_per_second:number;process_resident_memory_bytes:number;container_memory_used_bytes?:number;clickhouse_rows?:number;clickhouse_compressed_bytes?:number }
+export type SystemSample = { timestamp:number;events_per_second:number;posts_per_second:number;interactions_per_second:number;process_resident_memory_bytes:number;container_memory_used_bytes?:number;clickhouse_rows?:number;clickhouse_compressed_bytes?:number;process_cpu_utilization_percent?:number;container_cpu_utilization_percent?:number;host_cpu_utilization_percent?:number }
 export type Identity = { did:string;handle?:string;observed_at:string;source:string }
