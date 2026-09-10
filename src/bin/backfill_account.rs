@@ -1,11 +1,13 @@
 use anyhow::{Context, Result};
-use bsky_observatory::{normalize::normalize_repository_record, storage::Storage};
+use bsky_observatory::{
+    backfill::retry_delay, normalize::normalize_repository_record, storage::Storage,
+};
 use chrono::Utc;
 use clap::Parser;
 use reqwest::{Client, Url, redirect::Policy};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
@@ -18,6 +20,8 @@ struct Args {
     did: String,
     #[arg(long)]
     pds: String,
+    #[arg(long)]
+    checkpoint: Option<PathBuf>,
     #[arg(long, env = "CLICKHOUSE_URL", default_value = "http://localhost:8123")]
     clickhouse_url: String,
     #[arg(long, env = "CLICKHOUSE_DATABASE", default_value = "observatory")]
@@ -42,6 +46,13 @@ struct RecordPage {
 struct RepositoryRecord {
     uri: String,
     value: Value,
+}
+#[derive(Default, Serialize, Deserialize)]
+struct RepoCheckpoint {
+    collection_index: usize,
+    collection: Option<String>,
+    cursor: Option<String>,
+    records_written: u64,
 }
 
 #[tokio::main]
@@ -71,9 +82,17 @@ async fn main() -> Result<()> {
     .await?;
     anyhow::ensure!(description.did == args.did, "PDS returned a different DID");
 
+    let mut checkpoint = load_checkpoint(args.checkpoint.as_ref())?;
     let mut counts = BTreeMap::new();
-    for collection in description.collections {
-        let mut cursor: Option<String> = None;
+    for (collection_index, collection) in description
+        .collections
+        .into_iter()
+        .enumerate()
+        .skip(checkpoint.collection_index)
+    {
+        let mut cursor = (checkpoint.collection.as_deref() == Some(&collection))
+            .then(|| checkpoint.cursor.clone())
+            .flatten();
         let mut inserted = 0_u64;
         loop {
             let mut query = vec![
@@ -114,27 +133,57 @@ async fn main() -> Result<()> {
             storage.insert_events(&events).await?;
             inserted += events.len() as u64;
             cursor = page.cursor.filter(|value| !value.is_empty());
+            checkpoint.collection_index = collection_index;
+            checkpoint.collection = Some(collection.clone());
+            checkpoint.cursor = cursor.clone();
+            checkpoint.records_written += events.len() as u64;
+            save_checkpoint(args.checkpoint.as_ref(), &checkpoint)?;
             if cursor.is_none() {
                 break;
             }
         }
         counts.insert(collection, inserted);
+        checkpoint.collection_index = collection_index + 1;
+        checkpoint.collection = None;
+        checkpoint.cursor = None;
+        save_checkpoint(args.checkpoint.as_ref(), &checkpoint)?;
     }
     println!("{}", serde_json::to_string_pretty(&counts)?);
     Ok(())
 }
 
-async fn get_json<T: for<'de> Deserialize<'de>>(
+async fn get_json<T: DeserializeOwned>(
     client: &Client,
     endpoint: &str,
     query: &[(&str, &str)],
 ) -> Result<T> {
-    let response = client
-        .get(endpoint)
-        .query(query)
-        .send()
-        .await?
-        .error_for_status()?;
+    let mut backoff = Duration::from_secs(1);
+    let mut response = None;
+    for attempt in 0..6 {
+        let candidate = client.get(endpoint).query(query).send().await?;
+        if candidate.status().is_success() {
+            response = Some(candidate);
+            break;
+        }
+        if candidate.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || candidate.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE
+            || candidate.status().is_server_error()
+        {
+            if attempt == 5 {
+                return Err(candidate.error_for_status().unwrap_err().into());
+            }
+            let indicated = retry_delay(candidate.headers(), chrono::Utc::now())
+                .and_then(|v| v.to_std().ok())
+                .unwrap_or(backoff);
+            let jitter =
+                Duration::from_millis(xxhash_rust::xxh3::xxh3_64(endpoint.as_bytes()) % 500);
+            tokio::time::sleep((indicated + jitter).min(Duration::from_secs(300))).await;
+            backoff = (backoff * 2).min(Duration::from_secs(60));
+            continue;
+        }
+        candidate.error_for_status()?;
+    }
+    let response = response.context("PDS retry limit reached")?;
     anyhow::ensure!(
         response
             .content_length()
@@ -147,4 +196,20 @@ async fn get_json<T: for<'de> Deserialize<'de>>(
         "PDS response exceeds size limit"
     );
     serde_json::from_slice(&bytes).context("decode PDS response")
+}
+fn load_checkpoint(path: Option<&PathBuf>) -> Result<RepoCheckpoint> {
+    match path.map(std::fs::read).transpose() {
+        Ok(Some(bytes)) => Ok(serde_json::from_slice(&bytes)?),
+        Ok(None) | Err(_) => Ok(RepoCheckpoint::default()),
+    }
+}
+fn save_checkpoint(path: Option<&PathBuf>, value: &RepoCheckpoint) -> Result<()> {
+    let Some(path) = path else { return Ok(()) };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
+    std::fs::rename(tmp, path)?;
+    Ok(())
 }

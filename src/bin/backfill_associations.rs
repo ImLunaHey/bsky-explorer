@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use bsky_observatory::{
+    backfill::retry_delay,
     model::{EventKind, NormalizedEvent},
     normalize::normalize_appview_post,
     storage::Storage,
@@ -80,12 +81,20 @@ impl Fetcher {
                 }
                 Ok(response)
                     if response.status() == StatusCode::TOO_MANY_REQUESTS
-                        || response.status().is_server_error() => {}
+                        || response.status().is_server_error() =>
+                {
+                    if let Some(wait) = retry_delay(response.headers(), Utc::now())
+                        .and_then(|value| value.to_std().ok())
+                    {
+                        delay = wait.min(Duration::from_secs(300));
+                    }
+                }
                 Ok(response) => anyhow::bail!("AppView returned {}", response.status()),
                 Err(error) if attempt == 4 => return Err(error.into()),
                 Err(_) => {}
             }
-            tokio::time::sleep(delay).await;
+            let jitter = Duration::from_millis(xxh3_64(endpoint.as_bytes()) % 500);
+            tokio::time::sleep((delay + jitter).min(Duration::from_secs(300))).await;
             delay = (delay * 2).min(Duration::from_secs(16));
         }
         anyhow::bail!("AppView retry limit reached")

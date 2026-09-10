@@ -238,7 +238,7 @@ impl BackfillQueue {
         }
     }
     fn renew_lease(&self, id: &str, token: &str, lease_seconds: i64) -> Result<()> {
-        let association_records = self.association_progress(id);
+        let checkpoint = self.checkpoint_progress(id);
         let mut jobs = self.jobs.lock();
         let job = jobs.get_mut(id).context("leased job disappeared")?;
         anyhow::ensure!(
@@ -251,8 +251,10 @@ impl BackfillQueue {
         );
         job.lease_until = Some(Utc::now() + Duration::seconds(lease_seconds));
         job.updated_at = Utc::now();
-        if let Some(records) = association_records {
+        if let Some((records, collection, cursor)) = checkpoint {
             job.records_written = records;
+            job.collection = collection;
+            job.cursor = cursor;
         }
         self.persist(job)
     }
@@ -267,6 +269,28 @@ impl BackfillQueue {
                 .filter_map(|key| value.get(key)?.as_u64())
                 .sum(),
         )
+    }
+    fn checkpoint_progress(&self, id: &str) -> Option<(u64, Option<String>, Option<String>)> {
+        let repository = self.root.join(format!("{id}-repository.json"));
+        if let Ok(bytes) = fs::read(repository) {
+            let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+            return Some((
+                value
+                    .get("records_written")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                value
+                    .get("collection")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned),
+                value
+                    .get("cursor")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned),
+            ));
+        }
+        self.association_progress(id)
+            .map(|records| (records, None, None))
     }
     fn persist(&self, job: &BackfillJob) -> Result<()> {
         let path = self.root.join(format!("{}.json", job.id));
@@ -379,8 +403,18 @@ async fn execute_job(queue: &BackfillQueue, mut job: BackfillJob) -> Result<()> 
     let mut command = match job.job_type {
         JobType::Repository => {
             let pds = resolve_pds(&did).await?;
+            let checkpoint = queue.root.join(format!("{}-repository.json", job.id));
             let mut command = tokio::process::Command::new("/usr/local/bin/backfill_account");
-            command.args(["--repo", &did, "--did", &did, "--pds", &pds]);
+            command.args([
+                "--repo",
+                &did,
+                "--did",
+                &did,
+                "--pds",
+                &pds,
+                "--checkpoint",
+                checkpoint.to_str().context("invalid checkpoint path")?,
+            ]);
             command
         }
         JobType::Associations => {
@@ -411,8 +445,10 @@ async fn execute_job(queue: &BackfillQueue, mut job: BackfillJob) -> Result<()> 
         }
     };
     anyhow::ensure!(status.success(), "backfill subprocess failed: {status}");
-    if let Some(records) = queue.association_progress(&job.id) {
+    if let Some((records, collection, cursor)) = queue.checkpoint_progress(&job.id) {
         job.records_written = records;
+        job.collection = collection;
+        job.cursor = cursor;
     }
     job.status = JobStatus::Completed;
     job.updated_at = Utc::now();
