@@ -57,6 +57,7 @@ pub fn router(s: AppState) -> Router {
         .route_service("/firehose", spa())
         .route_service("/detections", spa())
         .route_service("/system", spa())
+        .route_service("/search", spa())
         .route_service("/accounts/{did}", spa())
         .route_service("/records/{uri}", spa())
         .route_service("/clusters/{cluster_id}", spa())
@@ -65,6 +66,7 @@ pub fn router(s: AppState) -> Router {
         .route("/readyz", get(ready))
         .route("/metrics", get(metrics))
         .route("/api/stats", get(stats))
+        .route("/api/search", get(search))
         .route("/api/firehose", get(firehose))
         .route("/api/live", get(live))
         .route("/api/trending/urls", get(urls))
@@ -129,6 +131,186 @@ async fn metrics(State(s): State<AppState>) -> String {
 }
 async fn stats(State(s): State<AppState>) -> Json<crate::analysis::Rates> {
     Json(analyzer_blocking(s.analysis, |analysis| analysis.rates()).await)
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchQuery {
+    q: String,
+    #[serde(default = "default_search_type", rename = "type")]
+    result_type: String,
+    #[serde(default = "default_search_limit")]
+    limit: u64,
+    #[serde(default)]
+    offset: u64,
+}
+
+fn default_search_type() -> String {
+    "all".into()
+}
+
+const fn default_search_limit() -> u64 {
+    25
+}
+
+#[derive(Debug, Serialize)]
+struct SearchResponse {
+    query: String,
+    #[serde(rename = "type")]
+    result_type: String,
+    offset: u64,
+    limit: u64,
+    has_more: bool,
+    results: Vec<SearchResult>,
+}
+
+#[derive(Debug, Serialize)]
+struct SearchResult {
+    result_type: &'static str,
+    did: String,
+    handle: Option<String>,
+    event_id: Option<String>,
+    at_uri: Option<String>,
+    event_type: Option<String>,
+    collection: Option<String>,
+    operation: Option<String>,
+    timestamp_ms: Option<i64>,
+    text: Option<String>,
+    record_json: Option<String>,
+    target: Option<String>,
+    urls: Vec<String>,
+    domains: Vec<String>,
+}
+
+async fn search(
+    State(s): State<AppState>,
+    Query(query): Query<SearchQuery>,
+) -> Result<Json<SearchResponse>, (StatusCode, String)> {
+    let term = query.q.trim();
+    validate_search_query(term, &query.result_type, query.limit, query.offset)?;
+    let limit = query.limit.min(100);
+    let fetch_limit = query.offset + limit + 1;
+    let include_accounts = matches!(query.result_type.as_str(), "all" | "account");
+    let event_type = match query.result_type.as_str() {
+        "record" => Some(crate::storage::SearchEventType::Records),
+        "event" => Some(crate::storage::SearchEventType::Events),
+        "all" => Some(crate::storage::SearchEventType::Both),
+        "account" => None,
+        _ => unreachable!("validated above"),
+    };
+
+    let identities = async {
+        if include_accounts {
+            s.storage.search_identities(term, fetch_limit).await
+        } else {
+            Ok(Vec::new())
+        }
+    };
+    let events = async {
+        if let Some(event_type) = event_type {
+            s.storage.search_events(term, event_type, fetch_limit).await
+        } else {
+            Ok(Vec::new())
+        }
+    };
+    let (identities, events) = tokio::time::timeout(Duration::from_millis(2_500), async {
+        tokio::try_join!(identities, events)
+    })
+    .await
+    .map_err(|_| {
+        (
+            StatusCode::REQUEST_TIMEOUT,
+            "search timed out; use a more specific term".into(),
+        )
+    })?
+    .map_err(internal_error)?;
+
+    let mut results = Vec::with_capacity(identities.len() + events.len());
+    results.extend(identities.into_iter().map(|identity| SearchResult {
+        result_type: "account",
+        did: identity.did,
+        handle: (!identity.handle.is_empty()).then_some(identity.handle),
+        event_id: None,
+        at_uri: None,
+        event_type: None,
+        collection: None,
+        operation: None,
+        timestamp_ms: None,
+        text: None,
+        record_json: None,
+        target: None,
+        urls: Vec::new(),
+        domains: Vec::new(),
+    }));
+    results.extend(events.into_iter().map(|event| {
+        let is_record = matches!(event.kind.as_str(), "post" | "reply" | "quote");
+        SearchResult {
+            result_type: if is_record { "record" } else { "event" },
+            did: event.actor_did,
+            handle: None,
+            event_id: Some(event.event_id),
+            at_uri: (!event.at_uri.is_empty()).then_some(event.at_uri),
+            event_type: Some(event.kind),
+            collection: Some(event.collection),
+            operation: Some(event.operation),
+            timestamp_ms: Some(event.timestamp_ms),
+            text: (!event.text.is_empty()).then_some(event.text),
+            record_json: (!event.record_json.is_empty()).then_some(event.record_json),
+            target: (!event.target.is_empty()).then_some(event.target),
+            urls: event.urls,
+            domains: event.domains,
+        }
+    }));
+    let start = usize::try_from(query.offset)
+        .unwrap_or(usize::MAX)
+        .min(results.len());
+    let mut page: Vec<_> = results
+        .into_iter()
+        .skip(start)
+        .take(limit as usize + 1)
+        .collect();
+    let has_more = page.len() > limit as usize;
+    page.truncate(limit as usize);
+    Ok(Json(SearchResponse {
+        query: term.to_owned(),
+        result_type: query.result_type,
+        offset: query.offset,
+        limit,
+        has_more,
+        results: page,
+    }))
+}
+
+fn validate_search_query(
+    term: &str,
+    result_type: &str,
+    limit: u64,
+    offset: u64,
+) -> Result<(), (StatusCode, String)> {
+    if !(2..=500).contains(&term.len()) || term.chars().any(char::is_control) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "q must contain 2-500 printable characters".into(),
+        ));
+    }
+    if !matches!(result_type, "all" | "account" | "record" | "event") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "type must be all, account, record, or event".into(),
+        ));
+    }
+    if !(1..=100).contains(&limit) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "limit must be between 1 and 100".into(),
+        ));
+    }
+    if offset > 10_000 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "offset must not exceed 10000".into(),
+        ));
+    }
+    Ok(())
 }
 
 async fn analyzer_blocking<T: Send + 'static>(
@@ -1141,6 +1323,18 @@ mod tests {
         assert!(!is_at_uri(
             "at://did:plc:alice/app.bsky.feed.post/key/extra"
         ));
+    }
+
+    #[test]
+    fn validates_bounded_search_requests() {
+        assert!(validate_search_query("alice", "all", 25, 0).is_ok());
+        assert!(validate_search_query("did:plc:alice", "account", 100, 10_000).is_ok());
+        assert!(validate_search_query("x", "all", 25, 0).is_err());
+        assert!(validate_search_query("alice\n", "all", 25, 0).is_err());
+        assert!(validate_search_query("alice", "unknown", 25, 0).is_err());
+        assert!(validate_search_query("alice", "all", 0, 0).is_err());
+        assert!(validate_search_query("alice", "all", 101, 0).is_err());
+        assert!(validate_search_query("alice", "all", 25, 10_001).is_err());
     }
 
     #[test]

@@ -74,6 +74,34 @@ pub struct StoredAccountEvent {
     pub text: String,
 }
 #[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct SearchEvent {
+    pub event_id: String,
+    pub timestamp_ms: i64,
+    pub actor_did: String,
+    pub kind: String,
+    pub collection: String,
+    pub operation: String,
+    pub at_uri: String,
+    pub record_json: String,
+    pub target: String,
+    pub text: String,
+    pub urls: Vec<String>,
+    pub domains: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct SearchIdentity {
+    pub did: String,
+    pub handle: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchEventType {
+    Records,
+    Events,
+    Both,
+}
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
 pub struct RecordInteractionCounts {
     pub likes: u64,
     pub reposts: u64,
@@ -265,6 +293,86 @@ impl Storage {
             "SELECT event_id, time_us, actor_did, kind, at_uri, target, text FROM events WHERE actor_did = ? ORDER BY time_us DESC LIMIT ?"
         ).bind(did).bind(limit.min(200))
         .fetch_all::<StoredAccountEvent>().await?)
+    }
+    /// Searches retained normalized events. Exact identifiers search the full
+    /// retention period; free-text searches are deliberately bounded to the
+    /// last 30 days so an interactive request cannot scan every partition.
+    pub async fn search_events(
+        &self,
+        term: &str,
+        event_type: SearchEventType,
+        limit: u64,
+    ) -> Result<Vec<SearchEvent>> {
+        let is_did = term.starts_with("did:");
+        let is_at_uri = term.starts_with("at://");
+        let is_url = term.starts_with("http://") || term.starts_with("https://");
+        let exact_identifier = is_did || is_at_uri || is_url;
+        let type_predicate = match event_type {
+            SearchEventType::Records => "kind IN ('post', 'reply', 'quote')",
+            SearchEventType::Events => "kind NOT IN ('post', 'reply', 'quote')",
+            SearchEventType::Both => "1",
+        };
+        let time_predicate = if exact_identifier {
+            "1"
+        } else {
+            "timestamp >= now() - INTERVAL 30 DAY"
+        };
+        let (search_predicate, bind_count) = if is_did {
+            ("(actor_did = ? OR target_did = ?)", 2)
+        } else if is_at_uri {
+            (
+                "(at_uri = ? OR target = ? OR reply_parent = ? OR reply_root = ? OR quote_target = ?)",
+                5,
+            )
+        } else if is_url {
+            ("(target = ? OR has(urls, ?))", 2)
+        } else if term.contains('.') && !term.chars().any(char::is_whitespace) {
+            (
+                "(has(domains, ?) OR has(urls, ?) OR positionCaseInsensitiveUTF8(text, ?) > 0)",
+                3,
+            )
+        } else {
+            (
+                "(target = ? OR positionCaseInsensitiveUTF8(text, ?) > 0 OR positionCaseInsensitiveUTF8(record_json, ?) > 0)",
+                3,
+            )
+        };
+        let sql = format!(
+            "SELECT event_id, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, actor_did, kind, collection, operation, at_uri, record_json, target, text, urls, domains FROM events WHERE {type_predicate} AND {time_predicate} AND {search_predicate} ORDER BY timestamp DESC LIMIT ?"
+        );
+        let client = self
+            .client
+            .clone()
+            .with_option("max_execution_time", "2")
+            .with_option("max_threads", "2")
+            .with_option("max_result_rows", (limit + 1).to_string());
+        let mut query = client.query(&sql);
+        for _ in 0..bind_count {
+            query = query.bind(term);
+        }
+        Ok(query
+            .bind(limit.min(10_001))
+            .fetch_all::<SearchEvent>()
+            .await?)
+    }
+
+    pub async fn search_identities(&self, term: &str, limit: u64) -> Result<Vec<SearchIdentity>> {
+        let client = self
+            .client
+            .clone()
+            .with_option("max_execution_time", "1")
+            .with_option("max_threads", "2")
+            .with_option("max_result_rows", (limit + 1).to_string());
+        Ok(client
+            .query(
+                "SELECT did, argMax(handle, observed_at) AS handle FROM identities WHERE did = ? OR positionCaseInsensitiveUTF8(handle, ?) > 0 GROUP BY did ORDER BY (did = ?) DESC, handle, did LIMIT ?",
+            )
+            .bind(term)
+            .bind(term)
+            .bind(term)
+            .bind(limit.min(10_001))
+            .fetch_all::<SearchIdentity>()
+            .await?)
     }
     pub async fn account_cluster_ids(&self, did: &str, limit: u64) -> Result<Vec<String>> {
         #[derive(Row, Deserialize)]
