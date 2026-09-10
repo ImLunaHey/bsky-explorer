@@ -1,6 +1,6 @@
 # Bluesky Network Observatory MVP
 
-A single-machine Rust + ClickHouse observatory for public ATProto activity. It connects to Bluesky Jetstream from startup, archives the original JSON with Zstandard compression, normalizes non-blob records, maintains rolling hot state, and emits evidence-led coordination scores. It never downloads media/profile blobs and never calls an LLM.
+A single-machine Rust + ClickHouse observatory for public ATProto activity. It connects to Jetstream from startup, archives the original JSON with Zstandard compression, normalizes records from every public ATProto collection, maintains rolling hot state, and emits evidence-led coordination scores. Known Bluesky lexicons receive dedicated fields; arbitrary lexicons retain their repository operation and compact sanitized record JSON for future search/reprocessing. Blob objects and inline media data are removed from normalized rows, and the application never downloads media/profile blobs or calls an LLM.
 
 ## Run on the storage array
 
@@ -28,7 +28,7 @@ cargo run --bin replay -- --archive-dir /mnt/storage/bsky-observatory/archive \
   --since-time-us 1789060000000000 --until-time-us 1789063600000000 --write
 ```
 
-ClickHouse uses monthly `MergeTree` partitions, time/kind/actor ordering, Zstd text/evidence compression, arrays for URLs/domains, and skip indexes. Raw records and normalized rows default to 30 and 365 day retention respectively. No schema column stores a blob.
+ClickHouse uses monthly `MergeTree` partitions, time/kind/actor ordering, Zstd text/evidence/record compression, arrays for URLs/domains, and skip indexes. Raw records and normalized rows default to 30 and 365 day retention respectively. Generic record JSON is compact, valid JSON bounded to 64 KiB per event; nested ATProto blob values, legacy blob values, data URIs, and inline byte fields are stripped before serialization. Deletes remain queryable by DID, collection, rkey, AT URI, operation, and observation timestamp without inventing record content.
 
 ## API
 

@@ -40,7 +40,11 @@ pub struct NormalizedEvent {
     pub kind: EventKind,
     pub collection: String,
     pub rkey: String,
+    /// Repository operation (`create`, `update`, or `delete`).
+    pub operation: String,
     pub at_uri: String,
+    /// Compact, bounded record JSON with ATProto blob values removed.
+    pub record_json: Option<String>,
     pub target: Option<String>,
     pub target_did: Option<String>,
     pub text: Option<String>,

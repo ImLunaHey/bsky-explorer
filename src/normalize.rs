@@ -7,6 +7,80 @@ use std::collections::HashSet;
 use url::Url;
 use xxhash_rust::xxh3::xxh3_64;
 
+/// Generic records are useful for future lexicons and replay, but a malicious
+/// repository must not be able to turn one event into an unbounded row.
+pub const MAX_RECORD_JSON_BYTES: usize = 64 * 1024;
+const MAX_JSON_STRING_BYTES: usize = 4096;
+const MAX_JSON_CONTAINER_ITEMS: usize = 256;
+const MAX_JSON_DEPTH: usize = 32;
+
+fn is_blob_object(object: &serde_json::Map<String, Value>) -> bool {
+    object.get("$type").and_then(Value::as_str) == Some("blob")
+        || object
+            .get("ref")
+            .and_then(Value::as_object)
+            .is_some_and(|reference| reference.contains_key("$link"))
+            && (object.contains_key("mimeType") || object.contains_key("size"))
+        || object.contains_key("cid") && object.contains_key("mimeType")
+}
+
+/// Clone public record metadata while dropping blob objects and obvious inline
+/// binary payloads. `None` means the value itself was a blob.
+fn sanitize_record(value: &Value, depth: usize) -> Option<Value> {
+    if depth >= MAX_JSON_DEPTH {
+        return Some(Value::String("[depth limit]".into()));
+    }
+    match value {
+        Value::Object(object) if is_blob_object(object) => None,
+        Value::Object(object) => {
+            let mut clean = serde_json::Map::new();
+            for (key, value) in object.iter().take(MAX_JSON_CONTAINER_ITEMS) {
+                // Inline bytes/data are never useful analytical metadata.
+                if matches!(key.as_str(), "data" | "bytes" | "base64") {
+                    continue;
+                }
+                if let Some(value) = sanitize_record(value, depth + 1) {
+                    clean.insert(key.clone(), value);
+                }
+            }
+            Some(Value::Object(clean))
+        }
+        Value::Array(values) => Some(Value::Array(
+            values
+                .iter()
+                .take(MAX_JSON_CONTAINER_ITEMS)
+                .filter_map(|value| sanitize_record(value, depth + 1))
+                .collect(),
+        )),
+        Value::String(string) => {
+            if string.starts_with("data:") {
+                None
+            } else {
+                Some(Value::String(
+                    string.chars().take(MAX_JSON_STRING_BYTES).collect(),
+                ))
+            }
+        }
+        value => Some(value.clone()),
+    }
+}
+
+fn compact_record_json(record: &Value, operation: &str) -> Option<String> {
+    if operation == "delete" || record.is_null() {
+        return None;
+    }
+    let clean = sanitize_record(record, 0)?;
+    let encoded = serde_json::to_string(&clean).ok()?;
+    if encoded.len() <= MAX_RECORD_JSON_BYTES {
+        return Some(encoded);
+    }
+    let record_type = clean
+        .get("$type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    Some(serde_json::json!({"$type": record_type, "$truncated": true}).to_string())
+}
+
 pub fn normalize_text(s: &str) -> String {
     let lowered = s.to_lowercase();
     let url_re = Regex::new(r"https?://\S+").unwrap();
@@ -66,6 +140,7 @@ pub fn parse_jetstream(raw: &[u8]) -> Result<Option<NormalizedEvent>> {
         anyhow::bail!("commit is missing did, operation, collection, or rkey");
     }
     let record = &commit["record"];
+    let record_json = compact_record_json(record, operation);
     let at_uri = format!("at://{did}/{collection}/{rkey}");
     let mut kind = match collection.as_str() {
         "app.bsky.feed.post" => EventKind::Post,
@@ -163,7 +238,9 @@ pub fn parse_jetstream(raw: &[u8]) -> Result<Option<NormalizedEvent>> {
         kind,
         collection,
         rkey,
+        operation: operation.to_owned(),
         at_uri,
+        record_json,
         target,
         target_did,
         text_hash: text.as_deref().map(|x| xxh3_64(x.as_bytes())),
@@ -215,5 +292,31 @@ mod tests {
         let raw=br#"{"did":"did:plc:a","time_us":1700000000000000,"kind":"commit","commit":{"operation":"create","collection":"app.bsky.feed.post","rkey":"x","record":{"text":"hi","createdAt":"2030-01-01T00:00:00Z"}}}"#;
         let event = parse_jetstream(raw).unwrap().unwrap();
         assert_eq!(event.timestamp.timestamp_micros(), 1_700_000_000_000_000);
+    }
+    #[test]
+    fn arbitrary_lexicon_is_retained_without_blobs() {
+        let raw=br#"{"did":"did:plc:a","time_us":1700000000000000,"kind":"commit","commit":{"operation":"create","collection":"com.example.recipe","rkey":"x","record":{"$type":"com.example.recipe","title":"Soup","photo":{"$type":"blob","ref":{"$link":"bafk-secret"},"mimeType":"image/jpeg","size":123},"nested":{"images":[{"cid":"legacy","mimeType":"image/png"}],"safe":true}}}}"#;
+        let event = parse_jetstream(raw).unwrap().unwrap();
+        assert_eq!(event.kind, EventKind::Other);
+        assert_eq!(event.operation, "create");
+        let json = event.record_json.unwrap();
+        assert!(json.contains("Soup"));
+        assert!(json.contains("safe"));
+        assert!(!json.contains("bafk-secret"));
+        assert!(!json.contains("legacy"));
+    }
+    #[test]
+    fn generic_record_json_is_bounded_and_delete_has_none() {
+        let huge = "x".repeat(MAX_RECORD_JSON_BYTES * 2);
+        let raw = serde_json::json!({"did":"did:plc:a","time_us":1700000000000000_i64,"kind":"commit","commit":{"operation":"create","collection":"org.test.large","rkey":"x","record":{"$type":"org.test.large","value":huge}}});
+        let event = parse_jetstream(raw.to_string().as_bytes())
+            .unwrap()
+            .unwrap();
+        assert!(event.record_json.unwrap().len() <= MAX_RECORD_JSON_BYTES);
+        let delete = br#"{"did":"did:plc:a","time_us":1700000000000001,"kind":"commit","commit":{"operation":"delete","collection":"org.test.large","rkey":"x"}}"#;
+        let event = parse_jetstream(delete).unwrap().unwrap();
+        assert_eq!(event.kind, EventKind::Delete);
+        assert_eq!(event.operation, "delete");
+        assert!(event.record_json.is_none());
     }
 }
