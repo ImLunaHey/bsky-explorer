@@ -14,6 +14,8 @@ docker compose up --build -d
 
 Open <http://localhost:3000>. Prometheus metrics are at `/metrics`; JSON endpoints are under `/api`. Set `STORAGE_ROOT` for another array mount. Do not point it at this repository. Compose passes all retention, batching, window, and ClickHouse credential settings from `.env` into the service; the storage array remains the only durable-data location.
 
+The dashboard is a Vite/React application built into the production container. Axum serves its hashed assets with immutable caching, keeps the SPA entry point fresh, and marks live API responses `no-store`. During frontend development, run `npm install && npm run dev` in `frontend`; Vite proxies API calls to the Rust service on port 3000.
+
 ## Data and restart behavior
 
 Jetstream JSON is flushed into rotating `.jsonl.zst` files before the microsecond cursor is atomically advanced. Reconnects request that cursor; a duplicate boundary is possible and preferable to upstream loss. The deterministic `event_id` supports future deduplication. Archives are the recovery/reprocessing source if ClickHouse is unavailable, while the bounded ingest channel applies backpressure.
@@ -34,12 +36,17 @@ ClickHouse uses monthly `MergeTree` partitions, time/kind/actor ordering, Zstd t
 - `GET /api/trending/urls` and `/api/trending/domains`
 - `GET /api/anomalies`, `/api/clusters`, `/api/clusters/{id}`
 - `GET /api/accounts/{did}` — rolling activity and automation evidence
+- `GET /api/identities?dids=did:plc:one,did:plc:two` — batch DID-to-handle lookup (up to 100)
 - `GET /api/storage` — archive, ClickHouse/derived sizes and observed growth projections
+- `GET /api/system` — process/cgroup memory, load, uptime, array capacity, and per-table ClickHouse compression/row/part health
+- `GET /api/system/history` — bounded 15-second samples for 24-hour dashboard charts (process-local; resets on restart)
 - `GET /metrics` — Prometheus exposition
 - `GET /healthz` — process liveness
 - `GET /readyz` — readiness, including a ClickHouse query
 
 Scores describe observed evidence (`automation`, coordination, shared-target, timing, and content similarity); they do not label accounts as bots. Cluster evidence includes participants, timing, shared targets, URLs/domains, and sample event IDs.
+
+Jetstream identity events update a bounded in-memory DID/handle cache immediately and are persisted to both current and history tables in ClickHouse. Cache misses first consult ClickHouse, then use the configurable public Bluesky profile resolver with positive/negative TTLs and rate limiting. Handle changes therefore flow from the firehose without polling; successful on-demand resolutions are also retained. No profile media is requested or stored.
 
 ## Configuration and verification
 
@@ -54,6 +61,8 @@ curl -fsS localhost:3000/readyz
 ```
 
 `fixtures/synthetic.jsonl` covers organic conversation, regular high-volume activity, synchronized reposts, normalized duplicate spam, and URL amplification. Tests cover parsing, normalization/fingerprints, archive/cursor behavior, coordination scoring, organic-burst resistance, and storage serialization.
+
+System scope is explicit in the API: load and machine uptime are the container-visible host kernel values, memory includes both this process and its cgroup where available, and array capacity is measured on the archive bind mount. ClickHouse reports active rows/parts and compressed versus uncompressed bytes per table, plus pending mutations, active queries, and server errors since restart.
 
 ## MVP boundaries
 
