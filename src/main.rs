@@ -48,6 +48,19 @@ async fn main() -> Result<()> {
     for _ in 0..cfg.backfill_worker_concurrency.clamp(1, 4) {
         tokio::spawn(bsky_observatory::backfill::run_worker(backfills.clone()));
     }
+    let identity_queue = bsky_observatory::identity_queue::IdentityQueue::open(
+        cfg.identity_queue_dir
+            .clone()
+            .unwrap_or_else(|| cfg.data_dir.join("identity-queue")),
+        cfg.identity_queue_capacity,
+        chrono::Duration::seconds(cfg.identity_negative_ttl_seconds as i64),
+    )?;
+    for _ in 0..cfg.identity_worker_concurrency.clamp(1, 4) {
+        tokio::spawn(bsky_observatory::identity_queue::run_worker(
+            identity_queue.clone(),
+            identities.clone(),
+        ));
+    }
     let state = AppState {
         analysis: analysis.clone(),
         metrics: metrics.clone(),
@@ -62,11 +75,17 @@ async fn main() -> Result<()> {
         system_history: Default::default(),
         identities: identities.clone(),
         backfills,
+        identity_queue: identity_queue.clone(),
     };
     let listener = tokio::net::TcpListener::bind(&cfg.listen_addr).await?;
     tokio::spawn(api::sample_system_history(state.clone()));
     tokio::spawn(bsky_observatory::ingest::run(
-        cfg, storage, analysis, metrics, identities,
+        cfg,
+        storage,
+        analysis,
+        metrics,
+        identities,
+        identity_queue,
     ));
     axum::serve(listener, api::router(state)).await?;
     Ok(())

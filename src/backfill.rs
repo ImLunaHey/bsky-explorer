@@ -33,6 +33,14 @@ pub struct BackfillJob {
     pub status: JobStatus,
     pub depends_on_job_id: Option<String>,
     pub include_associations: bool,
+    /// Repository (depth 0) may create only its own association job (depth 1).
+    /// Participants discovered at depth 1 are identity-enriched, never crawled.
+    #[serde(default)]
+    pub crawl_depth: u8,
+    #[serde(default = "default_max_crawl_depth")]
+    pub max_depth: u8,
+    #[serde(default = "default_crawl_scope")]
+    pub scope: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub next_attempt_at: Option<DateTime<Utc>>,
@@ -44,6 +52,12 @@ pub struct BackfillJob {
     pub last_error: Option<String>,
     pub lease_token: Option<String>,
     pub lease_until: Option<DateTime<Utc>>,
+}
+fn default_max_crawl_depth() -> u8 {
+    1
+}
+fn default_crawl_scope() -> String {
+    "repository_own_associations".into()
 }
 
 #[derive(Clone)]
@@ -118,6 +132,7 @@ impl BackfillQueue {
         );
         anyhow::ensure!(active < 100, "backfill queue is at its active-job limit");
         let now = Utc::now();
+        let crawl_depth = u8::from(matches!(kind, JobType::Associations));
         let job = BackfillJob {
             id: id.clone(),
             query: query.into(),
@@ -127,6 +142,9 @@ impl BackfillQueue {
             status: JobStatus::Queued,
             depends_on_job_id: dependency,
             include_associations,
+            crawl_depth,
+            max_depth: 1,
+            scope: "repository_own_associations".into(),
             created_at: now,
             updated_at: now,
             next_attempt_at: None,

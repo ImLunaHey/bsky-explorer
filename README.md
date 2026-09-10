@@ -52,6 +52,14 @@ Jetstream identity events update a bounded in-memory DID/handle cache immediatel
 
 ## Configuration and verification
 
+Identity enrichment is asynchronous. Durable jobs live on the storage array at
+`DATA_DIR/identity-queue` (or `IDENTITY_QUEUE_DIR`), use leased restart recovery,
+and are inspectable at `GET /api/identity-queue?limit=25`.
+`IDENTITY_WORKER_CONCURRENCY` defaults to 1, `IDENTITY_REQUESTS_PER_SECOND`
+controls fixed-AppView pacing, and `IDENTITY_NEGATIVE_TTL_SECONDS` controls when
+a missing profile may be retried. Identity API misses return immediately and
+queue work rather than putting public-network latency on API or firehose paths.
+
 Copy `.env.example`; all options are shown by `cargo run -- --help`. Analysis defaults are 1m/5m/1h/24h windows and a 30-second coordination interval.
 
 ```bash

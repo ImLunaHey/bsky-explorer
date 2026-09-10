@@ -49,6 +49,7 @@ pub struct AppState {
     pub system_history: SystemHistory,
     pub identities: IdentityService,
     pub backfills: crate::backfill::BackfillQueue,
+    pub identity_queue: crate::identity_queue::IdentityQueue,
 }
 pub type SystemHistory = Arc<RwLock<VecDeque<SystemSample>>>;
 pub fn router(s: AppState) -> Router {
@@ -94,6 +95,7 @@ pub fn router(s: AppState) -> Router {
         .route("/api/records", get(record))
         .route("/api/records/media", get(record_media))
         .route("/api/identities", get(identities))
+        .route("/api/identity-queue", get(identity_queue))
         .route("/api/storage", get(storage))
         .route("/api/system", get(system))
         .route("/api/system/history", get(system_history))
@@ -1577,14 +1579,36 @@ async fn identities(
     }
     let mut resolved = Vec::with_capacity(dids.len());
     for did in dids {
-        resolved.push(
-            s.identities
-                .resolve(did)
-                .await
-                .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?,
-        );
+        let identity = s
+            .identities
+            .resolve_local(did)
+            .await
+            .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+        if identity.handle.is_none() {
+            s.identity_queue.enqueue(did).map_err(internal_error)?;
+        }
+        resolved.push(identity);
     }
     Ok(Json(resolved))
+}
+
+#[derive(Deserialize)]
+struct IdentityQueueQuery {
+    limit: Option<usize>,
+}
+#[derive(Serialize)]
+struct IdentityQueueResponse {
+    summary: crate::identity_queue::IdentityQueueSummary,
+    jobs: Vec<crate::identity_queue::IdentityJob>,
+}
+async fn identity_queue(
+    State(s): State<AppState>,
+    Query(q): Query<IdentityQueueQuery>,
+) -> Json<IdentityQueueResponse> {
+    Json(IdentityQueueResponse {
+        summary: s.identity_queue.summary(),
+        jobs: s.identity_queue.list(q.limit.unwrap_or(25)),
+    })
 }
 
 #[derive(Serialize)]

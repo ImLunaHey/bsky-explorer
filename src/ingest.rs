@@ -19,6 +19,7 @@ pub async fn run(
     analysis: Analyzer,
     metrics: Arc<Metrics>,
     identities: IdentityService,
+    identity_queue: crate::identity_queue::IdentityQueue,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::channel(20_000);
     let st = storage.clone();
@@ -52,7 +53,18 @@ pub async fn run(
             url.push_str(if url.contains('?') { "&" } else { "?" });
             url.push_str(&format!("cursor={cursor}"));
         }
-        match consume(&url, &cfg, &tx, &storage, &analysis, &metrics, &identities).await {
+        match consume(
+            &url,
+            &cfg,
+            &tx,
+            &storage,
+            &analysis,
+            &metrics,
+            &identities,
+            &identity_queue,
+        )
+        .await
+        {
             Ok(()) => tracing::warn!("Jetstream closed"),
             Err(e) => tracing::error!(error=%e,"Jetstream disconnected"),
         };
@@ -72,6 +84,7 @@ async fn persist_batch(storage: &Storage, batch: &mut Vec<crate::model::Normaliz
         }
     }
 }
+#[allow(clippy::too_many_arguments)]
 async fn consume(
     url: &str,
     cfg: &Config,
@@ -80,6 +93,7 @@ async fn consume(
     analysis: &Analyzer,
     metrics: &Metrics,
     identities: &IdentityService,
+    identity_queue: &crate::identity_queue::IdentityQueue,
 ) -> Result<()> {
     let (ws, _) = connect_async(url).await.context("connect Jetstream")?;
     metrics.connected.set(1);
@@ -143,6 +157,12 @@ async fn consume(
                 continue;
             }
         };
+        // Durable, O(1) queueing keeps profile network I/O entirely off ingest.
+        for did in std::iter::once(&event.actor_did).chain(event.target_did.as_ref()) {
+            if let Err(error) = identity_queue.enqueue(did) {
+                tracing::debug!(%error, %did, "identity enqueue skipped");
+            }
+        }
         metrics.event(&event.kind);
         let lag_us = chrono::Utc::now()
             .timestamp_micros()

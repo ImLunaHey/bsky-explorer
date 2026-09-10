@@ -11,6 +11,13 @@ use std::{
 };
 use tokio::sync::Mutex as AsyncMutex;
 
+#[derive(Debug)]
+pub enum RemoteIdentityResult {
+    Resolved(IdentityRecord),
+    Negative,
+    RetryAfter(Duration, String),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IdentityRecord {
     pub did: String,
@@ -83,6 +90,9 @@ struct CacheEntry {
 }
 
 impl IdentityService {
+    pub async fn unresolved_candidates(&self, limit: u64) -> Result<Vec<String>> {
+        self.inner.storage.unresolved_identity_dids(limit).await
+    }
     pub fn new(
         storage: Storage,
         profile_endpoint: String,
@@ -91,6 +101,13 @@ impl IdentityService {
         negative_ttl: Duration,
         requests_per_second: u32,
     ) -> Self {
+        let profile_endpoint =
+            if profile_endpoint == "https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile" {
+                profile_endpoint
+            } else {
+                tracing::warn!(endpoint=%profile_endpoint, "rejecting non-fixed identity endpoint");
+                "https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile".into()
+            };
         let minimum_request_interval =
             Duration::from_secs_f64(1.0 / requests_per_second.max(1) as f64);
         Self {
@@ -98,6 +115,7 @@ impl IdentityService {
                 storage,
                 client: reqwest::Client::builder()
                     .timeout(Duration::from_secs(8))
+                    .redirect(reqwest::redirect::Policy::none())
                     .user_agent("bsky-observatory/0.1")
                     .build()
                     .expect("valid HTTP client"),
@@ -223,6 +241,74 @@ impl IdentityService {
             observed_at: Utc::now(),
             source: "public_profile".into(),
         })
+    }
+
+    /// Perform exactly one rate-limited network attempt for the durable worker.
+    pub async fn resolve_remote(&self, did: &str) -> Result<RemoteIdentityResult> {
+        anyhow::ensure!(did.starts_with("did:"), "invalid DID");
+        let mut last_request = self.inner.last_request.lock().await;
+        if let Some(previous) = *last_request {
+            tokio::time::sleep(
+                self.inner
+                    .minimum_request_interval
+                    .saturating_sub(previous.elapsed()),
+            )
+            .await;
+        }
+        *last_request = Some(Instant::now());
+        drop(last_request);
+        let response = self
+            .inner
+            .client
+            .get(&self.inner.profile_endpoint)
+            .query(&[("actor", did)])
+            .send()
+            .await?;
+        let status = response.status();
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+        {
+            let delay = crate::backfill::retry_delay(response.headers(), Utc::now())
+                .unwrap_or_else(|| chrono::Duration::seconds(30))
+                .to_std()
+                .unwrap_or(Duration::from_secs(30))
+                .min(Duration::from_secs(3600));
+            return Ok(RemoteIdentityResult::RetryAfter(
+                delay,
+                format!("profile service returned {status}"),
+            ));
+        }
+        if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::BAD_REQUEST {
+            return Ok(RemoteIdentityResult::Negative);
+        }
+        let response = response.error_for_status()?;
+        anyhow::ensure!(
+            response.content_length().is_none_or(|n| n <= 262_144),
+            "profile response too large"
+        );
+        let body = response.bytes().await?;
+        anyhow::ensure!(body.len() <= 262_144, "profile response too large");
+        let value: Value = serde_json::from_slice(&body)?;
+        anyhow::ensure!(
+            value.get("did").and_then(Value::as_str) == Some(did),
+            "profile DID does not match request"
+        );
+        let handle = value
+            .get("handle")
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty() && *v != "handle.invalid")
+            .map(str::to_owned);
+        let identity = IdentityRecord {
+            did: did.to_owned(),
+            handle,
+            observed_at: Utc::now(),
+            source: "identity_worker".into(),
+        };
+        if identity.handle.is_none() {
+            return Ok(RemoteIdentityResult::Negative);
+        }
+        self.observe(identity.clone()).await?;
+        Ok(RemoteIdentityResult::Resolved(identity))
     }
 
     fn cached(&self, did: &str) -> Option<IdentityRecord> {

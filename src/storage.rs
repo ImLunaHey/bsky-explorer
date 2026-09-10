@@ -390,6 +390,19 @@ impl Storage {
             })
             .collect())
     }
+
+    /// A bounded sweep catches DIDs produced by repository/association backfills,
+    /// which intentionally run in separate processes and cannot enqueue in memory.
+    pub async fn unresolved_identity_dids(&self, limit: u64) -> Result<Vec<String>> {
+        #[derive(Row, Deserialize)]
+        struct DidRow {
+            did: String,
+        }
+        let rows = self.client.query(
+            "SELECT did FROM (SELECT actor_did AS did FROM events WHERE timestamp >= now() - INTERVAL 7 DAY UNION DISTINCT SELECT target_did AS did FROM events WHERE timestamp >= now() - INTERVAL 7 DAY AND target_did != '') WHERE did NOT IN (SELECT did FROM identities FINAL) LIMIT ? SETTINGS max_execution_time=2"
+        ).bind(limit.min(1000)).fetch_all::<DidRow>().await?;
+        Ok(rows.into_iter().map(|r| r.did).collect())
+    }
     pub async fn account_stats(&self, did: &str) -> Result<Option<AccountStoredStats>> {
         let row = self.client.query(
             "SELECT count() AS event_count, countIf(kind IN ('post','reply','quote')) AS post_count, countIf(kind='like') AS like_count, countIf(kind='repost') AS repost_count, countIf(kind='follow') AS follow_count, uniqExactIf(target, target != '') AS unique_targets, toUnixTimestamp64Milli(min(timestamp)) AS first_seen_ms, toUnixTimestamp64Milli(max(timestamp)) AS last_seen_ms, arraySlice(groupUniqArrayArray(100)(domains), 1, 50) AS domains, arraySlice(groupUniqArrayArray(100)(urls), 1, 50) AS urls FROM events WHERE actor_did = ? HAVING event_count > 0"
