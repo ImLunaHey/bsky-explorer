@@ -1,70 +1,65 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
-import { Activity, CirclePause, CirclePlay, ExternalLink, Filter, Search, Wifi, WifiOff } from 'lucide-react'
+import { createColumnHelper, flexRender, getCoreRowModel, getFilteredRowModel, getPaginationRowModel, getSortedRowModel, type ColumnFiltersState, type PaginationState, type SortingState, useReactTable } from '@tanstack/react-table'
+import { Activity, ChevronLeft, ChevronRight, ExternalLink, Image as ImageIcon, Search, Wifi, WifiOff } from 'lucide-react'
 import { api } from './api'
 import type { LiveConnection } from './live'
-import type { FirehoseEvent, FirehoseFeed, Identity } from './types'
+import type { FirehoseEvent, FirehoseFeed, Identity, RecordMediaResponse } from './types'
 
 const shortDid=(did:string)=>did.length>30?`${did.slice(0,18)}…${did.slice(-7)}`:did
 const recordUri=(event:FirehoseEvent)=>['post','reply','quote'].includes(event.kind)&&event.at_uri?.includes('/app.bsky.feed.post/')?event.at_uri:undefined
+const tones:Record<string,string>={post:'bg-orange-400/10 text-orange-300',reply:'bg-orange-400/10 text-orange-300',like:'bg-pink-300/10 text-pink-300',repost:'bg-violet-300/10 text-violet-300',follow:'bg-orange-300/10 text-orange-300',unfollow:'bg-amber-300/10 text-amber-300',delete:'bg-red-300/10 text-red-300',quote:'bg-orange-300/10 text-orange-300'}
 
 function useHandles(events:FirehoseEvent[]) {
-  const dids=[...new Set(events.flatMap(event=>[event.actor_did,event.target?.startsWith('did:')?event.target:undefined]).filter((x):x is string=>Boolean(x)))].sort()
+  const dids=[...new Set(events.map(event=>event.actor_did))].sort()
   const batches=Array.from({length:Math.ceil(dids.length/100)},(_,i)=>dids.slice(i*100,(i+1)*100))
   const queries=useQueries({queries:batches.map(batch=>({queryKey:['identities',...batch],queryFn:()=>api<Identity[]>(`/api/identities?dids=${encodeURIComponent(batch.join(','))}`),staleTime:300_000,gcTime:3_600_000}))})
   return new Map(queries.flatMap(query=>query.data||[]).map(identity=>[identity.did,identity.handle]))
 }
 
-const tones:Record<string,string>={post:'bg-cyan/10 text-cyan',reply:'bg-cyan/10 text-cyan',like:'bg-pink-300/10 text-pink-300',repost:'bg-violet-300/10 text-violet-300',follow:'bg-mint/10 text-mint',unfollow:'bg-amber-300/10 text-amber-300',delete:'bg-red-300/10 text-red-300',quote:'bg-orange-300/10 text-orange-300'}
+function MediaPreview({uri}:{uri:string}) {
+  const host=useRef<HTMLDivElement>(null)
+  const [visible,setVisible]=useState(false)
+  useEffect(()=>{const node=host.current;if(!node)return;const observer=new IntersectionObserver(entries=>{if(entries.some(entry=>entry.isIntersecting)){setVisible(true);observer.disconnect()}},{rootMargin:'120px'});observer.observe(node);return()=>observer.disconnect()},[])
+  const media=useQuery({queryKey:['record-media',uri],queryFn:()=>api<RecordMediaResponse>(`/api/records/media?uri=${encodeURIComponent(uri)}`),enabled:visible,staleTime:300_000,gcTime:900_000,retry:0})
+  const asset=media.data?.media[0]
+  return <div ref={host} className="grid h-20 w-28 shrink-0 place-items-center overflow-hidden rounded-lg border border-white/10 bg-white/[.025]">{asset?.kind==='image'?<img src={asset.url} alt={asset.alt} loading="lazy" referrerPolicy="no-referrer" className="h-full w-full object-cover"/>:asset?.kind==='video'?<video src={asset.url} poster={asset.thumbnail_url} muted controls preload="metadata" className="h-full w-full object-cover"/>:<ImageIcon className={`size-4 ${media.isLoading?'animate-pulse text-orange-300':'text-white/15'}`}/>}</div>
+}
+
+const columnHelper=createColumnHelper<FirehoseEvent>()
+const EMPTY_EVENTS:FirehoseEvent[]=[]
 
 export function FirehoseView({onAccount,onRecord}:{onAccount:(did:string)=>void;onRecord:(uri:string)=>void}) {
-  const [paused,setPaused]=useState(false)
-  const [snapshot,setSnapshot]=useState<FirehoseFeed>()
-  const [search,setSearch]=useState('')
-  const [kinds,setKinds]=useState<Set<string>>(new Set())
+  const [displayed,setDisplayed]=useState<FirehoseEvent[]|null>(null)
+  const [sorting,setSorting]=useState<SortingState>([{id:'time',desc:true}])
+  const [filters,setFilters]=useState<ColumnFiltersState>([])
+  const [globalFilter,setGlobalFilter]=useState('')
+  const [pagination,setPagination]=useState<PaginationState>({pageIndex:0,pageSize:25})
   const connection=useQuery<LiveConnection>({queryKey:['live-connection'],queryFn:async()=>({state:'connecting'}),enabled:false})
+  const feed=useQuery({queryKey:['firehose-feed'],queryFn:()=>api<FirehoseFeed>('/api/firehose?limit=500'),refetchInterval:connection.data?.state==='connected'?false:3_000,refetchIntervalInBackground:true})
+  useEffect(()=>{if(displayed===null&&feed.data)setDisplayed([...feed.data.events].reverse())},[displayed,feed.data])
+  const shown=displayed||EMPTY_EVENTS
+  const displayedIds=useMemo(()=>new Set(shown.map(event=>event.event_id)),[shown])
+  const pending=useMemo(()=>[...(feed.data?.events||[])].reverse().filter(event=>!displayedIds.has(event.event_id)),[feed.data?.events,displayedIds])
+  const acceptPending=()=>{setDisplayed(current=>[...pending,...(current||[])].slice(0,5_000));setPagination(value=>({...value,pageIndex:0}))}
+  const roughPage=shown.slice(pagination.pageIndex*pagination.pageSize,(pagination.pageIndex+1)*pagination.pageSize)
+  const handles=useHandles(roughPage)
+  const kinds=useMemo(()=>[...new Set(shown.map(event=>event.kind))].sort(),[shown])
+  const columns=useMemo(()=>[
+    columnHelper.accessor('time_us',{id:'time',header:'Time',cell:info=><time className="whitespace-nowrap text-[11px] tabular-nums text-white/45">{new Date(info.getValue()/1_000).toLocaleTimeString()}</time>}),
+    columnHelper.accessor('actor_did',{header:'Account',cell:info=>{const did=info.getValue(),handle=handles.get(did);return <button type="button" onClick={()=>onAccount(did)} className="block min-w-0 max-w-48 text-left text-xs text-orange-300 hover:text-orange-200"><b className="block truncate font-medium">{handle?`@${handle}`:shortDid(did)}</b>{handle&&<span className="block truncate font-mono text-[9px] text-white/35">{shortDid(did)}</span>}</button>}}),
+    columnHelper.accessor('kind',{header:'Type',filterFn:'equals',cell:info=><span className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider ${tones[info.getValue()]||'bg-white/5 text-white/45'}`}>{info.getValue()}</span>}),
+    columnHelper.display({id:'event',header:'Event',cell:info=>{const event=info.row.original,uri=recordUri(event);return <div className="flex min-w-0 gap-3"><div className="min-w-0 flex-1">{event.text?<p className="line-clamp-3 text-sm leading-relaxed text-white/80">{event.text}</p>:<p className="truncate font-mono text-[10px] text-white/40">{event.target||event.at_uri||event.event_id}</p>}<div className="mt-1 flex flex-wrap gap-1">{event.domains?.map(domain=><span key={domain} className="rounded bg-orange-400/5 px-1.5 py-0.5 text-[10px] text-orange-300">{domain}</span>)}</div></div>{uri&&<MediaPreview uri={uri}/>}</div>}}),
+    columnHelper.display({id:'actions',header:'',cell:info=>{const uri=recordUri(info.row.original);return uri?<button type="button" onClick={()=>onRecord(uri)} className="inline-flex items-center gap-1 whitespace-nowrap text-[11px] text-orange-300 hover:text-orange-200">Inspect <ExternalLink className="size-3"/></button>:null}}),
+  ],[handles,onAccount,onRecord])
+  const table=useReactTable({data:shown,columns,state:{sorting,columnFilters:filters,globalFilter,pagination},onSortingChange:setSorting,onColumnFiltersChange:setFilters,onGlobalFilterChange:setGlobalFilter,onPaginationChange:setPagination,getCoreRowModel:getCoreRowModel(),getSortedRowModel:getSortedRowModel(),getFilteredRowModel:getFilteredRowModel(),getPaginationRowModel:getPaginationRowModel(),globalFilterFn:(row,_columnId,value)=>{const event=row.original,needle=String(value).toLocaleLowerCase();return [event.actor_did,event.kind,event.text,event.at_uri,event.target,...(event.urls||[]),...(event.domains||[])].some(item=>item?.toLocaleLowerCase().includes(needle))}})
   const live=connection.data?.state==='connected'
-  const feed=useQuery({queryKey:['firehose-feed'],queryFn:()=>api<FirehoseFeed>('/api/firehose?limit=300'),refetchInterval:paused||live?false:3_000,refetchIntervalInBackground:true})
-  useEffect(()=>{if(!paused&&feed.data)setSnapshot(feed.data)},[feed.data,paused])
-  const data=paused?snapshot:feed.data
-  const events=useMemo(()=>[...(data?.events||[])].reverse(),[data?.events])
-  const handles=useHandles(events)
-  const availableKinds=useMemo(()=>[...new Set(events.map(event=>event.kind))].sort(),[events])
-  const needle=search.trim().toLocaleLowerCase()
-  const visible=useMemo(()=>events.filter(event=>{
-    if(kinds.size&& !kinds.has(event.kind))return false
-    if(!needle)return true
-    const handle=handles.get(event.actor_did)||''
-    return [event.actor_did,handle,event.kind,event.text,event.at_uri,event.target,...(event.urls||[]),...(event.domains||[])].some(value=>value?.toLocaleLowerCase().includes(needle))
-  }),[events,handles,kinds,needle])
-  const toggleKind=(kind:string)=>setKinds(current=>{const next=new Set(current);if(next.has(kind))next.delete(kind);else next.add(kind);return next})
-
-  return <div className="space-y-5">
-    <section className="panel overflow-hidden">
-      <div className="flex flex-col gap-4 border-b border-line p-5 lg:flex-row lg:items-center lg:justify-between">
-        <div><div className="flex items-center gap-2"><h2 className="font-semibold">Live firehose</h2><span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${paused?'bg-amber-300/10 text-amber-300':connection.data?.state==='disconnected'&&feed.isError?'bg-red-300/10 text-red-300':'bg-mint/10 text-mint'}`}>{paused?<CirclePause className="size-3"/>:connection.data?.state==='disconnected'&&feed.isError?<WifiOff className="size-3"/>:<Wifi className="size-3"/>}{paused?'Paused':live?'Streaming':feed.isError?'Reconnecting':'Connecting'}</span></div><p className="mt-1 text-xs text-dim">Newest public ATProto events retained in the in-memory live buffer.</p></div>
-        <div className="flex items-center gap-3"><span className="text-xs text-dim">Showing {visible.length} of {events.length}</span><button type="button" onClick={()=>setPaused(value=>!value)} className="inline-flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-xs font-medium hover:border-mint/50">{paused?<CirclePlay className="size-4 text-mint"/>:<CirclePause className="size-4"/>}{paused?'Resume live':'Pause'}</button></div>
-      </div>
-      <div className="space-y-3 border-b border-line bg-panel/40 p-4">
-        <div className="relative"><Search className="absolute left-3 top-2.5 size-4 text-dim"/><input value={search} onChange={event=>setSearch(event.target.value)} placeholder="Filter text, DID, handle, URL, or domain…" className="w-full rounded-lg border border-line bg-ink/60 py-2 pl-9 pr-3 text-sm outline-none focus:border-mint/60"/></div>
-        <div className="flex flex-wrap items-center gap-2"><Filter className="size-3.5 text-dim"/><button onClick={()=>setKinds(new Set())} className={`rounded-full border px-2.5 py-1 text-[11px] ${!kinds.size?'border-mint/50 bg-mint/10 text-mint':'border-line text-dim'}`}>All</button>{availableKinds.map(kind=><button key={kind} onClick={()=>toggleKind(kind)} className={`rounded-full border px-2.5 py-1 text-[11px] capitalize ${kinds.has(kind)?'border-mint/50 bg-mint/10 text-mint':'border-line text-dim hover:text-white'}`}>{kind}</button>)}</div>
-      </div>
-      <div className="scrollbar max-h-[68vh] min-h-96 overflow-y-auto">
-        {feed.isLoading&&!data?<Empty text="Connecting to the live buffer…"/>:feed.isError&&!data?<Empty text="The live feed is temporarily unavailable."/>:visible.length===0?<Empty text={events.length?'No events match these filters.':'Waiting for live activity…'}/>:<div className="divide-y divide-line/70">{visible.map(event=><EventRow key={event.event_id} event={event} handle={handles.get(event.actor_did)} onAccount={onAccount} onRecord={onRecord}/>)}</div>}
-      </div>
-      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-5 py-3 text-[10px] uppercase tracking-wide text-dim"><span>{data?.retained_event_count??0} events retained · showing latest 300</span><span>{data?.next_after_time_us!=null?`Cursor ${data.next_after_time_us}`:'Live cursor pending'}</span></div>
-    </section>
-  </div>
+  return <div className="space-y-5"><section className="panel overflow-hidden">
+    <div className="flex flex-col gap-4 border-b border-white/10 p-5 lg:flex-row lg:items-center lg:justify-between"><div><div className="flex items-center gap-2"><h2 className="font-semibold">Live firehose</h2><span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${live?'bg-orange-400/10 text-orange-300':'bg-red-300/10 text-red-300'}`}>{live?<Wifi className="size-3"/>:<WifiOff className="size-3"/>}{live?'Streaming':'Connecting'}</span></div><p className="mt-1 text-xs text-white/45">Incoming events are buffered so the page never moves while you read it.</p></div><div className="flex items-center gap-3 text-xs text-white/45"><span>{table.getFilteredRowModel().rows.length.toLocaleString()} events cached</span>{pending.length>0&&<button onClick={acceptPending} className="rounded-lg bg-orange-400 px-3 py-2 font-semibold text-black hover:bg-orange-300">Show {pending.length.toLocaleString()} new</button>}</div></div>
+    <div className="flex flex-col gap-3 border-b border-white/10 bg-white/[.015] p-4 sm:flex-row"><div className="relative flex-1"><Search className="absolute left-3 top-2.5 size-4 text-white/40"/><input value={globalFilter} onChange={event=>setGlobalFilter(event.target.value)} placeholder="Filter text, DID, URL, or domain…" className="w-full rounded-lg border border-white/10 bg-black py-2 pl-9 pr-3 text-sm outline-none focus:border-orange-400/60"/></div><select value={(table.getColumn('kind')?.getFilterValue() as string)||''} onChange={event=>table.getColumn('kind')?.setFilterValue(event.target.value||undefined)} className="rounded-lg border border-white/10 bg-black px-3 py-2 text-sm"><option value="">All event types</option>{kinds.map(kind=><option key={kind} value={kind}>{kind}</option>)}</select></div>
+    <div className="min-h-96 overflow-x-auto"><table className="w-full table-fixed border-collapse"><thead className="sticky top-0 z-10 bg-black"><tr>{table.getHeaderGroups()[0]?.headers.map(header=><th key={header.id} style={{width:header.id==='time'?'7rem':header.id==='actor_did'?'13rem':header.id==='kind'?'6rem':header.id==='actions'?'5rem':undefined}} className="border-b border-white/10 px-4 py-3 text-left text-[10px] uppercase tracking-wider text-white/40"><button className={header.column.getCanSort()?'cursor-pointer select-none hover:text-white':''} onClick={header.column.getToggleSortingHandler()}>{flexRender(header.column.columnDef.header,header.getContext())}{header.column.getIsSorted()==='asc'?' ↑':header.column.getIsSorted()==='desc'?' ↓':''}</button></th>)}</tr></thead><tbody>{feed.isLoading&&!displayed?<tr><td colSpan={5}><Empty text="Connecting to the live buffer…"/></td></tr>:table.getRowModel().rows.length===0?<tr><td colSpan={5}><Empty text={shown.length?'No events match these filters.':'Waiting for live activity…'}/></td></tr>:table.getRowModel().rows.map(row=><tr key={row.original.event_id} className="h-28 border-b border-white/[.07] align-middle hover:bg-white/[.02]">{row.getVisibleCells().map(cell=><td key={cell.id} className="overflow-hidden px-4 py-3">{flexRender(cell.column.columnDef.cell,cell.getContext())}</td>)}</tr>)}</tbody></table></div>
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/10 px-5 py-3 text-xs text-white/45"><span>Page {table.getState().pagination.pageIndex+1} of {Math.max(1,table.getPageCount())} · up to 5,000 events retained in this browser</span><div className="flex items-center gap-2"><label>Rows <select value={pagination.pageSize} onChange={event=>table.setPageSize(Number(event.target.value))} className="ml-1 rounded border border-white/10 bg-black px-2 py-1">{[10,25,50].map(size=><option key={size}>{size}</option>)}</select></label><button aria-label="Previous page" onClick={()=>table.previousPage()} disabled={!table.getCanPreviousPage()} className="rounded border border-white/10 p-1.5 disabled:opacity-30"><ChevronLeft className="size-4"/></button><button aria-label="Next page" onClick={()=>table.nextPage()} disabled={!table.getCanNextPage()} className="rounded border border-white/10 p-1.5 disabled:opacity-30"><ChevronRight className="size-4"/></button></div></div>
+  </section></div>
 }
 
-function EventRow({event,handle,onAccount,onRecord}:{event:FirehoseEvent;handle?:string;onAccount:(did:string)=>void;onRecord:(uri:string)=>void}) {
-  const uri=recordUri(event)
-  return <article className="grid grid-cols-[auto_minmax(0,1fr)] gap-3 px-4 py-3 transition hover:bg-white/[.02] sm:grid-cols-[5rem_minmax(9rem,13rem)_minmax(0,1fr)_auto] sm:items-start">
-    <span className="text-[11px] tabular-nums text-dim">{new Date(event.time_us/1_000).toLocaleTimeString()}</span>
-    <button type="button" onClick={()=>onAccount(event.actor_did)} className="min-w-0 text-left text-xs text-cyan hover:text-mint"><b className="block truncate font-medium">{handle?`@${handle}`:shortDid(event.actor_did)}</b>{handle&&<span className="block truncate font-mono text-[9px] text-dim">{shortDid(event.actor_did)}</span>}</button>
-    <div className="col-span-2 min-w-0 sm:col-span-1"><div className="flex flex-wrap items-center gap-2"><span className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider ${tones[event.kind]||'bg-white/5 text-dim'}`}>{event.kind}</span>{event.domains?.map(domain=><span key={domain} className="rounded bg-mint/5 px-1.5 py-0.5 text-[10px] text-mint">{domain}</span>)}</div>{event.text?<p className="mt-1.5 line-clamp-2 text-sm leading-relaxed text-white/80">{event.text}</p>:<p className="mt-1.5 truncate font-mono text-[10px] text-dim">{event.target||event.at_uri||event.event_id}</p>}</div>
-    {uri&&<button type="button" onClick={()=>onRecord(uri)} className="col-start-2 inline-flex items-center justify-self-end gap-1 text-[11px] text-cyan hover:text-mint sm:col-auto">Inspect <ExternalLink className="size-3"/></button>}
-  </article>
-}
-
-function Empty({text}:{text:string}) {return <div className="grid min-h-96 place-items-center p-8 text-sm text-dim"><div className="text-center"><Activity className="mx-auto mb-3 size-6 opacity-50"/>{text}</div></div>}
+function Empty({text}:{text:string}) {return <div className="grid min-h-96 place-items-center p-8 text-sm text-white/45"><div className="text-center"><Activity className="mx-auto mb-3 size-6 opacity-50"/>{text}</div></div>}
