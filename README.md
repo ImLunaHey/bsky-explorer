@@ -14,6 +14,8 @@ docker compose up --build -d
 
 Open <http://localhost:3000>. Prometheus metrics are at `/metrics`; JSON endpoints are under `/api`. Set `STORAGE_ROOT` for another array mount. Do not point it at this repository. Compose passes all retention, batching, window, and ClickHouse credential settings from `.env` into the service; the storage array remains the only durable-data location.
 
+The observatory allocation defaults to 25 TiB. Change `STORAGE_BUDGET_TIB`, or set `STORAGE_BUDGET_BYTES` for an exact override. This logical budget is reported separately from filesystem capacity; runway projections show both and identify whichever limit arrives first at the currently measured daily growth rate.
+
 The dashboard is a Vite/React application built into the production container. Axum serves its hashed assets with immutable caching, keeps the SPA entry point fresh, and marks live API responses `no-store`. During frontend development, run `npm install && npm run dev` in `frontend`; Vite proxies API calls to the Rust service on port 3000.
 
 ## Data and restart behavior

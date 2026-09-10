@@ -50,6 +50,7 @@ async fn main() -> Result<()> {
             measured_at: std::time::Instant::now(),
             bytes: Archive::total_size(&cfg.data_dir) + storage.bytes().await.unwrap_or(0),
         },
+        storage_budget_bytes: cfg.effective_storage_budget_bytes(),
         system_history: Default::default(),
         identities: identities.clone(),
     };

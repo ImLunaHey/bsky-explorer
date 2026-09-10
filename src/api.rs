@@ -44,6 +44,7 @@ pub struct AppState {
     pub archive_dir: PathBuf,
     pub web_dist_dir: PathBuf,
     pub growth_baseline: GrowthBaseline,
+    pub storage_budget_bytes: u64,
     pub system_history: SystemHistory,
     pub identities: IdentityService,
 }
@@ -1307,6 +1308,20 @@ struct StorageStats {
     bytes_ingested_per_day: f64,
     projected_monthly_bytes: f64,
     projected_yearly_bytes: f64,
+    storage_budget_bytes: u64,
+    used_footprint_bytes: u64,
+    remaining_allocation_bytes: u64,
+    physical_available_bytes: u64,
+    allocation_runway_days: Option<f64>,
+    allocation_runway_months: Option<f64>,
+    allocation_runway_years: Option<f64>,
+    physical_runway_days: Option<f64>,
+    physical_runway_months: Option<f64>,
+    physical_runway_years: Option<f64>,
+    limiting_factor: &'static str,
+}
+fn runway_days(remaining_bytes: u64, daily_growth: f64) -> Option<f64> {
+    (daily_growth > 0.0 && daily_growth.is_finite()).then(|| remaining_bytes as f64 / daily_growth)
 }
 async fn storage(State(s): State<AppState>) -> Json<StorageStats> {
     let raw = Archive::total_size(&s.archive_dir);
@@ -1320,14 +1335,35 @@ async fn storage(State(s): State<AppState>) -> Json<StorageStats> {
     } else {
         0.0
     };
+    let daily = hourly * 24.0;
+    let remaining_allocation = s.storage_budget_bytes.saturating_sub(current);
+    let physical_available = fs2::available_space(&s.archive_dir).unwrap_or(0);
+    let allocation_days = runway_days(remaining_allocation, daily);
+    let physical_days = runway_days(physical_available, daily);
+    let limiting_factor = match (allocation_days, physical_days) {
+        (Some(allocation), Some(physical)) if allocation <= physical => "observatory_allocation",
+        (Some(_), Some(_)) => "physical_array",
+        _ => "growth_unavailable",
+    };
     Json(StorageStats {
         raw_archive_bytes: raw,
         clickhouse_bytes: ch,
         derived_bytes: derived,
         bytes_ingested_per_hour: hourly,
-        bytes_ingested_per_day: hourly * 24.0,
-        projected_monthly_bytes: hourly * 24.0 * 30.0,
-        projected_yearly_bytes: hourly * 24.0 * 365.0,
+        bytes_ingested_per_day: daily,
+        projected_monthly_bytes: daily * 30.0,
+        projected_yearly_bytes: daily * 365.0,
+        storage_budget_bytes: s.storage_budget_bytes,
+        used_footprint_bytes: current,
+        remaining_allocation_bytes: remaining_allocation,
+        physical_available_bytes: physical_available,
+        allocation_runway_days: allocation_days,
+        allocation_runway_months: allocation_days.map(|days| days / 30.4375),
+        allocation_runway_years: allocation_days.map(|days| days / 365.25),
+        physical_runway_days: physical_days,
+        physical_runway_months: physical_days.map(|days| days / 30.4375),
+        physical_runway_years: physical_days.map(|days| days / 365.25),
+        limiting_factor,
     })
 }
 
@@ -1749,5 +1785,13 @@ mod tests {
         assert!(reset.container.is_none());
         assert!(reset.host.is_none());
         assert!(cpu_percentages(previous, current, 0.0).host.is_none());
+    }
+
+    #[test]
+    fn storage_runway_requires_positive_growth_and_uses_remaining_bytes() {
+        assert_eq!(runway_days(1_000, 100.0), Some(10.0));
+        assert_eq!(runway_days(0, 100.0), Some(0.0));
+        assert_eq!(runway_days(1_000, 0.0), None);
+        assert_eq!(runway_days(1_000, f64::NAN), None);
     }
 }

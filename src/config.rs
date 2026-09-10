@@ -24,6 +24,12 @@ pub struct Config {
         default_value = "/mnt/storage/bsky-observatory/archive"
     )]
     pub data_dir: PathBuf,
+    /// Logical allocation for this observatory. `STORAGE_BUDGET_BYTES`, when
+    /// set, takes precedence over this TiB value.
+    #[arg(long, env = "STORAGE_BUDGET_TIB", default_value_t = 25.0)]
+    pub storage_budget_tib: f64,
+    #[arg(long, env = "STORAGE_BUDGET_BYTES", default_value_t = 0)]
+    pub storage_budget_bytes: u64,
     #[arg(
         long,
         env = "WEB_DIST_DIR",
@@ -74,5 +80,12 @@ pub struct Config {
 impl Config {
     pub fn flush_interval(&self) -> Duration {
         Duration::from_secs(self.flush_seconds)
+    }
+    pub fn effective_storage_budget_bytes(&self) -> u64 {
+        if self.storage_budget_bytes > 0 {
+            self.storage_budget_bytes
+        } else {
+            (self.storage_budget_tib.max(0.0) * 1024_f64.powi(4)).min(u64::MAX as f64) as u64
+        }
     }
 }
