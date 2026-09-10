@@ -7,13 +7,19 @@ use axum::{
     routing::get,
 };
 use serde::Serialize;
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Instant};
+#[derive(Clone)]
+pub struct GrowthBaseline {
+    pub measured_at: Instant,
+    pub bytes: u64,
+}
 #[derive(Clone)]
 pub struct AppState {
     pub analysis: Analyzer,
     pub metrics: Arc<Metrics>,
     pub storage: Storage,
     pub archive_dir: PathBuf,
+    pub growth_baseline: GrowthBaseline,
 }
 pub fn router(s: AppState) -> Router {
     Router::new()
@@ -66,19 +72,28 @@ struct StorageStats {
     clickhouse_bytes: u64,
     derived_bytes: u64,
     bytes_ingested_per_hour: f64,
+    bytes_ingested_per_day: f64,
     projected_monthly_bytes: f64,
     projected_yearly_bytes: f64,
 }
 async fn storage(State(s): State<AppState>) -> Json<StorageStats> {
     let raw = Archive::total_size(&s.archive_dir);
     let ch = s.storage.bytes().await.unwrap_or(0);
+    let derived = s.storage.table_bytes(Some("detections")).await.unwrap_or(0);
     s.metrics.clickhouse_bytes.set(ch as i64);
-    let hourly = s.analysis.rates().events_per_sec * 3600.0 * 400.0;
+    let elapsed_hours = s.growth_baseline.measured_at.elapsed().as_secs_f64() / 3600.0;
+    let current = raw.saturating_add(ch);
+    let hourly = if elapsed_hours > 0.0 {
+        current.saturating_sub(s.growth_baseline.bytes) as f64 / elapsed_hours
+    } else {
+        0.0
+    };
     Json(StorageStats {
         raw_archive_bytes: raw,
         clickhouse_bytes: ch,
-        derived_bytes: 0,
+        derived_bytes: derived,
         bytes_ingested_per_hour: hourly,
+        bytes_ingested_per_day: hourly * 24.0,
         projected_monthly_bytes: hourly * 24.0 * 30.0,
         projected_yearly_bytes: hourly * 24.0 * 365.0,
     })

@@ -82,7 +82,11 @@ impl Storage {
         Ok(())
     }
     pub async fn bytes(&self) -> Result<u64> {
-        Ok(self.client.query("SELECT sum(bytes_on_disk) FROM system.parts WHERE active AND database=currentDatabase()").fetch_one::<u64>().await.unwrap_or(0))
+        self.table_bytes(None).await
+    }
+    pub async fn table_bytes(&self, table: Option<&str>) -> Result<u64> {
+        let table = table.unwrap_or("");
+        Ok(self.client.query("SELECT coalesce(sum(bytes_on_disk), 0) FROM system.parts WHERE active AND database=currentDatabase() AND (? = '' OR table = ?)").bind(table).bind(table).fetch_one::<u64>().await?)
     }
 }
 

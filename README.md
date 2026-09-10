@@ -26,7 +26,7 @@ ClickHouse uses monthly `MergeTree` partitions, time/kind/actor ordering, Zstd t
 - `GET /api/trending/urls` and `/api/trending/domains`
 - `GET /api/anomalies`, `/api/clusters`, `/api/clusters/{id}`
 - `GET /api/accounts/{did}` — rolling activity and automation evidence
-- `GET /api/storage` — archive, ClickHouse and growth projections
+- `GET /api/storage` — archive, ClickHouse/derived sizes and observed growth projections
 - `GET /metrics` — Prometheus exposition
 
 Scores describe observed evidence (`automation`, coordination, shared-target, timing, and content similarity); they do not label accounts as bots. Cluster evidence includes participants, timing, shared targets, URLs/domains, and sample event IDs.
@@ -46,4 +46,4 @@ curl -s localhost:3000/api/storage
 
 ## MVP boundaries
 
-Hot state is process-local and rebuilds from new traffic; detections persist in ClickHouse. Exact, normalized, and SimHash fingerprints are stored, while initial cluster generation uses repeated targets, normalized content and domains in temporal windows. Natural next steps are an archive replay CLI, SimHash locality buckets, richer graph/community analysis, ClickHouse materialized rollups, and authentication. Semantic analysis should remain optional and limited to flagged/trending content.
+Hot state is process-local and rebuilds from new traffic; detections persist in ClickHouse. Growth rates are measured from the process-start disk-size baseline, so they read zero until new durable bytes arrive and reset after restart. Exact, normalized, and SimHash fingerprints are stored, while initial cluster generation uses repeated targets, normalized content and domains in temporal windows. Natural next steps are an archive replay CLI, SimHash locality buckets, richer graph/community analysis, ClickHouse materialized rollups, and authentication. Semantic analysis should remain optional and limited to flagged/trending content.
