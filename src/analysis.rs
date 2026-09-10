@@ -6,6 +6,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
 };
+use tokio::sync::broadcast;
 
 #[derive(Clone, Serialize)]
 pub struct Rates {
@@ -122,6 +123,7 @@ pub struct TrendDrilldown {
 #[derive(Clone)]
 pub struct Analyzer {
     inner: Arc<RwLock<State>>,
+    live_events: broadcast::Sender<NormalizedEvent>,
     coordination_secs: i64,
     min_accounts: usize,
     min_events: usize,
@@ -165,6 +167,7 @@ impl Analyzer {
         if windows_seconds.is_empty() {
             windows_seconds.push(60);
         }
+        let (live_events, _) = broadcast::channel(4_096);
         Self {
             inner: Arc::new(RwLock::new(State {
                 events: VecDeque::new(),
@@ -173,6 +176,7 @@ impl Analyzer {
                 url_counts: HashMap::new(),
                 domain_counts: HashMap::new(),
             })),
+            live_events,
             coordination_secs,
             min_accounts,
             min_events,
@@ -211,6 +215,9 @@ impl Analyzer {
             // from the latency-sensitive ordered firehose.
             s.events.retain(|event| event.timestamp >= cutoff);
         }
+        // Broadcast is deliberately best-effort and bounded. A missing or slow
+        // dashboard must never apply backpressure to ingestion.
+        let _ = self.live_events.send(e.clone());
         if !detect {
             return None;
         }
@@ -306,6 +313,10 @@ impl Analyzer {
         };
         s.detections.insert(cluster_id, d.clone());
         Some(d)
+    }
+
+    pub fn subscribe_live(&self) -> broadcast::Receiver<NormalizedEvent> {
+        self.live_events.subscribe()
     }
 
     /// Returns a bounded, chronological view over the already-retained hot
@@ -1211,5 +1222,16 @@ mod tests {
         let exact_url =
             a.trend_drilldown(TrendDimension::Url, "https://example.test/a", None, 0, 20);
         assert_eq!(exact_url.total, 2);
+    }
+
+    #[tokio::test]
+    async fn live_subscribers_receive_observed_events() {
+        let analyzer = Analyzer::new(30, 3, 3, 24);
+        let mut subscriber = analyzer.subscribe_live();
+        let event = e("live-account", 123);
+        analyzer.observe_without_detection(event.clone());
+        let received = subscriber.recv().await.expect("live event");
+        assert_eq!(received.event_id, event.event_id);
+        assert_eq!(received.time_us, event.time_us);
     }
 }

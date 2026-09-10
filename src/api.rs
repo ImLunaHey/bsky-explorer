@@ -8,14 +8,24 @@ use crate::{
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::{HeaderValue, Request, StatusCode, header},
+    http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     middleware,
     middleware::Next,
-    response::{IntoResponse, Response},
+    response::{
+        IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
+    },
     routing::get,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::VecDeque, fs, path::PathBuf, sync::Arc, time::Instant};
+use std::{
+    collections::VecDeque,
+    convert::Infallible,
+    fs,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::sync::RwLock;
 use tower_http::services::{ServeDir, ServeFile};
 #[derive(Clone)]
@@ -44,6 +54,7 @@ pub fn router(s: AppState) -> Router {
         .route("/metrics", get(metrics))
         .route("/api/stats", get(stats))
         .route("/api/firehose", get(firehose))
+        .route("/api/live", get(live))
         .route("/api/trending/urls", get(urls))
         .route("/api/trending/domains", get(domains))
         .route("/api/trending/fingerprints", get(fingerprints))
@@ -103,6 +114,105 @@ async fn metrics(State(s): State<AppState>) -> String {
 }
 async fn stats(State(s): State<AppState>) -> Json<crate::analysis::Rates> {
     Json(s.analysis.rates())
+}
+
+#[derive(Default, Deserialize)]
+struct LiveQuery {
+    after_time_us: Option<i64>,
+}
+
+async fn live(
+    State(s): State<AppState>,
+    Query(query): Query<LiveQuery>,
+    headers: HeaderMap,
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)>
+{
+    let mut cursor = live_cursor(query.after_time_us, headers.get("last-event-id"))?;
+    // Subscribe before taking the retained snapshot. Events arriving between
+    // these operations are present in both sources and deduplicated by cursor.
+    let mut receiver = s.analysis.subscribe_live();
+    let analysis = s.analysis.clone();
+    let stream = async_stream::stream! {
+        yield Ok(Event::default().event("rates").json_data(analysis.rates()).expect("rates serialize"));
+        let replay = analysis.recent_events(crate::analysis::RecentEventFilter {
+            after_time_us: cursor,
+            limit: 500,
+            ..Default::default()
+        });
+        for event in replay.events {
+            cursor = Some(cursor.map_or(event.time_us, |value| value.max(event.time_us)));
+            yield Ok(live_event(&event));
+        }
+
+        let mut rates = tokio::time::interval(Duration::from_secs(1));
+        rates.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        rates.tick().await;
+        loop {
+            tokio::select! {
+                _ = rates.tick() => {
+                    yield Ok(Event::default().event("rates").json_data(analysis.rates()).expect("rates serialize"));
+                }
+                message = receiver.recv() => match message {
+                    Ok(event) => {
+                        if cursor.is_none_or(|value| event.time_us > value) {
+                            cursor = Some(event.time_us);
+                            yield Ok(live_event(&event));
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        let replay = analysis.recent_events(crate::analysis::RecentEventFilter {
+                            after_time_us: cursor,
+                            limit: 500,
+                            ..Default::default()
+                        });
+                        for event in replay.events {
+                            cursor = Some(cursor.map_or(event.time_us, |value| value.max(event.time_us)));
+                            yield Ok(live_event(&event));
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    };
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    ))
+}
+
+fn live_event(event: &crate::model::NormalizedEvent) -> Event {
+    Event::default()
+        .event("firehose")
+        .id(event.time_us.to_string())
+        .json_data(event)
+        .expect("normalized event serialize")
+}
+
+fn live_cursor(
+    query_cursor: Option<i64>,
+    last_event_id: Option<&HeaderValue>,
+) -> Result<Option<i64>, (StatusCode, String)> {
+    let header_cursor = last_event_id
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .map(str::parse::<i64>)
+        .transpose()
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                "Last-Event-ID must be an integer time_us".into(),
+            )
+        })?;
+    let cursor = query_cursor.or(header_cursor);
+    if cursor.is_some_and(|value| value < 0) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "after_time_us cannot be negative".into(),
+        ));
+    }
+    Ok(cursor)
 }
 #[derive(Deserialize)]
 struct FirehoseQuery {
@@ -739,6 +849,15 @@ mod tests {
             "public, max-age=31536000, immutable"
         );
         assert_eq!(cache_policy("/clusters/example"), "no-cache");
+    }
+
+    #[test]
+    fn live_cursor_prefers_query_and_accepts_event_source_header() {
+        let header = HeaderValue::from_static("123");
+        assert_eq!(live_cursor(None, Some(&header)).unwrap(), Some(123));
+        assert_eq!(live_cursor(Some(456), Some(&header)).unwrap(), Some(456));
+        assert!(live_cursor(Some(-1), None).is_err());
+        assert!(live_cursor(None, Some(&HeaderValue::from_static("oops"))).is_err());
     }
 
     #[test]
