@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { createColumnHelper, flexRender, getCoreRowModel, getFilteredRowModel, getPaginationRowModel, getSortedRowModel, type SortingState, useReactTable } from '@tanstack/react-table'
 import { Chart } from '@tanstack/charts/react'
@@ -10,7 +10,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { api } from './api'
 import { AccountFollows } from './AccountFollows'
 import { AccountLexicons } from './AccountLexicons'
-import type { AccountDetail, AccountEvent, Identity } from './types'
+import type { AccountDetail, AccountEvent, AccountProfile, Identity } from './types'
 
 type AccountAnalytics={activity:{timestamp_ms:number;events:number;posts:number;interactions:number}[];event_kinds:{kind:string;count:number}[]}
 const number=new Intl.NumberFormat(undefined,{maximumFractionDigits:2})
@@ -25,14 +25,16 @@ function ActivityChart({data}:{data:AccountAnalytics['activity']}) {
 }
 
 export function AccountPage({did}:{did:string}) {
-  const navigate=useNavigate(),[copied,setCopied]=useState(false),[sorting,setSorting]=useState<SortingState>([{id:'time',desc:true}]),[kind,setKind]=useState('all'),[search,setSearch]=useState('')
+  const navigate=useNavigate(),[copied,setCopied]=useState(false),[avatarFailed,setAvatarFailed]=useState(false),[sorting,setSorting]=useState<SortingState>([{id:'time',desc:true}]),[kind,setKind]=useState('all'),[search,setSearch]=useState('')
+  useEffect(()=>setAvatarFailed(false),[did])
   const account=useQuery({queryKey:['account',did],queryFn:()=>api<AccountDetail>(`/api/accounts/${encodeURIComponent(did)}`),staleTime:30_000})
+  const profile=useQuery({queryKey:['account-profile',did],queryFn:()=>api<AccountProfile>(`/api/accounts/${encodeURIComponent(did)}/profile`),staleTime:300_000,retry:1})
   const events=useQuery({queryKey:['account-events',did],queryFn:()=>api<AccountEvent[]>(`/api/accounts/${encodeURIComponent(did)}/events`),staleTime:15_000})
   const analytics=useQuery({queryKey:['account-analytics',did],queryFn:()=>api<AccountAnalytics>(`/api/accounts/${encodeURIComponent(did)}/analytics`),staleTime:15_000})
   // Resolve the primary account publicly. Resolving every event target here
   // would serialize external profile requests and make a cold page very slow.
   const identities=useQuery({queryKey:['identities',did],queryFn:()=>api<Identity[]>(`/api/identities?dids=${encodeURIComponent(did)}`),staleTime:300_000})
-  const handles=useMemo(()=>new Map((identities.data||[]).map(identity=>[identity.did,identity.handle])),[identities.data]),identity=handles.get(did)||account.data?.current_identity.handle
+  const handles=useMemo(()=>new Map((identities.data||[]).map(identity=>[identity.did,identity.handle])),[identities.data]),identity=profile.data?.handle||handles.get(did)||account.data?.current_identity.handle
   const filtered=(events.data||[]).filter(event=>(kind==='all'||event.kind===kind)&&(!search||`${event.text} ${event.target} ${event.kind}`.toLowerCase().includes(search.toLowerCase())))
   const columns=useMemo(()=>[
     eventHelper.accessor('time_us',{id:'time',header:'Time',cell:cell=><time className="whitespace-nowrap text-dim">{new Date(cell.getValue()/1000).toLocaleString()}</time>}),
@@ -43,7 +45,7 @@ export function AccountPage({did}:{did:string}) {
   const stored=account.data?.stored,activity=account.data?.activity,kinds=analytics.data?.event_kinds||[],maxKind=Math.max(...kinds.map(item=>item.count),1)
   const copy=async()=>{await navigator.clipboard.writeText(did);setCopied(true);setTimeout(()=>setCopied(false),1500)}
   if(account.isLoading)return <div className="grid min-h-56 place-items-center text-sm text-dim">Loading account activity…</div>
-  return <section className="panel mx-auto max-w-6xl p-6"><p className="eyebrow">Account activity</p><div className="mt-5 flex items-start gap-4"><div className="grid size-12 shrink-0 place-items-center rounded-2xl border border-mint/20 bg-mint/10"><UserRound className="size-6 text-mint"/></div><div className="min-w-0"><h2 className="truncate text-xl font-semibold text-cyan">{identity?`@${identity}`:short(did)}</h2><p className="mt-1 break-all font-mono text-[11px] text-dim">{did}</p></div></div>
+  return <section className="panel mx-auto max-w-6xl p-6"><p className="eyebrow">Account activity</p><div className="mt-5 flex items-start gap-4">{profile.data?.avatar_url&&!avatarFailed?<img src={profile.data.avatar_url} alt="" onError={()=>setAvatarFailed(true)} referrerPolicy="no-referrer" className="size-16 shrink-0 rounded-2xl border border-orange-500/20 bg-black object-cover"/>:<div className="grid size-16 shrink-0 place-items-center rounded-2xl border border-mint/20 bg-mint/10"><UserRound className="size-7 text-mint"/></div>}<div className="min-w-0 flex-1">{profile.data?.display_name&&<h1 className="truncate text-2xl font-semibold text-white">{profile.data.display_name}</h1>}<h2 className={`truncate font-semibold text-cyan ${profile.data?.display_name?'mt-0.5 text-sm':'text-xl'}`}>{identity?`@${identity}`:short(did)}</h2><p className="mt-1 break-all font-mono text-[11px] text-dim">{did}</p>{profile.data?.description&&<p className="mt-4 max-w-3xl whitespace-pre-wrap text-sm leading-6 text-white/80">{profile.data.description}</p>}<div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-dim">{profile.data?.followers_count!=null&&<span><b className="text-white">{compact.format(profile.data.followers_count)}</b> followers</span>}{profile.data?.follows_count!=null&&<span><b className="text-white">{compact.format(profile.data.follows_count)}</b> following</span>}{profile.data?.posts_count!=null&&<span><b className="text-white">{compact.format(profile.data.posts_count)}</b> posts</span>}{profile.data&&<span title={`Fetched ${new Date(profile.data.observed_at).toLocaleString()}`}>Profile observed {new Date(profile.data.indexed_at||profile.data.observed_at).toLocaleString()}</span>}</div>{profile.data?.labels.length?<div className="mt-2 flex flex-wrap gap-1">{profile.data.labels.map(label=><span key={label} className="rounded border border-orange-500/20 px-2 py-0.5 text-[10px] text-orange-300">{label}</span>)}</div>:null}</div></div>
     <div className="mt-5 flex flex-wrap gap-2"><button onClick={copy} className="flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-xs">{copied?<Check className="size-3.5 text-mint"/>:<Copy className="size-3.5"/>}{copied?'Copied':'Copy DID'}</button><a href={`https://bsky.app/profile/${encodeURIComponent(identity||did)}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-xs">Open on Bluesky <ExternalLink className="size-3.5"/></a></div>
     <div className="mt-8 grid grid-cols-2 gap-3 md:grid-cols-4"><Stat label="Retained events" value={stored?.event_count}/><Stat label="Posts" value={stored?.post_count}/><Stat label="Likes / reposts" value={stored?`${number.format(stored.like_count)} / ${number.format(stored.repost_count)}`:undefined}/><Stat label="Unique targets" value={stored?.unique_targets}/><Stat label="First observed" value={stored?new Date(stored.first_seen_ms).toLocaleDateString():undefined}/><Stat label="Last observed" value={stored?new Date(stored.last_seen_ms).toLocaleString():undefined}/><Stat label="Clusters" value={activity?.cluster_ids.length}/><Stat label="Automation signal" value={activity?.scores.automation_score.toFixed(2)}/></div>
     <div className="mt-8 grid gap-5 lg:grid-cols-[2fr_1fr]"><div className="rounded-xl border border-line p-4"><h3 className="eyebrow mb-4">Activity · last 24 hours</h3><ActivityChart data={analytics.data?.activity||[]}/><div className="mt-2 flex flex-wrap justify-center gap-4 text-[10px] uppercase text-dim"><Legend color="#ff8a1f" label="All events"/><Legend color="#ffd0a3" label="Posts"/><Legend color="#ffb15c" label="Interactions"/></div></div><div className="rounded-xl border border-line p-4"><h3 className="eyebrow mb-4">Event kind distribution · 24h</h3><div className="space-y-3">{kinds.map(item=><div key={item.kind}><div className="mb-1 flex justify-between text-xs"><span className="uppercase text-dim">{item.kind}</span><b>{number.format(item.count)}</b></div><div className="h-1.5 rounded bg-line"><div className="h-full rounded bg-mint" style={{width:`${item.count/maxKind*100}%`}}/></div></div>)}</div></div></div>

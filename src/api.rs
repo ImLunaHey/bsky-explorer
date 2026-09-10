@@ -24,6 +24,7 @@ use std::{
     fs,
     path::PathBuf,
     sync::Arc,
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 use tokio::sync::RwLock;
@@ -84,6 +85,7 @@ pub fn router(s: AppState) -> Router {
         .route("/api/clusters", get(clusters))
         .route("/api/clusters/{id}", get(cluster))
         .route("/api/accounts/{did}", get(account))
+        .route("/api/accounts/{did}/profile", get(account_profile))
         .route("/api/accounts/{did}/events", get(account_events))
         .route("/api/accounts/{did}/follows", get(account_follows))
         .route("/api/accounts/{did}/analytics", get(account_analytics))
@@ -1387,6 +1389,166 @@ fn valid_media_url(value: &str) -> bool {
         && url.password().is_none()
 }
 
+const PROFILE_CACHE_TTL: Duration = Duration::from_secs(300);
+const MAX_PROFILE_BYTES: usize = 64 * 1024;
+static PROFILE_CACHE: OnceLock<RwLock<HashMap<String, CachedProfile>>> = OnceLock::new();
+
+#[derive(Clone)]
+struct CachedProfile {
+    fetched_at: Instant,
+    profile: AccountProfile,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AccountProfile {
+    did: String,
+    handle: String,
+    display_name: Option<String>,
+    description: Option<String>,
+    avatar_url: Option<String>,
+    labels: Vec<String>,
+    followers_count: Option<u64>,
+    follows_count: Option<u64>,
+    posts_count: Option<u64>,
+    indexed_at: Option<String>,
+    observed_at: chrono::DateTime<chrono::Utc>,
+}
+
+async fn account_profile(
+    Path(did): Path<String>,
+) -> Result<Json<AccountProfile>, (StatusCode, String)> {
+    if !valid_profile_did(&did) {
+        return Err((StatusCode::BAD_REQUEST, "invalid DID".into()));
+    }
+    let cache = PROFILE_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
+    if let Some(profile) = cache
+        .read()
+        .await
+        .get(&did)
+        .filter(|entry| entry.fetched_at.elapsed() < PROFILE_CACHE_TTL)
+        .map(|entry| entry.profile.clone())
+    {
+        return Ok(Json(profile));
+    }
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(1))
+        .timeout(Duration::from_secs(3))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent("bsky-observatory/0.1")
+        .build()
+        .map_err(|error| internal_error(error.into()))?;
+    let mut response = client
+        .get("https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile")
+        .query(&[("actor", &did)])
+        .send()
+        .await
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?
+        .error_for_status()
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_PROFILE_BYTES as u64)
+    {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            "profile metadata is too large".into(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > MAX_PROFILE_BYTES {
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                "profile metadata is too large".into(),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
+    if value.get("did").and_then(serde_json::Value::as_str) != Some(&did) {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            "AppView returned a different DID".into(),
+        ));
+    }
+    let avatar_url = value
+        .get("avatar")
+        .and_then(serde_json::Value::as_str)
+        .filter(|url| valid_avatar_url(url))
+        .map(str::to_owned);
+    let profile = AccountProfile {
+        did: did.clone(),
+        handle: value
+            .get("handle")
+            .and_then(serde_json::Value::as_str)
+            .filter(|handle| handle.len() <= 253)
+            .unwrap_or(&did)
+            .to_owned(),
+        display_name: bounded_profile_string(&value, "displayName", 640),
+        description: bounded_profile_string(&value, "description", 4096),
+        avatar_url,
+        labels: value
+            .get("labels")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|label| label.get("val").and_then(serde_json::Value::as_str))
+            .filter(|label| label.len() <= 128)
+            .take(20)
+            .map(str::to_owned)
+            .collect(),
+        followers_count: value
+            .get("followersCount")
+            .and_then(serde_json::Value::as_u64),
+        follows_count: value
+            .get("followsCount")
+            .and_then(serde_json::Value::as_u64),
+        posts_count: value.get("postsCount").and_then(serde_json::Value::as_u64),
+        indexed_at: bounded_profile_string(&value, "indexedAt", 64),
+        observed_at: chrono::Utc::now(),
+    };
+    cache.write().await.insert(
+        did,
+        CachedProfile {
+            fetched_at: Instant::now(),
+            profile: profile.clone(),
+        },
+    );
+    Ok(Json(profile))
+}
+
+fn bounded_profile_string(value: &serde_json::Value, key: &str, max: usize) -> Option<String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|text| text.len() <= max)
+        .map(str::to_owned)
+}
+
+fn valid_profile_did(did: &str) -> bool {
+    (7..=256).contains(&did.len())
+        && did.starts_with("did:")
+        && did.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'.' | b'_' | b'-' | b'%')
+        })
+}
+
+fn valid_avatar_url(value: &str) -> bool {
+    let Ok(url) = url::Url::parse(value) else {
+        return false;
+    };
+    url.scheme() == "https"
+        && url.port().is_none()
+        && url.host_str() == Some("cdn.bsky.app")
+        && url.username().is_empty()
+        && url.password().is_none()
+}
+
 fn internal_error(error: anyhow::Error) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
 }
@@ -1868,6 +2030,19 @@ mod tests {
         let media = extract_record_media(&embed);
         assert_eq!(media.len(), 1);
         assert_eq!(media[0].kind, "video");
+    }
+
+    #[test]
+    fn validates_profile_identifiers_and_avatar_hosts() {
+        assert!(valid_profile_did("did:plc:k6acu4chiwkixvdedcmdgmal"));
+        assert!(!valid_profile_did("did:plc:test/../../etc/passwd"));
+        assert!(!valid_profile_did("https://example.test"));
+        assert!(valid_avatar_url(
+            "https://cdn.bsky.app/img/avatar/plain/did:plc:test/cid@jpeg"
+        ));
+        assert!(!valid_avatar_url("http://cdn.bsky.app/image"));
+        assert!(!valid_avatar_url("https://cdn.bsky.app.evil.test/image"));
+        assert!(!valid_avatar_url("https://user@cdn.bsky.app/image"));
     }
 
     #[test]
