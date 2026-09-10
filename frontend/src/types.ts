@@ -26,3 +26,10 @@ export type RecordMediaResponse = { media:RecordMedia[];source:'public_appview';
 export type FirehoseEvent = { event_id:string;time_us:number;actor_did:string;kind:string;timestamp:string;at_uri:string;target?:string;target_did?:string;text?:string;urls:string[];domains:string[];reply_parent?:string;reply_root?:string;quote_target?:string }
 export type FirehoseFeed = { events:FirehoseEvent[];next_after_time_us?:number;retained_event_count:number;has_more:boolean }
 export type TrendDrilldown = { events:FirehoseEvent[];total:number;offset:number;limit:number;cluster_ids:string[] }
+export type SearchKind = 'all'|'account'|'record'|'event'
+export type SearchResult = {
+  result_type:'account'|'record'|'event';did:string;handle:string|null;event_id:string|null
+  at_uri:string|null;event_type:string|null;timestamp_ms:number|null;text:string|null
+  target:string|null;urls:string[];domains:string[];collection:string|null;operation:string|null;record_json:string|null
+}
+export type SearchResponse = { query:string;type:SearchKind;offset:number;limit:number;has_more:boolean;results:SearchResult[] }
