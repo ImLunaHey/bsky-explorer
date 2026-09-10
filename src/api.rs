@@ -24,12 +24,16 @@ pub struct AppState {
 pub fn router(s: AppState) -> Router {
     Router::new()
         .route("/", get(index))
+        .route("/healthz", get(health))
+        .route("/readyz", get(ready))
         .route("/metrics", get(metrics))
         .route("/api/stats", get(stats))
         .route("/api/trending/urls", get(urls))
         .route("/api/trending/domains", get(domains))
+        .route("/api/trending/fingerprints", get(fingerprints))
+        .route("/api/trending/conversations", get(conversations))
         .route("/api/anomalies", get(anomalies))
-        .route("/api/clusters", get(anomalies))
+        .route("/api/clusters", get(clusters))
         .route("/api/clusters/{id}", get(cluster))
         .route("/api/accounts/{did}", get(account))
         .route("/api/storage", get(storage))
@@ -38,7 +42,22 @@ pub fn router(s: AppState) -> Router {
 async fn index() -> Html<&'static str> {
     Html(include_str!("../static/index.html"))
 }
+async fn health() -> &'static str {
+    "ok"
+}
+async fn ready(State(s): State<AppState>) -> impl IntoResponse {
+    match s.storage.ping().await {
+        Ok(()) => (StatusCode::OK, "ready"),
+        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "ClickHouse unavailable"),
+    }
+}
 async fn metrics(State(s): State<AppState>) -> String {
+    s.metrics
+        .archive_bytes
+        .set(Archive::total_size(&s.archive_dir) as i64);
+    if let Ok(bytes) = s.storage.bytes().await {
+        s.metrics.clickhouse_bytes.set(bytes as i64);
+    }
     s.metrics.render()
 }
 async fn stats(State(s): State<AppState>) -> Json<crate::analysis::Rates> {
@@ -50,12 +69,21 @@ async fn urls(State(s): State<AppState>) -> Json<Vec<(String, u64)>> {
 async fn domains(State(s): State<AppState>) -> Json<Vec<(String, u64)>> {
     Json(s.analysis.top(true))
 }
-async fn anomalies(State(s): State<AppState>) -> Json<Vec<crate::model::Detection>> {
+async fn fingerprints(State(s): State<AppState>) -> Json<Vec<crate::analysis::TrendingItem>> {
+    Json(s.analysis.trending_fingerprints())
+}
+async fn conversations(State(s): State<AppState>) -> Json<Vec<crate::analysis::TrendingItem>> {
+    Json(s.analysis.growing_conversations())
+}
+async fn anomalies(State(s): State<AppState>) -> Json<crate::analysis::CategorizedAnomalies> {
+    Json(s.analysis.categorized_anomalies())
+}
+async fn clusters(State(s): State<AppState>) -> Json<Vec<crate::model::Detection>> {
     Json(s.analysis.detections())
 }
 async fn cluster(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
     s.analysis
-        .detection(&id)
+        .cluster_detail(&id)
         .map(Json)
         .map(IntoResponse::into_response)
         .unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
