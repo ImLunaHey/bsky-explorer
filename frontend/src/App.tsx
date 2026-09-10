@@ -33,6 +33,7 @@ import { TrendPage } from "./TrendPage";
 import { CommandPalette } from "./CommandPalette";
 import { SearchPage } from "./SearchPage";
 import { AccountPage } from "./AccountPage";
+import { BackfillsPage } from "./BackfillsPage";
 import type {
   Anomalies,
   ClusterDetail,
@@ -1339,7 +1340,7 @@ function SystemView({
 }
 
 export type AppRoute =
-  | { view: "network" | "firehose" | "anomalies" | "system" }
+  | { view: "network" | "firehose" | "anomalies" | "system" | "backfills" }
   | { view: "search"; query: string; searchType: SearchKind; offset: number }
   | { view: "account"; did: string }
   | { view: "record"; uri: string }
@@ -1456,6 +1457,7 @@ export default function App({ route }: { route: AppRoute }) {
               ["/", "Network", "network"],
               ["/firehose", "Firehose", "firehose"],
               ["/search", "Search", "search"],
+              ["/backfills", "Backfills", "backfills"],
               ["/detections", "Detections", "anomalies"],
               ["/system", "System", "system"],
             ] as const
@@ -1695,6 +1697,7 @@ export default function App({ route }: { route: AppRoute }) {
             initialOffset={route.offset}
           />
         )}
+        {route.view === "backfills" && <BackfillsPage />}
         {route.view === "system" && (
           <SystemView
             storage={storage.data}

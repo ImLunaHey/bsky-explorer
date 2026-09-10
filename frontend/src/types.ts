@@ -33,6 +33,6 @@ export type SearchResult = {
   target:string|null;urls:string[];domains:string[];collection:string|null;operation:string|null;record_json:string|null
 }
 export type BackfillStatus = 'queued'|'resolving'|'running'|'retrying'|'completed'|'dead_letter'|'cancelled'
-export type BackfillJob = { id:string;query:string;did?:string|null;handle?:string|null;status:BackfillStatus;job_type:'repository'|'associations';depends_on_job_id:string|null;include_associations:boolean;created_at:string;updated_at:string;collection?:string|null;cursor?:string|null;records_written:number;retry_count:number;last_error?:string|null;next_attempt_at?:string|null }
+export type BackfillJob = { id:string;query:string;did?:string|null;handle?:string|null;status:BackfillStatus;job_type:'repository'|'associations';depends_on_job_id:string|null;include_associations:boolean;created_at:string;updated_at:string;collection?:string|null;cursor?:string|null;records_written:number;retry_count:number;max_retries:number;last_error?:string|null;next_attempt_at?:string|null }
 export type SearchResponse = { query:string;type:SearchKind;offset:number;limit:number;has_more:boolean;results:SearchResult[];backfill_job?:BackfillJob|null }
-export type BackfillJobsResponse = {jobs:BackfillJob[]}
+export type BackfillJobsResponse = {jobs:BackfillJob[];total?:number;offset?:number;limit?:number;has_more?:boolean}
