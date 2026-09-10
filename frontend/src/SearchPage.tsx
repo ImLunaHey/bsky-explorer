@@ -3,6 +3,7 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { ArrowLeft, ArrowRight, Search, UserRound } from 'lucide-react'
 import { api } from './api'
+import { useIdentityMap } from './identities'
 import type { SearchKind, SearchResponse, SearchResult } from './types'
 
 const PAGE_SIZE=25
@@ -10,7 +11,9 @@ const kinds: {value:SearchKind;label:string}[]=[{value:'all',label:'Everything'}
 const shortDid=(did:string)=>did.length>36?`${did.slice(0,22)}…${did.slice(-8)}`:did
 
 function Result({item}:{item:SearchResult}) {
-  const account=<Link to="/accounts/$did" params={{did:item.did}} className="text-orange-300 hover:text-orange-200">{item.handle?`@${item.handle}`:shortDid(item.did)}</Link>
+  const identities=useIdentityMap(item.handle?[]:[item.did])
+  const handle=item.handle||identities.get(item.did)
+  const account=<Link to="/accounts/$did" params={{did:item.did}} title={`${handle?`@${handle} · `:''}${item.did}`} className="block min-w-0 text-orange-300 hover:text-orange-200"><span className="block truncate font-medium">{handle?`@${handle}`:shortDid(item.did)}</span>{handle&&item.result_type!=='account'&&<span className="block truncate font-mono text-[10px] text-dim">{shortDid(item.did)}</span>}</Link>
   if(item.result_type==='account') return <article className="rounded-xl border border-line bg-panel p-5"><div className="flex items-start gap-3"><div className="grid size-10 shrink-0 place-items-center rounded-xl border border-orange-500/20 bg-orange-500/10"><UserRound className="size-5 text-orange-400"/></div><div className="min-w-0"><h2 className="font-medium">{account}</h2><p className="mt-1 break-all font-mono text-[11px] text-dim">{item.did}</p></div></div></article>
   const canOpen=Boolean(item.at_uri?.includes('/app.bsky.feed.post/'))
   return <article className="rounded-xl border border-line bg-panel p-5 transition hover:border-orange-500/30"><div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs"><span className="rounded-md bg-orange-500/10 px-2 py-1 uppercase tracking-wide text-orange-300">{item.event_type||item.operation||item.result_type}</span>{item.collection&&<span className="font-mono text-[10px] text-dim">{item.collection}</span>}{account}{item.timestamp_ms!=null&&<time className="text-dim">{new Date(item.timestamp_ms).toLocaleString()}</time>}</div>{item.text?<p className="mt-4 whitespace-pre-wrap break-words text-sm leading-6 text-white/90">{item.text}</p>:item.target&&<p className="mt-4 break-all font-mono text-xs text-dim">Target: {item.target}</p>}{item.record_json&&<details className="mt-4"><summary className="cursor-pointer text-xs text-orange-300">Show complete record data</summary><pre className="scrollbar mt-3 max-h-80 overflow-auto rounded-lg bg-black p-4 text-[11px] leading-5 text-white/70">{item.record_json}</pre></details>}<div className="mt-4 flex flex-wrap items-center gap-3">{canOpen&&<Link to="/records/$uri" params={{uri:item.at_uri!}} className="text-xs font-medium text-orange-300 hover:text-orange-200">View full record →</Link>}{item.urls.slice(0,3).map(url=><span key={url} title={url} className="max-w-80 truncate rounded bg-white/5 px-2 py-1 text-[10px] text-dim">{url}</span>)}</div></article>

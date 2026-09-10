@@ -65,7 +65,7 @@ function useApi<T>(key:string, path:string, enabled:boolean, interval:false|numb
 function useIdentityMap(values:string[]) {
   const dids=[...new Set(values.map(x=>didFromTarget(x)).filter((x):x is string=>Boolean(x)))].sort()
   const batches=Array.from({length:Math.ceil(dids.length/100)},(_,i)=>dids.slice(i*100,(i+1)*100))
-  const queries=useQueries({queries:batches.map(batch=>({queryKey:['identities',...batch],queryFn:()=>api<Identity[]>(`/api/identities?dids=${encodeURIComponent(batch.join(','))}`),staleTime:300_000}))})
+  const queries=useQueries({queries:batches.map(batch=>({queryKey:['identities',batch.join(',')],queryFn:()=>api<Identity[]>(`/api/identities?dids=${encodeURIComponent(batch.join(','))}`),staleTime:300_000,gcTime:3_600_000}))})
   return new Map(queries.flatMap(q=>q.data||[]).map(identity=>[identity.did,identity.handle]))
 }
 type GraphEdge = ClusterDetail['graph_edges'][number]

@@ -1,21 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQueries, useQuery } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { createColumnHelper, flexRender, getCoreRowModel, getFilteredRowModel, getPaginationRowModel, getSortedRowModel, type ColumnFiltersState, type PaginationState, type SortingState, useReactTable } from '@tanstack/react-table'
 import { Activity, ChevronLeft, ChevronRight, ExternalLink, Image as ImageIcon, Search, Wifi, WifiOff } from 'lucide-react'
 import { api } from './api'
+import { shortDid, useIdentityMap } from './identities'
 import type { LiveConnection } from './live'
-import type { FirehoseEvent, FirehoseFeed, Identity, RecordMediaResponse } from './types'
+import type { FirehoseEvent, FirehoseFeed, RecordMediaResponse } from './types'
 
-const shortDid=(did:string)=>did.length>30?`${did.slice(0,18)}…${did.slice(-7)}`:did
 const recordUri=(event:FirehoseEvent)=>['post','reply','quote'].includes(event.kind)&&event.at_uri?.includes('/app.bsky.feed.post/')?event.at_uri:undefined
 const tones:Record<string,string>={post:'bg-orange-400/10 text-orange-300',reply:'bg-orange-400/10 text-orange-300',like:'bg-pink-300/10 text-pink-300',repost:'bg-violet-300/10 text-violet-300',follow:'bg-orange-300/10 text-orange-300',unfollow:'bg-amber-300/10 text-amber-300',delete:'bg-red-300/10 text-red-300',quote:'bg-orange-300/10 text-orange-300'}
-
-function useHandles(events:FirehoseEvent[]) {
-  const dids=[...new Set(events.map(event=>event.actor_did))].sort()
-  const batches=Array.from({length:Math.ceil(dids.length/100)},(_,i)=>dids.slice(i*100,(i+1)*100))
-  const queries=useQueries({queries:batches.map(batch=>({queryKey:['identities',...batch],queryFn:()=>api<Identity[]>(`/api/identities?dids=${encodeURIComponent(batch.join(','))}`),staleTime:300_000,gcTime:3_600_000}))})
-  return new Map(queries.flatMap(query=>query.data||[]).map(identity=>[identity.did,identity.handle]))
-}
 
 function MediaPreview({uri}:{uri:string}) {
   const host=useRef<HTMLDivElement>(null)
@@ -43,7 +36,7 @@ export function FirehoseView({onAccount,onRecord}:{onAccount:(did:string)=>void;
   const pending=useMemo(()=>[...(feed.data?.events||[])].reverse().filter(event=>!displayedIds.has(event.event_id)),[feed.data?.events,displayedIds])
   const acceptPending=()=>{setDisplayed(current=>[...pending,...(current||[])].slice(0,5_000));setPagination(value=>({...value,pageIndex:0}))}
   const roughPage=shown.slice(pagination.pageIndex*pagination.pageSize,(pagination.pageIndex+1)*pagination.pageSize)
-  const handles=useHandles(roughPage)
+  const handles=useIdentityMap(roughPage.map(event=>event.actor_did))
   const kinds=useMemo(()=>[...new Set(shown.map(event=>event.kind))].sort(),[shown])
   const columns=useMemo(()=>[
     columnHelper.accessor('time_us',{id:'time',header:'Time',cell:info=><time className="whitespace-nowrap text-[11px] tabular-nums text-white/45">{new Date(info.getValue()/1_000).toLocaleTimeString()}</time>}),
