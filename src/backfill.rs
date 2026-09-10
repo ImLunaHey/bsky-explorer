@@ -80,6 +80,13 @@ impl BackfillQueue {
         dependency: Option<String>,
         include_associations: bool,
     ) -> Result<BackfillJob> {
+        anyhow::ensure!(valid_backfill_query(query), "invalid backfill identity");
+        if let Some(did) = did {
+            anyhow::ensure!(
+                did.starts_with("did:plc:") && valid_backfill_query(did),
+                "invalid backfill DID"
+            );
+        }
         let scope = match kind {
             JobType::Repository => "repository",
             JobType::Associations => "associations",
@@ -93,6 +100,23 @@ impl BackfillQueue {
         if let Some(job) = jobs.get(&id) {
             return Ok(job.clone());
         }
+        let active = jobs
+            .values()
+            .filter(|job| {
+                matches!(
+                    job.status,
+                    JobStatus::Queued
+                        | JobStatus::Resolving
+                        | JobStatus::Running
+                        | JobStatus::Retrying
+                )
+            })
+            .count();
+        anyhow::ensure!(
+            jobs.len() < 10_000,
+            "backfill queue retention limit reached"
+        );
+        anyhow::ensure!(active < 100, "backfill queue is at its active-job limit");
         let now = Utc::now();
         let job = BackfillJob {
             id: id.clone(),
@@ -164,8 +188,8 @@ impl BackfillQueue {
     }
     pub fn claim(&self, lease_seconds: i64) -> Result<Option<BackfillJob>> {
         let now = Utc::now();
-        let jobs = self.jobs.lock();
-        let candidate = jobs
+        let mut jobs = self.jobs.lock();
+        let candidate_id = jobs
             .values()
             .find(|j| {
                 matches!(
@@ -178,9 +202,9 @@ impl BackfillQueue {
                             .is_some_and(|d| d.status == JobStatus::Completed)
                     })
             })
-            .cloned();
-        drop(jobs);
-        if let Some(mut job) = candidate {
+            .map(|job| job.id.clone());
+        if let Some(id) = candidate_id {
+            let job = jobs.get_mut(&id).expect("selected queue job exists");
             job.status = JobStatus::Running;
             job.updated_at = now;
             job.lease_token = Some(format!(
@@ -188,11 +212,26 @@ impl BackfillQueue {
                 xxh3_64(format!("{}{}", job.id, now).as_bytes())
             ));
             job.lease_until = Some(now + Duration::seconds(lease_seconds));
-            self.update(job.clone())?;
-            Ok(Some(job))
+            self.persist(job)?;
+            Ok(Some(job.clone()))
         } else {
             Ok(None)
         }
+    }
+    fn renew_lease(&self, id: &str, token: &str, lease_seconds: i64) -> Result<()> {
+        let mut jobs = self.jobs.lock();
+        let job = jobs.get_mut(id).context("leased job disappeared")?;
+        anyhow::ensure!(
+            job.lease_token.as_deref() == Some(token),
+            "backfill lease ownership changed"
+        );
+        anyhow::ensure!(
+            job.status == JobStatus::Running,
+            "backfill job is no longer running"
+        );
+        job.lease_until = Some(Utc::now() + Duration::seconds(lease_seconds));
+        job.updated_at = Utc::now();
+        self.persist(job)
     }
     fn persist(&self, job: &BackfillJob) -> Result<()> {
         let path = self.root.join(format!("{}.json", job.id));
@@ -240,6 +279,27 @@ pub fn valid_job_id(id: &str) -> bool {
     id.len() == 19 && id.starts_with("bf-") && id[3..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+pub fn valid_backfill_query(query: &str) -> bool {
+    if let Some(suffix) = query.strip_prefix("did:plc:") {
+        return suffix.len() == 24
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
+    }
+    if query.len() > 253 || !query.contains('.') || query.starts_with('.') || query.ends_with('.') {
+        return false;
+    }
+    query.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
+}
+
 pub async fn run_worker(queue: BackfillQueue) {
     loop {
         match queue.claim(120) {
@@ -281,25 +341,38 @@ async fn execute_job(queue: &BackfillQueue, mut job: BackfillJob) -> Result<()> 
     job.did = Some(did.clone());
     job.updated_at = Utc::now();
     queue.update(job.clone())?;
-    let status = match job.job_type {
+    let mut command = match job.job_type {
         JobType::Repository => {
             let pds = resolve_pds(&did).await?;
-            tokio::process::Command::new("/usr/local/bin/backfill_account")
-                .args(["--repo", &did, "--did", &did, "--pds", &pds])
-                .status()
-                .await?
+            let mut command = tokio::process::Command::new("/usr/local/bin/backfill_account");
+            command.args(["--repo", &did, "--did", &did, "--pds", &pds]);
+            command
         }
         JobType::Associations => {
             let checkpoint = queue.root.join(format!("{}-associations.json", job.id));
-            tokio::process::Command::new("/usr/local/bin/backfill_associations")
-                .args([
-                    "--did",
-                    &did,
-                    "--checkpoint",
-                    checkpoint.to_str().context("invalid checkpoint path")?,
-                ])
-                .status()
-                .await?
+            let mut command = tokio::process::Command::new("/usr/local/bin/backfill_associations");
+            command.args([
+                "--did",
+                &did,
+                "--checkpoint",
+                checkpoint.to_str().context("invalid checkpoint path")?,
+            ]);
+            command
+        }
+    };
+    command.kill_on_drop(true);
+    let mut child = command.spawn()?;
+    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    heartbeat.tick().await;
+    let token = job
+        .lease_token
+        .clone()
+        .context("running job has no lease token")?;
+    let status = loop {
+        tokio::select! {
+            status=child.wait()=>break status?,
+            _=heartbeat.tick()=>queue.renew_lease(&job.id,&token,120)?,
         }
     };
     anyhow::ensure!(status.success(), "backfill subprocess failed: {status}");
@@ -367,6 +440,15 @@ async fn resolve_pds(did: &str) -> Result<String> {
     );
     let host = url.host_str().context("PDS URL has no host")?;
     anyhow::ensure!(
+        url.port_or_known_default() == Some(443),
+        "PDS must use HTTPS port 443"
+    );
+    anyhow::ensure!(
+        url.host()
+            .is_some_and(|host| matches!(host, url::Host::Domain(_))),
+        "PDS endpoint must use a DNS hostname"
+    );
+    anyhow::ensure!(
         host != "localhost" && !host.ends_with(".local"),
         "unsafe PDS host"
     );
@@ -388,13 +470,21 @@ fn public_ip(ip: IpAddr) -> bool {
                 || ip.is_link_local()
                 || ip.is_broadcast()
                 || ip.is_documentation()
-                || ip.is_unspecified())
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.octets()[0] == 0
+                || ip.octets()[0] >= 240)
         }
         IpAddr::V6(ip) => {
             !(ip.is_loopback()
                 || ip.is_unspecified()
                 || ip.is_unique_local()
-                || ip.is_unicast_link_local())
+                || ip.is_unicast_link_local()
+                || ip.is_multicast()
+                || ip.segments()[0] == 0x2001 && ip.segments()[1] == 0x0db8
+                || ip
+                    .to_ipv4_mapped()
+                    .is_some_and(|mapped| !public_ip(IpAddr::V4(mapped))))
         }
     }
 }
@@ -408,8 +498,8 @@ mod tests {
         let q = BackfillQueue::open(d.path().into()).unwrap();
         let a = q
             .enqueue(
-                "did:plc:a",
-                Some("did:plc:a"),
+                "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+                Some("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"),
                 JobType::Repository,
                 None,
                 true,
@@ -417,8 +507,8 @@ mod tests {
             .unwrap();
         let b = q
             .enqueue(
-                "did:plc:a",
-                Some("did:plc:a"),
+                "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+                Some("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"),
                 JobType::Repository,
                 None,
                 true,
@@ -453,5 +543,61 @@ mod tests {
     fn validates_ids() {
         assert!(valid_job_id("bf-0123456789abcdef"));
         assert!(!valid_job_id("../bad"));
+    }
+    #[test]
+    fn validates_only_plc_dids_and_dns_style_handles_for_queueing() {
+        assert!(valid_backfill_query("did:plc:k6acu4chiwkixvdedcmdgmal"));
+        assert!(valid_backfill_query("lunafications.blue"));
+        for invalid in [
+            "ordinary words.with spaces",
+            "localhost",
+            ".example.com",
+            "example.com.",
+            "-bad.example",
+            "did:web:example.com",
+            "did:plc:short",
+            "https://example.com",
+        ] {
+            assert!(!valid_backfill_query(invalid), "accepted {invalid}");
+        }
+    }
+    #[test]
+    fn a_job_cannot_be_claimed_twice_during_its_lease() {
+        let directory = tempfile::tempdir().unwrap();
+        let queue = BackfillQueue::open(directory.path().into()).unwrap();
+        queue
+            .enqueue(
+                "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+                Some("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"),
+                JobType::Repository,
+                None,
+                false,
+            )
+            .unwrap();
+        let claimed = queue.claim(120).unwrap().unwrap();
+        assert!(claimed.lease_token.is_some());
+        assert!(queue.claim(120).unwrap().is_none());
+    }
+
+    #[test]
+    fn rejects_non_public_network_ranges() {
+        for address in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "169.254.1.1",
+            "224.0.0.1",
+            "240.0.0.1",
+            "0.1.2.3",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "ff02::1",
+            "2001:db8::1",
+            "::ffff:127.0.0.1",
+        ] {
+            assert!(!public_ip(address.parse().unwrap()), "accepted {address}");
+        }
+        assert!(public_ip("1.1.1.1".parse().unwrap()));
+        assert!(public_ip("2606:4700:4700::1111".parse().unwrap()));
     }
 }

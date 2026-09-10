@@ -420,10 +420,10 @@ async fn enqueue_backfill(
     Json(body): Json<EnqueueBackfill>,
 ) -> Result<Json<crate::backfill::BackfillJob>, (StatusCode, String)> {
     let q = body.query.trim();
-    if q.len() < 2
-        || q.len() > 253
-        || q.chars().any(char::is_control)
-        || body.did.as_ref().is_some_and(|d| !d.starts_with("did:"))
+    if !crate::backfill::valid_backfill_query(q)
+        || body.did.as_ref().is_some_and(|d| {
+            !d.starts_with("did:plc:") || !crate::backfill::valid_backfill_query(d)
+        })
     {
         return Err((StatusCode::BAD_REQUEST, "invalid backfill identity".into()));
     }
