@@ -247,12 +247,26 @@ async fn record(
     if !is_at_uri(&query.uri) {
         return Err((StatusCode::BAD_REQUEST, "uri must be a valid AT URI".into()));
     }
-    let record = s
-        .storage
-        .record(&query.uri)
-        .await
-        .map_err(internal_error)?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "record not retained".into()))?;
+    let record = match s.storage.record(&query.uri).await.map_err(internal_error)? {
+        Some(record) => record,
+        None => s
+            .analysis
+            .retained_record(&query.uri)
+            .map(|event| crate::storage::StoredRecord {
+                at_uri: event.at_uri,
+                actor_did: event.actor_did,
+                timestamp_ms: event.timestamp.timestamp_millis(),
+                kind: event.kind.as_str().to_owned(),
+                text: event.text.unwrap_or_default(),
+                reply_parent: event.reply_parent.unwrap_or_default(),
+                reply_root: event.reply_root.unwrap_or_default(),
+                quote_target: event.quote_target.unwrap_or_default(),
+                urls: event.urls,
+                domains: event.domains,
+                languages: event.languages,
+            })
+            .ok_or_else(|| (StatusCode::NOT_FOUND, "record not retained".into()))?,
+    };
     let root = if record.reply_root.is_empty() {
         &query.uri
     } else {

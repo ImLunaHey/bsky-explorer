@@ -13,6 +13,9 @@ pub struct Archive {
     writer: zstd::stream::write::Encoder<'static, BufWriter<File>>,
     bytes: u64,
     max_bytes: u64,
+    pending_cursor: Option<i64>,
+    pending_events: u64,
+    last_checkpoint: std::time::Instant,
 }
 
 impl Archive {
@@ -38,23 +41,54 @@ impl Archive {
             writer,
             bytes: 0,
             max_bytes,
+            pending_cursor: None,
+            pending_events: 0,
+            last_checkpoint: std::time::Instant::now(),
         })
     }
-    pub fn append(&mut self, time_us: i64, raw: &[u8]) -> Result<()> {
+    /// Append to the compressed stream and periodically group-commit it. A crash
+    /// can replay at most one checkpoint interval; the durable cursor never gets
+    /// ahead of durable archive bytes.
+    pub fn append(&mut self, time_us: i64, raw: &[u8]) -> Result<bool> {
         // Jetstream messages are already JSON. Keeping them verbatim is both smaller and
         // makes replay independent of this application's current normalization schema.
         serde_json::from_slice::<serde_json::Value>(raw).context("archive payload is not JSON")?;
         self.writer.write_all(raw)?;
         self.writer.write_all(b"\n")?;
-        self.writer.flush()?;
-        self.writer.get_mut().get_ref().sync_data()?;
         self.bytes += raw.len() as u64 + 1;
-        self.save_cursor(time_us)?;
+        self.pending_cursor = Some(
+            self.pending_cursor
+                .map_or(time_us, |value| value.max(time_us)),
+        );
+        self.pending_events += 1;
+        let checkpointed = if self.pending_events >= 5_000
+            || self.last_checkpoint.elapsed() >= std::time::Duration::from_secs(1)
+        {
+            self.checkpoint()?;
+            true
+        } else {
+            false
+        };
         if self.bytes >= self.max_bytes {
+            self.checkpoint()?;
             let replacement = Self::new_segment(self.root.clone(), self.max_bytes)?;
             let old = std::mem::replace(self, replacement);
             old.writer.finish()?.flush()?;
         }
+        Ok(checkpointed)
+    }
+    pub fn checkpoint(&mut self) -> Result<()> {
+        if self.pending_events == 0 {
+            return Ok(());
+        }
+        self.writer.flush()?;
+        self.writer.get_mut().get_ref().sync_data()?;
+        if let Some(time_us) = self.pending_cursor {
+            self.save_cursor(time_us)?;
+        }
+        self.pending_cursor = None;
+        self.pending_events = 0;
+        self.last_checkpoint = std::time::Instant::now();
         Ok(())
     }
     fn save_cursor(&self, time_us: i64) -> Result<()> {
@@ -113,6 +147,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mut a = Archive::open(d.path(), 1).unwrap();
         a.append(42, br#"{"kind":"test"}"#).unwrap();
+        a.checkpoint().unwrap();
         assert_eq!(Archive::cursor(d.path()), Some(42));
         assert!(Archive::total_size(d.path()) > 0);
     }
@@ -123,6 +158,7 @@ mod tests {
         let mut a = Archive::open(d.path(), 1).unwrap();
         a.append(42, br#"{"kind":"test","time_us":42}"#).unwrap();
         a.append(41, br#"{"kind":"test","time_us":41}"#).unwrap();
+        a.checkpoint().unwrap();
         assert_eq!(Archive::cursor(d.path()), Some(42));
         let _second = Archive::open(d.path(), 1).unwrap();
     }

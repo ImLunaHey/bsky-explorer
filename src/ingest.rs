@@ -104,10 +104,13 @@ async fn consume(
                 continue;
             }
         };
-        archive.append(time_us, &raw)?;
-        metrics
-            .archive_bytes
-            .set(Archive::total_size(&cfg.data_dir) as i64);
+        if archive.append(time_us, &raw)? {
+            // Directory scans are cheap once per group commit, but catastrophic
+            // at full-firehose frequency.
+            metrics
+                .archive_bytes
+                .set(Archive::total_size(&cfg.data_dir) as i64);
+        }
         match parse_identity_event(&raw) {
             Ok(Some(identity)) => {
                 if let Err(error) = identities.observe(identity).await {
@@ -137,5 +140,6 @@ async fn consume(
         }
         tx.send(event).await.context("storage worker stopped")?;
     }
+    archive.checkpoint()?;
     Ok(())
 }

@@ -5,7 +5,7 @@ import { api } from './api'
 import type { FirehoseEvent, FirehoseFeed, Identity } from './types'
 
 const shortDid=(did:string)=>did.length>30?`${did.slice(0,18)}…${did.slice(-7)}`:did
-const recordUri=(event:FirehoseEvent)=>[event.at_uri,event.target].find(x=>x?.startsWith('at://')&&x.includes('/app.bsky.feed.post/'))
+const recordUri=(event:FirehoseEvent)=>['post','reply','quote'].includes(event.kind)&&event.at_uri?.includes('/app.bsky.feed.post/')?event.at_uri:undefined
 
 function useHandles(events:FirehoseEvent[]) {
   const dids=[...new Set(events.flatMap(event=>[event.actor_did,event.target?.startsWith('did:')?event.target:undefined]).filter((x):x is string=>Boolean(x)))].sort()
@@ -57,7 +57,7 @@ export function FirehoseView({onAccount,onRecord}:{onAccount:(did:string)=>void;
 function EventRow({event,handle,onAccount,onRecord}:{event:FirehoseEvent;handle?:string;onAccount:(did:string)=>void;onRecord:(uri:string)=>void}) {
   const uri=recordUri(event)
   return <article className="grid grid-cols-[auto_minmax(0,1fr)] gap-3 px-4 py-3 transition hover:bg-white/[.02] sm:grid-cols-[5rem_minmax(9rem,13rem)_minmax(0,1fr)_auto] sm:items-start">
-    <span className="text-[11px] tabular-nums text-dim">{new Date(event.timestamp).toLocaleTimeString()}</span>
+    <span className="text-[11px] tabular-nums text-dim">{new Date(event.time_us/1_000).toLocaleTimeString()}</span>
     <button type="button" onClick={()=>onAccount(event.actor_did)} className="min-w-0 text-left text-xs text-cyan hover:text-mint"><b className="block truncate font-medium">{handle?`@${handle}`:shortDid(event.actor_did)}</b>{handle&&<span className="block truncate font-mono text-[9px] text-dim">{shortDid(event.actor_did)}</span>}</button>
     <div className="col-span-2 min-w-0 sm:col-span-1"><div className="flex flex-wrap items-center gap-2"><span className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider ${tones[event.kind]||'bg-white/5 text-dim'}`}>{event.kind}</span>{event.domains?.map(domain=><span key={domain} className="rounded bg-mint/5 px-1.5 py-0.5 text-[10px] text-mint">{domain}</span>)}</div>{event.text?<p className="mt-1.5 line-clamp-2 text-sm leading-relaxed text-white/80">{event.text}</p>:<p className="mt-1.5 truncate font-mono text-[10px] text-dim">{event.target||event.at_uri||event.event_id}</p>}</div>
     {uri&&<button type="button" onClick={()=>onRecord(uri)} className="col-start-2 inline-flex items-center justify-self-end gap-1 text-[11px] text-cyan hover:text-mint sm:col-auto">Inspect <ExternalLink className="size-3"/></button>}

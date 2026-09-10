@@ -1,4 +1,4 @@
-use crate::model::{Detection, EvidenceEvent, NormalizedEvent, ScoreBreakdown};
+use crate::model::{Detection, EventKind, EvidenceEvent, NormalizedEvent, ScoreBreakdown};
 use chrono::{Duration, Utc};
 use parking_lot::RwLock;
 use serde::Serialize;
@@ -314,6 +314,21 @@ impl Analyzer {
             retained_event_count: s.events.len(),
             has_more: matching_count > limit,
         }
+    }
+    pub fn retained_record(&self, uri: &str) -> Option<NormalizedEvent> {
+        self.inner
+            .read()
+            .events
+            .iter()
+            .rev()
+            .find(|event| {
+                event.at_uri == uri
+                    && matches!(
+                        event.kind,
+                        EventKind::Post | EventKind::Reply | EventKind::Quote
+                    )
+            })
+            .cloned()
     }
     pub fn rates(&self) -> Rates {
         let s = self.inner.read();

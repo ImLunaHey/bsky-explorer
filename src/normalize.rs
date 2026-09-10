@@ -148,11 +148,12 @@ pub fn parse_jetstream(raw: &[u8]) -> Result<Option<NormalizedEvent>> {
             .and_then(|s| s.split('/').next())
             .map(str::to_owned)
     };
-    let timestamp = record["createdAt"]
-        .as_str()
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|d| d.with_timezone(&Utc))
-        .unwrap_or_else(|| DateTime::from_timestamp_micros(time_us).unwrap_or_else(Utc::now));
+    // `createdAt` is supplied by the repository client and is neither ordered nor
+    // trustworthy (old drafts and future-dated spam are both common).  The
+    // Jetstream envelope time is the observation time and must drive live
+    // windows, ordering, and retention; otherwise one future timestamp can evict
+    // the entire hot buffer.
+    let timestamp = DateTime::from_timestamp_micros(time_us).unwrap_or_else(Utc::now);
     let normalized = text.as_deref().map(normalize_text);
     Ok(Some(NormalizedEvent {
         event_id: format!("{did}:{collection}:{rkey}:{operation}:{time_us}"),
@@ -207,5 +208,12 @@ mod tests {
         assert_eq!(e.actor_did, "did:plc:a");
         assert_eq!(e.domains, vec!["example.com"]);
         assert_eq!(e.languages, vec!["en"]);
+        assert_eq!(e.timestamp.timestamp_micros(), 1_700_000_000_000_000);
+    }
+    #[test]
+    fn client_created_at_cannot_poison_live_event_time() {
+        let raw=br#"{"did":"did:plc:a","time_us":1700000000000000,"kind":"commit","commit":{"operation":"create","collection":"app.bsky.feed.post","rkey":"x","record":{"text":"hi","createdAt":"2030-01-01T00:00:00Z"}}}"#;
+        let event = parse_jetstream(raw).unwrap().unwrap();
+        assert_eq!(event.timestamp.timestamp_micros(), 1_700_000_000_000_000);
     }
 }
