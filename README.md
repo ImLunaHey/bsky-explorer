@@ -12,7 +12,7 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
-Open <http://localhost:3000>. Prometheus metrics are at `/metrics`; JSON endpoints are under `/api`. Set `STORAGE_ROOT` for another array mount. Do not point it at this repository.
+Open <http://localhost:3000>. Prometheus metrics are at `/metrics`; JSON endpoints are under `/api`. Set `STORAGE_ROOT` for another array mount. Do not point it at this repository. Compose passes all retention, batching, window, and ClickHouse credential settings from `.env` into the service; the storage array remains the only durable-data location.
 
 ## Data and restart behavior
 
@@ -36,6 +36,8 @@ ClickHouse uses monthly `MergeTree` partitions, time/kind/actor ordering, Zstd t
 - `GET /api/accounts/{did}` — rolling activity and automation evidence
 - `GET /api/storage` — archive, ClickHouse/derived sizes and observed growth projections
 - `GET /metrics` — Prometheus exposition
+- `GET /healthz` — process liveness
+- `GET /readyz` — readiness, including a ClickHouse query
 
 Scores describe observed evidence (`automation`, coordination, shared-target, timing, and content similarity); they do not label accounts as bots. Cluster evidence includes participants, timing, shared targets, URLs/domains, and sample event IDs.
 
@@ -48,10 +50,11 @@ cargo test
 docker compose config
 docker compose logs -f observatory
 curl -s localhost:3000/api/storage
+curl -fsS localhost:3000/readyz
 ```
 
 `fixtures/synthetic.jsonl` covers organic conversation, regular high-volume activity, synchronized reposts, normalized duplicate spam, and URL amplification. Tests cover parsing, normalization/fingerprints, archive/cursor behavior, coordination scoring, organic-burst resistance, and storage serialization.
 
 ## MVP boundaries
 
-Hot state is process-local and rebuilds from new traffic; detections persist in ClickHouse. Growth rates are measured from the process-start disk-size baseline, so they read zero until new durable bytes arrive and reset after restart. Exact, normalized, and SimHash fingerprints are stored, while initial cluster generation uses repeated targets, normalized content and domains in temporal windows. Natural next steps are an archive replay CLI, SimHash locality buckets, richer graph/community analysis, ClickHouse materialized rollups, and authentication. Semantic analysis should remain optional and limited to flagged/trending content.
+Hot state is process-local and rebuilds from new traffic; detections persist in ClickHouse. Growth rates are measured from the process-start disk-size baseline, so they read zero until new durable bytes arrive and reset after restart. Exact, normalized, and SimHash fingerprints are stored, while initial cluster generation uses repeated targets, normalized content and domains in temporal windows. Natural next steps are SimHash locality buckets, richer graph/community analysis, ClickHouse materialized rollups, and authentication. Semantic analysis should remain optional and limited to flagged/trending content.
