@@ -160,6 +160,29 @@ impl IdentityService {
         Ok(identity)
     }
 
+    /// Resolve only from the hot cache or persisted firehose observations.
+    /// Request paths that return activity data must not wait on the public
+    /// network merely to decorate a DID with a handle.
+    pub async fn resolve_local(&self, did: &str) -> Result<IdentityRecord> {
+        if !did.starts_with("did:") {
+            anyhow::bail!("invalid DID");
+        }
+        if let Some(identity) = self.cached(did) {
+            return Ok(identity);
+        }
+        Ok(self
+            .inner
+            .storage
+            .identity(did)
+            .await?
+            .unwrap_or_else(|| IdentityRecord {
+                did: did.to_owned(),
+                handle: None,
+                observed_at: Utc::now(),
+                source: "unresolved".into(),
+            }))
+    }
+
     async fn resolve_public_profile(&self, did: &str) -> Result<IdentityRecord> {
         let mut last_request = self.inner.last_request.lock().await;
         if let Some(previous) = *last_request {

@@ -76,6 +76,7 @@ pub fn router(s: AppState) -> Router {
         .route("/api/clusters", get(clusters))
         .route("/api/clusters/{id}", get(cluster))
         .route("/api/accounts/{did}", get(account))
+        .route("/api/accounts/{did}/events", get(account_events))
         .route("/api/records", get(record))
         .route("/api/records/media", get(record_media))
         .route("/api/identities", get(identities))
@@ -401,27 +402,14 @@ async fn account(
         return Err((StatusCode::BAD_REQUEST, "invalid DID".into()));
     }
     let mut activity = s.analysis.account_activity(&did);
-    let current_identity = s
-        .identities
-        .resolve(&did)
-        .await
-        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
-    let identity_history = s
-        .storage
-        .identity_history(&did, 50)
-        .await
-        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
-    let stored = s
-        .storage
-        .account_stats(&did)
-        .await
-        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
-    for cluster_id in s
-        .storage
-        .account_cluster_ids(&did, 50)
-        .await
-        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
-    {
+    let (current_identity, identity_history, stored, stored_clusters) = tokio::try_join!(
+        s.identities.resolve_local(&did),
+        s.storage.identity_history(&did, 50),
+        s.storage.account_stats(&did),
+        s.storage.account_cluster_ids(&did, 50),
+    )
+    .map_err(internal_error)?;
+    for cluster_id in stored_clusters {
         if !activity.cluster_ids.contains(&cluster_id) {
             activity.cluster_ids.push(cluster_id);
         }
@@ -432,6 +420,20 @@ async fn account(
         activity,
         stored,
     }))
+}
+
+async fn account_events(
+    State(s): State<AppState>,
+    Path(did): Path<String>,
+) -> Result<Json<Vec<crate::storage::StoredAccountEvent>>, (StatusCode, String)> {
+    if !did.starts_with("did:") {
+        return Err((StatusCode::BAD_REQUEST, "invalid DID".into()));
+    }
+    s.storage
+        .account_recent_events(&did, 100)
+        .await
+        .map(Json)
+        .map_err(internal_error)
 }
 
 #[derive(Serialize)]

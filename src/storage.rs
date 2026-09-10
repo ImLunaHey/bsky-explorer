@@ -64,6 +64,16 @@ pub struct StoredInteraction {
     pub target: String,
 }
 #[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct StoredAccountEvent {
+    pub event_id: String,
+    pub time_us: i64,
+    pub actor_did: String,
+    pub kind: String,
+    pub at_uri: String,
+    pub target: String,
+    pub text: String,
+}
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
 pub struct RecordInteractionCounts {
     pub likes: u64,
     pub reposts: u64,
@@ -216,6 +226,16 @@ impl Storage {
             "SELECT count() AS event_count, countIf(kind IN ('post','reply','quote')) AS post_count, countIf(kind='like') AS like_count, countIf(kind='repost') AS repost_count, countIf(kind='follow') AS follow_count, uniqExactIf(target, target != '') AS unique_targets, toUnixTimestamp64Milli(min(timestamp)) AS first_seen_ms, toUnixTimestamp64Milli(max(timestamp)) AS last_seen_ms, arraySlice(groupUniqArrayArray(100)(domains), 1, 50) AS domains, arraySlice(groupUniqArrayArray(100)(urls), 1, 50) AS urls FROM events WHERE actor_did = ? HAVING event_count > 0"
         ).bind(did).fetch_optional::<AccountStoredStats>().await?;
         Ok(row)
+    }
+    pub async fn account_recent_events(
+        &self,
+        did: &str,
+        limit: u64,
+    ) -> Result<Vec<StoredAccountEvent>> {
+        Ok(self.client.query(
+            "SELECT event_id, time_us, actor_did, kind, at_uri, target, text FROM events WHERE actor_did = ? ORDER BY time_us DESC LIMIT ?"
+        ).bind(did).bind(limit.min(200))
+        .fetch_all::<StoredAccountEvent>().await?)
     }
     pub async fn account_cluster_ids(&self, did: &str, limit: u64) -> Result<Vec<String>> {
         #[derive(Row, Deserialize)]

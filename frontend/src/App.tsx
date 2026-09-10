@@ -12,7 +12,7 @@ import { RecordPage } from './RecordDrawer'
 import { FirehoseView } from './FirehoseView'
 import { TrendPage } from './TrendPage'
 import { CommandPalette } from './CommandPalette'
-import type { AccountDetail, Anomalies, ClusterDetail, Detection, Identity, Rates, StorageStats, SystemSample, SystemStats, TrendingItem } from './types'
+import type { AccountDetail, AccountEvent, Anomalies, ClusterDetail, Detection, Identity, Rates, StorageStats, SystemSample, SystemStats, TrendingItem } from './types'
 
 const n = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 })
 const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
@@ -28,12 +28,6 @@ const pct = (x?:number) => x == null ? '—' : `${(x*(x<=1?100:1)).toFixed(1)}%`
 const shortDid = (did:string) => did.length > 30 ? `${did.slice(0,18)}…${did.slice(-7)}` : did
 const isDid = (value?:string) => Boolean(value?.startsWith('did:'))
 
-function useIdentities(dids:string[]) {
-  const unique=[...new Set(dids.filter(isDid))].sort()
-  const query=useQuery({queryKey:['identities',...unique],queryFn:()=>api<Identity[]>(`/api/identities?dids=${encodeURIComponent(unique.join(','))}`),enabled:unique.length>0,staleTime:300_000,gcTime:3_600_000})
-  return {query, identities:new Map(query.data?.map(x=>[x.did,x])||[])}
-}
-
 function AccountIdentity({did,identities,onOpen,compact=false}:{did:string;identities:Map<string,Identity>;onOpen:(did:string)=>void;compact?:boolean}) {
   if(!isDid(did)) return <span className="min-w-0 truncate font-mono text-dim" title={did}>{did}</span>
   const handle=identities.get(did)?.handle
@@ -44,10 +38,12 @@ function AccountIdentity({did,identities,onOpen,compact=false}:{did:string;ident
 }
 
 function AccountPage({did}:{did:string}) {
-  const account=useQuery({queryKey:['account',did],queryFn:()=>api<AccountDetail>(`/api/accounts/${encodeURIComponent(did)}`),refetchInterval:10_000})
-  const {identities}=useIdentities([did]); const identity=account.data?.current_identity||identities.get(did); const activity=account.data?.activity; const [copied,setCopied]=useState(false)
+  const navigate=useNavigate()
+  const account=useQuery({queryKey:['account',did],queryFn:()=>api<AccountDetail>(`/api/accounts/${encodeURIComponent(did)}`),staleTime:30_000})
+  const storedEvents=useQuery({queryKey:['account-events',did],queryFn:()=>api<AccountEvent[]>(`/api/accounts/${encodeURIComponent(did)}/events`),staleTime:15_000})
+  const identity=account.data?.current_identity; const activity=account.data?.activity; const [copied,setCopied]=useState(false)
   const copy=async()=>{await navigator.clipboard.writeText(did);setCopied(true);window.setTimeout(()=>setCopied(false),1500)}
-  return <section className="panel mx-auto max-w-4xl p-6"><p className="eyebrow">Account activity</p><div className="mt-5 flex items-start gap-4"><div className="grid size-12 shrink-0 place-items-center rounded-2xl border border-mint/20 bg-mint/10"><UserRound className="size-6 text-mint"/></div><div className="min-w-0"><h2 className="truncate text-xl font-semibold text-cyan">{identity?.handle?`@${identity.handle}`:shortDid(did)}</h2><p className="mt-1 break-all font-mono text-[11px] text-dim">{did}</p></div></div><div className="mt-5 flex flex-wrap gap-2"><button onClick={copy} className="flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-xs hover:border-mint/50">{copied?<Check className="size-3.5 text-mint"/>:<Copy className="size-3.5"/>}{copied?'Copied':'Copy DID'}</button><a href={`https://bsky.app/profile/${encodeURIComponent(identity?.handle||did)}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-xs hover:border-cyan/50">Open on Bluesky <ExternalLink className="size-3.5"/></a></div>{account.isLoading?<Empty>Loading account activity…</Empty>:account.isError?<div className="mt-8 rounded-xl border border-amber-300/20 bg-amber-300/5 p-4 text-sm text-amber-200">Activity details are temporarily unavailable.</div>:activity&&<><div className="mt-8 grid grid-cols-2 gap-3 sm:grid-cols-4"><MiniStat label="Events · 24h" value={n.format(activity.events_24h)}/><MiniStat label="Posts · 24h" value={n.format(activity.posts_24h)}/><MiniStat label="Unique targets" value={n.format(activity.unique_targets)}/><MiniStat label="Automation signal" value={activity.automation_score.toFixed(2)}/></div><p className="mt-5 text-xs leading-relaxed text-dim">Scores describe observed activity patterns, not account identity or intent.</p></>}</section>
+  return <section className="panel mx-auto max-w-4xl p-6"><p className="eyebrow">Account activity</p><div className="mt-5 flex items-start gap-4"><div className="grid size-12 shrink-0 place-items-center rounded-2xl border border-mint/20 bg-mint/10"><UserRound className="size-6 text-mint"/></div><div className="min-w-0"><h2 className="truncate text-xl font-semibold text-cyan">{identity?.handle?`@${identity.handle}`:shortDid(did)}</h2><p className="mt-1 break-all font-mono text-[11px] text-dim">{did}</p></div></div><div className="mt-5 flex flex-wrap gap-2"><button onClick={copy} className="flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-xs hover:border-mint/50">{copied?<Check className="size-3.5 text-mint"/>:<Copy className="size-3.5"/>}{copied?'Copied':'Copy DID'}</button><a href={`https://bsky.app/profile/${encodeURIComponent(identity?.handle||did)}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-xs hover:border-cyan/50">Open on Bluesky <ExternalLink className="size-3.5"/></a></div>{account.isLoading?<Empty>Loading account activity…</Empty>:account.isError?<div className="mt-8 rounded-xl border border-amber-300/20 bg-amber-300/5 p-4 text-sm text-amber-200">Activity details are temporarily unavailable.</div>:activity&&<><div className="mt-8 grid grid-cols-2 gap-3 sm:grid-cols-4"><MiniStat label="Events · 24h" value={n.format(activity.events_24h)}/><MiniStat label="Posts · 24h" value={n.format(activity.posts_24h)}/><MiniStat label="Unique targets" value={n.format(activity.unique_targets)}/><MiniStat label="Automation signal" value={activity.automation_score.toFixed(2)}/></div><p className="mt-5 text-xs leading-relaxed text-dim">Scores describe observed activity patterns, not account identity or intent.</p><h3 className="eyebrow mb-3 mt-8">Recent observed events</h3><div className="space-y-2">{storedEvents.data?.length?storedEvents.data.map(event=>{const inspect=['post','reply','quote'].includes(event.kind);return <article key={event.event_id} className="rounded-xl border border-line p-4"><div className="flex items-center gap-2 text-xs"><span className="uppercase text-mint">{event.kind}</span><time className="text-dim">{new Date(event.time_us/1000).toLocaleString()}</time>{inspect&&<button className="ml-auto text-cyan hover:text-mint" onClick={()=>navigate({to:'/records/$uri',params:{uri:event.at_uri}})}>View record</button>}</div>{event.text&&<p className="mt-2 whitespace-pre-wrap text-sm text-white/85">{event.text}</p>}{!event.text&&event.target&&<p className="mt-2 truncate font-mono text-xs text-dim">{event.target}</p>}</article>}):<Empty>No events retained in the current hot window.</Empty>}</div></>}</section>
 }
 
 function MiniStat({label,value}:{label:string;value:string}) { return <div className="rounded-xl border border-line bg-panel p-4"><div className="text-xl font-semibold">{value}</div><div className="eyebrow mt-1">{label}</div></div> }

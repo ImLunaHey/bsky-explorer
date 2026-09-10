@@ -10,7 +10,9 @@ use bsky_observatory::{
 };
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
-#[tokio::main]
+// The ingest/parser pipeline can saturate a core while catching up from a
+// cursor. Keep independent scheduler capacity for HTTP/SSE and ClickHouse I/O.
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
