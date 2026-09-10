@@ -7,11 +7,18 @@ export type LiveConnection = {
   lastEventAt?: number
 }
 
-const MAX_FIREHOSE_EVENTS = 300
+// Keep several pages of events client-side. This is deliberately bounded: at
+// typical normalized-event sizes it is only a few megabytes, while allowing
+// people to page back without another request or moving rows underneath them.
+const MAX_FIREHOSE_EVENTS = 5_000
+const MAX_PENDING_EVENTS = 5_000
+const FLUSH_INTERVAL_MS = 500
 
 export function LiveUpdates() {
   const queryClient = useQueryClient()
   const pendingEvents = useRef<FirehoseEvent[]>([])
+  const knownEventIds = useRef(new Set<string>())
+  const lastCachedEventId = useRef<string | undefined>(undefined)
 
   useEffect(() => {
     let closed = false
@@ -21,19 +28,46 @@ export function LiveUpdates() {
       const incoming = pendingEvents.current.splice(0)
       if (!incoming.length) return
       queryClient.setQueryData<FirehoseFeed>(['firehose-feed'], current => {
-        const combined = [...(current?.events ?? []), ...incoming]
-        const seen = new Set<string>()
-        const events = combined.reverse().filter(item => !seen.has(item.event_id) && Boolean(seen.add(item.event_id))).reverse().slice(-MAX_FIREHOSE_EVENTS)
-        const newest = incoming[incoming.length - 1]
+        const existing = current?.events ?? []
+        const currentLastId = existing.at(-1)?.event_id
+
+        // A HTTP snapshot may have populated or replaced the cache since the
+        // previous flush. Rebuild the index once in that case; steady-state
+        // batches then only inspect new events instead of reversing and
+        // filtering the entire cache every 250 ms.
+        if (currentLastId !== lastCachedEventId.current) {
+          knownEventIds.current = new Set(existing.map(event => event.event_id))
+        }
+        const uniqueIncoming = incoming.filter(event => {
+          if (knownEventIds.current.has(event.event_id)) return false
+          knownEventIds.current.add(event.event_id)
+          return true
+        })
+        if (!uniqueIncoming.length) {
+          lastCachedEventId.current = currentLastId
+          return current
+        }
+
+        const combined = [...existing, ...uniqueIncoming]
+        const events = combined.length > MAX_FIREHOSE_EVENTS
+          ? combined.slice(combined.length - MAX_FIREHOSE_EVENTS)
+          : combined
+        if (combined.length !== events.length) {
+          for (const event of combined.slice(0, combined.length - events.length)) {
+            knownEventIds.current.delete(event.event_id)
+          }
+        }
+        const newest = uniqueIncoming.at(-1)!
+        lastCachedEventId.current = newest.event_id
         return {
           events,
           next_after_time_us: Math.max(current?.next_after_time_us ?? 0, newest.time_us),
-          retained_event_count: Math.max((current?.retained_event_count ?? 0) + incoming.length, events.length),
+          retained_event_count: Math.max((current?.retained_event_count ?? 0) + uniqueIncoming.length, events.length),
           has_more: current?.has_more ?? false,
         }
       })
       queryClient.setQueryData<LiveConnection>(['live-connection'], { state: 'connected', lastEventAt: Date.now() })
-    }, 250)
+    }, FLUSH_INTERVAL_MS)
 
     source.onopen = () => {
       if (!closed) queryClient.setQueryData<LiveConnection>(['live-connection'], current => ({ ...current, state: 'connected' }))
@@ -56,7 +90,9 @@ export function LiveUpdates() {
       try {
         const incoming = JSON.parse(event.data) as FirehoseEvent
         pendingEvents.current.push(incoming)
-        if (pendingEvents.current.length > 2_000) pendingEvents.current.splice(0, pendingEvents.current.length - 2_000)
+        if (pendingEvents.current.length > MAX_PENDING_EVENTS) {
+          pendingEvents.current.splice(0, pendingEvents.current.length - MAX_PENDING_EVENTS)
+        }
       } catch { /* Ignore an invalid frame; EventSource remains connected. */ }
     })
 
