@@ -10,7 +10,7 @@ import {
   type SortingState,
   useReactTable,
 } from "@tanstack/react-table";
-import { ArrowDownUp, ChevronDown, ChevronRight, Search } from "lucide-react";
+import { ArrowDownUp, ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { api } from "./api";
 import { useIdentityMap } from "./identities";
@@ -118,13 +118,12 @@ export function BackfillsPage() {
   const [type, setType] = useState<"all" | "repository" | "associations">(
     "all",
   );
-  const [expanded, setExpanded] = useState<string>();
   const jobs = useQuery({
     queryKey: ["backfills", "dashboard"],
     queryFn: () => api<BackfillJobsResponse>("/api/backfills?limit=100"),
     staleTime: 2_000,
     refetchInterval: (q) =>
-      q.state.data?.jobs.some((job) => active.has(job.status)) ? 3_000 : false,
+      q.state.data?.jobs.some((job) => active.has(job.status)) ? 10_000 : false,
   });
   const handles = useIdentityMap(
     (jobs.data?.jobs || []).flatMap((job) => (job.did ? [job.did] : [])),
@@ -132,11 +131,11 @@ export function BackfillsPage() {
   const identityQueue = useQuery({
     queryKey: ["identity-queue"],
     queryFn: () => api<IdentityQueueResponse>("/api/identity-queue?limit=25"),
-    staleTime: 3_000,
+    staleTime: 10_000,
     refetchInterval: (query) => {
       const summary = query.state.data?.summary;
       return summary && (summary.queued || summary.running || summary.retrying)
-        ? 3_000
+        ? 10_000
         : false;
     },
   });
@@ -276,19 +275,7 @@ export function BackfillsPage() {
                 </thead>
                 <tbody>
                   {table.getRowModel().rows.map((row) => (
-                    <JobRows
-                      key={row.original.id}
-                      job={row.original}
-                      cells={row.getVisibleCells()}
-                      open={expanded === row.original.id}
-                      toggle={() =>
-                        setExpanded((current) =>
-                          current === row.original.id
-                            ? undefined
-                            : row.original.id,
-                        )
-                      }
-                    />
+                    <JobRow key={row.original.id} job={row.original} cells={row.getVisibleCells()} />
                   ))}
                 </tbody>
               </table>
@@ -339,76 +326,60 @@ export function BackfillsPage() {
   );
 }
 
-function JobRows({
+function JobRow({
   job,
   cells,
-  open,
-  toggle,
 }: {
   job: BackfillJob;
   cells: Cell<BackfillJob, unknown>[];
-  open: boolean;
-  toggle: () => void;
 }) {
   return (
-    <>
-      <tr
-        onClick={toggle}
-        className="cursor-pointer border-b border-line/60 hover:bg-white/[.025]"
-      >
+      <tr className="border-b border-line/60 hover:bg-white/[.025]">
         {cells.map((cell) => (
           <td key={cell.id} className="px-3 py-3">
             {cell.column.id === "expand" ? (
-              open ? (
-                <ChevronDown className="size-4" />
-              ) : (
+              <Link to="/backfills/$jobId" params={{jobId:job.id}} aria-label={`Open job ${job.id}`} className="block p-2 text-dim hover:text-orange-300">
                 <ChevronRight className="size-4" />
-              )
+              </Link>
             ) : (
-              flexRender(cell.column.columnDef.cell, cell.getContext())
+              <Link to="/backfills/$jobId" params={{jobId:job.id}} className="block py-2 text-inherit">
+                {flexRender(cell.column.columnDef.cell, cell.getContext())}
+              </Link>
             )}
           </td>
         ))}
       </tr>
-      {open && (
-        <tr className="border-b border-line/60 bg-white/[.015]">
-          <td colSpan={columns.length} className="p-5">
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-              <Detail label="Job ID" value={job.id} />
-              <Detail label="Created" value={fmt(job.created_at)} />
-              <Detail
-                label="Collection"
-                value={job.collection || "All public records"}
-              />
-              <Detail label="Cursor" value={job.cursor || "—"} />
-              <Detail
-                label="Dependency"
-                value={job.depends_on_job_id || "None"}
-              />
-              <Detail
-                label="Next attempt"
-                value={job.next_attempt_at ? fmt(job.next_attempt_at) : "—"}
-              />
-              <Detail
-                label="Progress"
-                value={`${job.records_written.toLocaleString()} records written`}
-              />
-              <Detail label="Error" value={job.last_error || "None"} />
-            </div>
-            {job.did && (
-              <Link
-                to="/accounts/$did"
-                params={{ did: job.did }}
-                className="mt-5 inline-flex text-sm text-orange-300 hover:text-orange-200"
-              >
-                Open account →
-              </Link>
-            )}
-          </td>
-        </tr>
-      )}
-    </>
   );
+}
+
+export function BackfillDetailPage({jobId}:{jobId:string}) {
+  const job=useQuery({
+    queryKey:["backfill",jobId],
+    queryFn:()=>api<BackfillJob>(`/api/backfills/${encodeURIComponent(jobId)}/status`),
+    staleTime:2_000,
+    refetchInterval:query=>query.state.data&&active.has(query.state.data.status)?5_000:false,
+  });
+  if(job.isLoading)return <div className="panel grid min-h-64 place-items-center text-sm text-dim">Loading job status…</div>;
+  if(job.isError||!job.data)return <div className="panel p-6 text-sm text-red-200">This backfill job could not be loaded.</div>;
+  const value=job.data;
+  return <section>
+    <Link to="/backfills" className="inline-flex items-center gap-2 text-sm text-dim hover:text-orange-300"><ChevronLeft className="size-4"/>Backfill jobs</Link>
+    <div className="mt-5 flex flex-wrap items-start justify-between gap-4">
+      <div><p className="eyebrow">Durable collection job</p><h1 className="mt-2 break-all text-2xl font-semibold">{value.handle?`@${value.handle}`:value.did||value.query}</h1><p className="mt-2 break-all font-mono text-xs text-dim">{value.id}</p></div>
+      <span className="inline-flex items-center gap-2 rounded-full border border-line px-3 py-2 text-xs uppercase"><i className={`size-2 rounded-full ${statusTone(value.status)}`}/>{value.status.replace("_"," ")}</span>
+    </div>
+    <div className="panel mt-6 p-6">
+      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+        <Detail label="Type" value={value.job_type}/><Detail label="Created" value={fmt(value.created_at)}/><Detail label="Updated" value={fmt(value.updated_at)}/><Detail label="Collection" value={value.collection||"All public records"}/>
+        <Detail label="Progress" value={`${value.records_written.toLocaleString()} records written`}/><Detail label="Cursor" value={value.cursor||"—"}/><Detail label="Attempts" value={`${value.retry_count+1} / ${value.max_retries+1}`}/><Detail label="Next attempt" value={value.next_attempt_at?fmt(value.next_attempt_at):"—"}/>
+        <Detail label="Dependency" value={value.depends_on_job_id||"None"}/><Detail label="Error" value={value.last_error||"None"}/>
+      </div>
+      <div className="mt-6 flex flex-wrap gap-3">
+        {value.did&&<Link to="/accounts/$did" params={{did:value.did}} className="rounded-lg border border-orange-500/40 px-4 py-2 text-sm text-orange-300 hover:bg-orange-500/10">Open account</Link>}
+        {value.depends_on_job_id&&<Link to="/backfills/$jobId" params={{jobId:value.depends_on_job_id}} className="rounded-lg border border-line px-4 py-2 text-sm text-white hover:border-orange-500/40">Open dependency</Link>}
+      </div>
+    </div>
+  </section>;
 }
 function Detail({ label, value }: { label: string; value: string }) {
   return (

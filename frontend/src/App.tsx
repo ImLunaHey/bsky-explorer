@@ -34,7 +34,7 @@ import { CommandPalette } from "./CommandPalette";
 import { SearchPage } from "./SearchPage";
 import { AccountPage } from "./AccountPage";
 import { TopAccounts } from "./TopAccounts";
-import { BackfillsPage } from "./BackfillsPage";
+import { BackfillDetailPage, BackfillsPage } from "./BackfillsPage";
 import type {
   Anomalies,
   ClusterDetail,
@@ -1338,6 +1338,7 @@ function SystemView({
 export type AppRoute =
   | { view: "network" | "firehose" | "anomalies" | "system" | "backfills" }
   | { view: "search"; query: string; searchType: SearchKind; offset: number }
+  | { view: "backfill"; jobId: string }
   | { view: "account"; did: string }
   | { view: "record"; uri: string }
   | { view: "cluster"; clusterId: string }
@@ -1695,6 +1696,7 @@ export default function App({ route }: { route: AppRoute }) {
           />
         )}
         {route.view === "backfills" && <BackfillsPage />}
+        {route.view === "backfill" && <BackfillDetailPage jobId={route.jobId} />}
         {route.view === "system" && (
           <SystemView
             storage={storage.data}

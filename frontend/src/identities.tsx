@@ -1,4 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
+import { useMemo } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { api } from "./api";
@@ -32,11 +33,12 @@ export function useIdentityMap(values: string[]) {
       gcTime: 3_600_000,
     })),
   });
-  return new Map(
-    queries
-      .flatMap((query) => query.data || [])
-      .map((identity) => [identity.did, identity.handle || undefined]),
-  );
+  const identities=queries.flatMap((query) => query.data || []);
+  const signature=identities.map(identity=>`${identity.did}\0${identity.handle||''}`).join('\0');
+  // The signature keeps the returned Map referentially stable when unrelated
+  // query notifications rerender a page with unchanged identity data.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(()=>new Map(identities.map(identity=>[identity.did,identity.handle||undefined])),[signature]);
 }
 
 export function IdentityLink({
