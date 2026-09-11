@@ -37,6 +37,7 @@ import { TopAccounts } from "./TopAccounts";
 import { BackfillDetailPage, BackfillsPage } from "./BackfillsPage";
 import { IdentitiesPage, IdentityDetailPage } from "./IdentitiesPage";
 import { CrawlDetailPage } from "./CrawlsPage";
+import { CoveragePage } from "./CoveragePage";
 import type {
   Anomalies,
   ClusterDetail,
@@ -1377,7 +1378,7 @@ function SystemView({
 }
 
 export type AppRoute =
-  | { view: "network" | "firehose" | "anomalies" | "system" | "backfills" | "identities" }
+  | { view: "network" | "firehose" | "anomalies" | "system" | "backfills" | "identities" | "coverage" }
   | { view: "search"; query: string; searchType: SearchKind; offset: number }
   | { view: "backfill"; jobId: string }
   | { view: "identity"; jobId: string }
@@ -1497,6 +1498,7 @@ export default function App({ route }: { route: AppRoute }) {
               ["/", "Network", "network"],
               ["/firehose", "Firehose", "firehose"],
               ["/search", "Search", "search"],
+              ["/coverage", "Coverage", "coverage"],
               ["/backfills", "Backfills", "backfills"],
               ["/identities", "Identities", "identities"],
               ["/detections", "Detections", "anomalies"],
@@ -1739,6 +1741,7 @@ export default function App({ route }: { route: AppRoute }) {
             initialOffset={route.offset}
           />
         )}
+        {route.view === "coverage" && <CoveragePage />}
         {route.view === "backfills" && <BackfillsPage />}
         {route.view === "backfill" && <BackfillDetailPage jobId={route.jobId} />}
         {route.view === "identities" && <IdentitiesPage />}

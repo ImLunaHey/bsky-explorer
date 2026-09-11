@@ -12,6 +12,7 @@ const backfillsRoute=createRoute({getParentRoute:()=>rootRoute,path:'/backfills'
 const identitiesRoute=createRoute({getParentRoute:()=>rootRoute,path:'/identities',component:()=> <App route={{view:'identities'}}/>})
 const identityRoute=createRoute({getParentRoute:()=>rootRoute,path:'/identities/$jobId',component:IdentityRoute})
 const crawlRoute=createRoute({getParentRoute:()=>rootRoute,path:'/crawls/$crawlId',component:CrawlRoute})
+const coverageRoute=createRoute({getParentRoute:()=>rootRoute,path:'/coverage',component:()=> <App route={{view:'coverage'}}/>})
 const backfillRoute=createRoute({getParentRoute:()=>rootRoute,path:'/backfills/$jobId',component:BackfillRoute})
 const searchRoute=createRoute({getParentRoute:()=>rootRoute,path:'/search',validateSearch:(search:Record<string,unknown>)=>({q:typeof search.q==='string'?search.q:'',type:(['all','account','record','event'].includes(String(search.type))?search.type:'all') as SearchKind,offset:Math.max(0,Number(search.offset)||0)}),component:SearchRoute})
 const accountRoute=createRoute({getParentRoute:()=>rootRoute,path:'/accounts/$did',component:AccountRoute})
@@ -28,7 +29,7 @@ function BackfillRoute(){const {jobId}=backfillRoute.useParams();return <App rou
 function IdentityRoute(){const {jobId}=identityRoute.useParams();return <App route={{view:'identity',jobId}}/>}
 function CrawlRoute(){const {crawlId}=crawlRoute.useParams();return <App route={{view:'crawl',crawlId}}/>}
 
-const routeTree=rootRoute.addChildren([indexRoute,firehoseRoute,searchRoute,backfillsRoute,backfillRoute,crawlRoute,identitiesRoute,identityRoute,detectionsRoute,systemRoute,accountRoute,recordRoute,clusterRoute,trendRoute])
+const routeTree=rootRoute.addChildren([indexRoute,firehoseRoute,searchRoute,coverageRoute,backfillsRoute,backfillRoute,crawlRoute,identitiesRoute,identityRoute,detectionsRoute,systemRoute,accountRoute,recordRoute,clusterRoute,trendRoute])
 export const router=createRouter({routeTree,defaultPreload:'intent'})
 
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }

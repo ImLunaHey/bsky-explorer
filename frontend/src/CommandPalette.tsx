@@ -6,6 +6,7 @@ const destinations = [
   { label: "Network overview", hint: "Live rates and trends", to: "/" },
   { label: "Firehose", hint: "Newest public ATProto events", to: "/firehose" },
   { label: "Search", hint: "Find accounts, posts, and events", to: "/search" },
+  { label: "Coverage", hint: "Retained platform mirror overview", to: "/coverage" },
   {
     label: "Backfills",
     hint: "Durable account collection queue",
