@@ -70,7 +70,18 @@ impl IdentityQueue {
         {
             return Ok(j.clone());
         }
-        if jobs.len() >= self.capacity {
+        let active = jobs
+            .values()
+            .filter(|job| {
+                matches!(
+                    job.status,
+                    IdentityJobStatus::Queued
+                        | IdentityJobStatus::Running
+                        | IdentityJobStatus::Retrying
+                )
+            })
+            .count();
+        if active >= self.capacity {
             anyhow::bail!("identity queue capacity reached; retained history was not pruned");
         }
         let id = format!("id-{:016x}", xxh3_64(did.as_bytes()));
@@ -279,6 +290,15 @@ mod tests {
         assert!(q.enqueue("did:plc:overflow").is_err());
         assert_eq!(q.summary().total, 100);
         assert_eq!(fs::read_dir(&p).unwrap().count(), 100);
+        {
+            let mut jobs = q.jobs.lock();
+            let job = jobs.get_mut("did:plc:test0").unwrap();
+            job.status = IdentityJobStatus::Resolved;
+        }
+        q.enqueue("did:plc:aftercompletion").unwrap();
+        assert_eq!(q.summary().total, 101);
+        assert_eq!(q.summary().resolved, 1);
+        assert_eq!(fs::read_dir(&p).unwrap().count(), 101);
         fs::remove_dir_all(p).unwrap();
     }
 }
