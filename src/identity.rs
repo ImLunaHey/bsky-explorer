@@ -365,9 +365,9 @@ mod tests {
     }
 
     #[test]
-    fn ignores_commits() {
+    fn normalized_firehose_commits_do_not_create_identity_updates() {
         assert!(
-            parse_identity_event(br#"{"kind":"commit"}"#)
+            parse_identity_event(br#"{"kind":"commit","did":"did:plc:actor","commit":{"collection":"app.bsky.feed.like","record":{"subject":{"uri":"at://did:plc:target/app.bsky.feed.post/x"}}}}"#)
                 .unwrap()
                 .is_none()
         );

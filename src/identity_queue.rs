@@ -71,24 +71,7 @@ impl IdentityQueue {
             return Ok(j.clone());
         }
         if jobs.len() >= self.capacity {
-            let victim = jobs
-                .values()
-                .filter(|j| {
-                    matches!(
-                        j.status,
-                        IdentityJobStatus::Resolved
-                            | IdentityJobStatus::Negative
-                            | IdentityJobStatus::DeadLetter
-                    )
-                })
-                .min_by_key(|j| j.updated_at)
-                .map(|j| j.did.clone());
-            if let Some(v) = victim {
-                let old = jobs.remove(&v).unwrap();
-                let _ = fs::remove_file(self.root.join(format!("{}.json", old.id)));
-            } else {
-                anyhow::bail!("identity queue capacity reached");
-            }
+            anyhow::bail!("identity queue capacity reached; retained history was not pruned");
         }
         let id = format!("id-{:016x}", xxh3_64(did.as_bytes()));
         let job = IdentityJob {
@@ -281,5 +264,21 @@ mod tests {
         let q = IdentityQueue::open(p.clone(), 100, Duration::seconds(1)).unwrap();
         assert!(q.enqueue("https://127.0.0.1").is_err());
         let _ = fs::remove_dir_all(p);
+    }
+
+    #[test]
+    fn capacity_never_prunes_retained_history() {
+        let p = std::env::temp_dir().join(format!(
+            "identity-q-capacity-{}",
+            Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let q = IdentityQueue::open(p.clone(), 100, Duration::seconds(1)).unwrap();
+        for n in 0..100 {
+            q.enqueue(&format!("did:plc:test{n}")).unwrap();
+        }
+        assert!(q.enqueue("did:plc:overflow").is_err());
+        assert_eq!(q.summary().total, 100);
+        assert_eq!(fs::read_dir(&p).unwrap().count(), 100);
+        fs::remove_dir_all(p).unwrap();
     }
 }

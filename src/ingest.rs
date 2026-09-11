@@ -19,21 +19,8 @@ pub async fn run(
     analysis: Analyzer,
     metrics: Arc<Metrics>,
     identities: IdentityService,
-    identity_queue: crate::identity_queue::IdentityQueue,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::channel(20_000);
-    let (identity_tx, mut identity_rx) = mpsc::channel::<String>(20_000);
-    let queue_writer = identity_queue.clone();
-    tokio::spawn(async move {
-        while let Some(did) = identity_rx.recv().await {
-            let queue = queue_writer.clone();
-            match tokio::task::spawn_blocking(move || queue.enqueue(&did)).await {
-                Ok(Ok(_)) => {}
-                Ok(Err(error)) => tracing::debug!(%error, "identity enqueue skipped"),
-                Err(error) => tracing::error!(%error, "identity queue writer panicked"),
-            }
-        }
-    });
     let st = storage.clone();
     let interval = cfg.flush_interval();
     let batch_size = cfg.batch_size;
@@ -65,18 +52,7 @@ pub async fn run(
             url.push_str(if url.contains('?') { "&" } else { "?" });
             url.push_str(&format!("cursor={cursor}"));
         }
-        match consume(
-            &url,
-            &cfg,
-            &tx,
-            &storage,
-            &analysis,
-            &metrics,
-            &identities,
-            &identity_tx,
-        )
-        .await
-        {
+        match consume(&url, &cfg, &tx, &storage, &analysis, &metrics, &identities).await {
             Ok(()) => tracing::warn!("Jetstream closed"),
             Err(e) => tracing::error!(error=%e,"Jetstream disconnected"),
         };
@@ -96,7 +72,6 @@ async fn persist_batch(storage: &Storage, batch: &mut Vec<crate::model::Normaliz
         }
     }
 }
-#[allow(clippy::too_many_arguments)]
 async fn consume(
     url: &str,
     cfg: &Config,
@@ -105,7 +80,6 @@ async fn consume(
     analysis: &Analyzer,
     metrics: &Metrics,
     identities: &IdentityService,
-    identity_tx: &mpsc::Sender<String>,
 ) -> Result<()> {
     let (ws, _) = connect_async(url).await.context("connect Jetstream")?;
     metrics.connected.set(1);
@@ -169,12 +143,6 @@ async fn consume(
                 continue;
             }
         };
-        // Durable, O(1) queueing keeps profile network I/O entirely off ingest.
-        for did in std::iter::once(&event.actor_did).chain(event.target_did.as_ref()) {
-            if let Err(error) = identity_tx.try_send(did.clone()) {
-                tracing::debug!(%error, %did, "identity enqueue buffer full");
-            }
-        }
         metrics.event(&event.kind);
         let lag_us = chrono::Utc::now()
             .timestamp_micros()

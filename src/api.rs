@@ -901,6 +901,9 @@ async fn account(
         s.storage.account_cluster_ids(&did, 50),
     )
     .map_err(internal_error)?;
+    if current_identity.handle.is_none() {
+        s.identity_queue.enqueue(&did).map_err(internal_error)?;
+    }
     // Account pages must not contend with the ingest writer for the global hot
     // analyzer lock. ClickHouse is indexed for this lookup and remains responsive
     // while the collector is catching up.

@@ -80,12 +80,7 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&cfg.listen_addr).await?;
     tokio::spawn(api::sample_system_history(state.clone()));
     tokio::spawn(bsky_observatory::ingest::run(
-        cfg,
-        storage,
-        analysis,
-        metrics,
-        identities,
-        identity_queue,
+        cfg, storage, analysis, metrics, identities,
     ));
     axum::serve(listener, api::router(state)).await?;
     Ok(())
