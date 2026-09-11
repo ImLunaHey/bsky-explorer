@@ -38,6 +38,7 @@ import { BackfillDetailPage, BackfillsPage } from "./BackfillsPage";
 import { IdentitiesPage, IdentityDetailPage } from "./IdentitiesPage";
 import { CrawlDetailPage } from "./CrawlsPage";
 import { CoveragePage } from "./CoveragePage";
+import { CommunitiesPage, CommunityDetailPage } from "./CommunitiesPage";
 import type {
   Anomalies,
   ClusterDetail,
@@ -1378,11 +1379,12 @@ function SystemView({
 }
 
 export type AppRoute =
-  | { view: "network" | "firehose" | "anomalies" | "system" | "backfills" | "identities" | "coverage" }
+  | { view: "network" | "firehose" | "anomalies" | "system" | "backfills" | "identities" | "coverage" | "communities" }
   | { view: "search"; query: string; searchType: SearchKind; offset: number }
   | { view: "backfill"; jobId: string }
   | { view: "identity"; jobId: string }
   | { view: "crawl"; crawlId: string }
+  | { view: "community"; communityId: string }
   | { view: "account"; did: string }
   | { view: "record"; uri: string }
   | { view: "cluster"; clusterId: string }
@@ -1499,6 +1501,7 @@ export default function App({ route }: { route: AppRoute }) {
               ["/firehose", "Firehose", "firehose"],
               ["/search", "Search", "search"],
               ["/coverage", "Coverage", "coverage"],
+              ["/communities", "Communities", "communities"],
               ["/backfills", "Backfills", "backfills"],
               ["/identities", "Identities", "identities"],
               ["/detections", "Detections", "anomalies"],
@@ -1742,6 +1745,8 @@ export default function App({ route }: { route: AppRoute }) {
           />
         )}
         {route.view === "coverage" && <CoveragePage />}
+        {route.view === "communities" && <CommunitiesPage />}
+        {route.view === "community" && <CommunityDetailPage communityId={route.communityId} />}
         {route.view === "backfills" && <BackfillsPage />}
         {route.view === "backfill" && <BackfillDetailPage jobId={route.jobId} />}
         {route.view === "identities" && <IdentitiesPage />}
