@@ -31,7 +31,7 @@ const relations: { value: CrawlRelation; label: string; hint: string }[] = [
 ];
 const activeCrawl = (status?: string) => status === "queued" || status === "running";
 const activeJob = (status?: string) => ["queued", "resolving", "running", "retrying"].includes(status || "");
-const accountDepth = (job: BackfillJob) => Math.max(0, (job.crawl_depth || 0) - (job.job_type === "associations" ? 1 : 0));
+const accountDepth = (job: BackfillJob) => job.crawl_depth || 0;
 const fmt = (value?: string | null) => value ? new Date(value).toLocaleString() : "—";
 const duration = (seconds?: number | null) => seconds == null ? "—" : seconds < 60 ? `${Math.ceil(seconds)} sec` : seconds < 3600 ? `${Math.ceil(seconds / 60)} min` : seconds < 86400 ? `${(seconds / 3600).toFixed(1)} hr` : `${(seconds / 86400).toFixed(1)} days`;
 
