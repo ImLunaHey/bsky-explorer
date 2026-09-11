@@ -36,9 +36,18 @@ export type SearchResult = {
   at_uri:string|null;event_type:string|null;timestamp_ms:number|null;text:string|null
   target:string|null;urls:string[];domains:string[];collection:string|null;operation:string|null;record_json:string|null
 }
-export type BackfillStatus = 'queued'|'resolving'|'running'|'retrying'|'completed'|'dead_letter'|'cancelled'
+export type BackfillStatus = 'queued'|'resolving'|'running'|'retrying'|'paused'|'completed'|'dead_letter'|'cancelled'
 export type BackfillProgress={kind:string;updated_at:string;collection_index?:number|null;current_collection?:string|null;cursor?:string|null;records_written:number;posts_processed?:number|null;posts_completed?:number|null;posts_total?:number|null;posts_remaining?:number|null;requests?:number|null;likes?:number|null;reposts?:number|null;quotes?:number|null;replies?:number|null;errors?:number|null;rate_per_second?:number|null;eta_seconds?:number|null}
-export type BackfillJob = { id:string;query:string;did?:string|null;handle?:string|null;status:BackfillStatus;job_type:'repository'|'associations';depends_on_job_id:string|null;include_associations:boolean;scope?:string;crawl_depth?:number;max_depth?:number;created_at:string;updated_at:string;collection?:string|null;cursor?:string|null;records_written:number;retry_count:number;max_retries:number;last_error?:string|null;next_attempt_at?:string|null;lease_token?:string|null;lease_until?:string|null;progress?:BackfillProgress|null }
+export type BackfillJob = { id:string;query:string;did?:string|null;handle?:string|null;status:BackfillStatus;job_type:'repository'|'associations';depends_on_job_id:string|null;parent_job_id?:string|null;crawl_id?:string|null;include_associations:boolean;scope?:string;crawl_depth?:number;max_depth?:number;created_at:string;updated_at:string;collection?:string|null;cursor?:string|null;records_written:number;retry_count:number;max_retries:number;last_error?:string|null;next_attempt_at?:string|null;lease_token?:string|null;lease_until?:string|null;progress?:BackfillProgress|null }
+export type CrawlStatus='queued'|'running'|'paused'|'completed'|'cancelled'|'failed'
+export type CrawlRelation='posts'|'likes'|'reposts'|'quotes'|'replies'|'profiles'
+export type CrawlAction='pause'|'resume'|'cancel'
+export type CrawlLimitKey='max_accounts'|'max_jobs'|'max_records'|'max_requests'
+export type CrawlLimits=Partial<Record<CrawlLimitKey,number>>
+export type Crawl={id:string;root_query:string;root_did?:string|null;status:CrawlStatus;max_depth:number;relations:CrawlRelation[];limits:CrawlLimits;created_at:string;updated_at:string}
+export type CrawlsResponse={crawls:Crawl[];total:number;offset:number;limit:number;has_more:boolean}
+export type CrawlDetailResponse={crawl:Crawl;jobs:BackfillJob[]}
+export type CreateCrawlResponse={crawl:Crawl;root_job:BackfillJob}
 export type BackfillEvent={event_id:string;timestamp_ms:number;actor_did:string;kind:string;collection:string;operation:string;at_uri:string;target:string}
 export type BackfillEventsResponse={events:BackfillEvent[];total:number;offset:number}
 export type SearchResponse = { query:string;type:SearchKind;offset:number;limit:number;has_more:boolean;results:SearchResult[];backfill_job?:BackfillJob|null }

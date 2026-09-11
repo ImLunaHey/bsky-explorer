@@ -36,6 +36,7 @@ import { AccountPage } from "./AccountPage";
 import { TopAccounts } from "./TopAccounts";
 import { BackfillDetailPage, BackfillsPage } from "./BackfillsPage";
 import { IdentitiesPage, IdentityDetailPage } from "./IdentitiesPage";
+import { CrawlDetailPage } from "./CrawlsPage";
 import type {
   Anomalies,
   ClusterDetail,
@@ -1380,6 +1381,7 @@ export type AppRoute =
   | { view: "search"; query: string; searchType: SearchKind; offset: number }
   | { view: "backfill"; jobId: string }
   | { view: "identity"; jobId: string }
+  | { view: "crawl"; crawlId: string }
   | { view: "account"; did: string }
   | { view: "record"; uri: string }
   | { view: "cluster"; clusterId: string }
@@ -1741,6 +1743,7 @@ export default function App({ route }: { route: AppRoute }) {
         {route.view === "backfill" && <BackfillDetailPage jobId={route.jobId} />}
         {route.view === "identities" && <IdentitiesPage />}
         {route.view === "identity" && <IdentityDetailPage jobId={route.jobId} />}
+        {route.view === "crawl" && <CrawlDetailPage crawlId={route.crawlId} />}
         {route.view === "system" && (
           <SystemView
             storage={storage.data}

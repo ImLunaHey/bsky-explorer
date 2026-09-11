@@ -14,6 +14,7 @@ import { ArrowDownUp, ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { api } from "./api";
 import { useIdentityMap } from "./identities";
+import { CrawlOverview } from "./CrawlsPage";
 import type {
   BackfillJob,
   BackfillEvent,
@@ -34,6 +35,7 @@ const statuses: ("all" | BackfillStatus)[] = [
   "resolving",
   "running",
   "retrying",
+  "paused",
   "completed",
   "dead_letter",
   "cancelled",
@@ -42,6 +44,8 @@ const fmt = (value: string) => new Date(value).toLocaleString();
 const statusTone = (status: BackfillStatus) =>
   active.has(status)
     ? "bg-orange-400"
+    : status === "paused"
+      ? "bg-amber-400"
     : status === "completed"
       ? "bg-emerald-400"
       : "bg-red-400";
@@ -189,6 +193,7 @@ export function BackfillsPage() {
           </div>
         ))}
       </div>
+      <CrawlOverview />
       <section className="panel mt-5 p-5">
         <div className="flex flex-wrap gap-2">
           <label className="relative min-w-56 flex-1">
