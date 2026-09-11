@@ -16,17 +16,19 @@ import {
   Activity,
   ChevronLeft,
   ChevronRight,
+  Copy,
   ExternalLink,
   Image as ImageIcon,
+  Pause,
+  Play,
   Search,
   Wifi,
   WifiOff,
 } from "lucide-react";
 import { api } from "./api";
 import { useIdentityMap } from "./identities";
-import type { LiveConnection } from "./live";
+import { FIREHOSE_PAUSE_EVENT, type LiveConnection } from "./live";
 import type { FirehoseEvent, FirehoseFeed, RecordMediaResponse } from "./types";
-import { HlsVideo } from "./HlsVideo";
 
 const recordUri = (event: FirehoseEvent) =>
   ["post", "reply", "quote"].includes(event.kind) &&
@@ -77,7 +79,7 @@ function MediaPreview({ uri }: { uri: string }) {
   return (
     <div
       ref={host}
-      className="grid h-20 w-28 shrink-0 place-items-center overflow-hidden rounded-lg border border-white/10 bg-white/[.025]"
+      className="grid h-14 w-20 shrink-0 place-items-center overflow-hidden rounded-md border border-white/10 bg-white/[.025]"
     >
       {asset?.kind === "image" ? (
         <img
@@ -87,12 +89,13 @@ function MediaPreview({ uri }: { uri: string }) {
           referrerPolicy="no-referrer"
           className="h-full w-full object-cover"
         />
-      ) : asset?.kind === "video" ? (
-        <HlsVideo
-          src={asset.url}
-          poster={asset.thumbnail_url}
-          label={asset.alt || "Bluesky video preview"}
-          className="h-full w-full"
+      ) : asset?.kind === "video" && asset.thumbnail_url ? (
+        <img
+          src={asset.thumbnail_url}
+          alt={asset.alt || "Bluesky video preview"}
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          className="h-full w-full object-cover"
         />
       ) : (
         <ImageIcon
@@ -114,6 +117,14 @@ export function FirehoseView({
   onRecord: (uri: string) => void;
 }) {
   const [displayed, setDisplayed] = useState<FirehoseEvent[] | null>(null);
+  const [paused, setPaused] = useState(false);
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent(FIREHOSE_PAUSE_EVENT, { detail: paused }));
+    return () => {
+      if (paused)
+        window.dispatchEvent(new CustomEvent(FIREHOSE_PAUSE_EVENT, { detail: false }));
+    };
+  }, [paused]);
   const [sorting, setSorting] = useState<SortingState>([
     { id: "time", desc: true },
   ]);
@@ -131,7 +142,8 @@ export function FirehoseView({
   const feed = useQuery({
     queryKey: ["firehose-feed"],
     queryFn: () => api<FirehoseFeed>("/api/firehose?limit=500"),
-    refetchInterval: connection.data?.state === "connected" ? false : 3_000,
+    refetchInterval:
+      paused || connection.data?.state === "connected" ? false : 3_000,
     refetchIntervalInBackground: true,
   });
   useEffect(() => {
@@ -180,22 +192,26 @@ export function FirehoseView({
           const did = info.getValue(),
             handle = handles.get(did);
           return (
-            <button
-              type="button"
-              onClick={() => onAccount(did)}
-              className="block min-w-0 max-w-60 text-left text-xs text-orange-300 hover:text-orange-200"
-            >
-              <b className="block break-all font-medium">
+            <div className="group/account flex min-w-0 max-w-60 items-start gap-1">
+              <button
+                type="button"
+                onClick={() => onAccount(did)}
+                title={handle ? `@${handle}\n${did}` : did}
+                className="min-w-0 flex-1 text-left text-xs text-orange-300 hover:text-orange-200"
+              >
+              <b className={`block font-medium ${handle ? "truncate" : "break-all font-mono text-[10px] leading-tight"}`}>
                 {handle ? `@${handle}` : did}
               </b>
               {handle ? (
-                <span className="block break-all font-mono text-[9px] text-white/35">
+                <span className="block break-all font-mono text-[9px] leading-tight text-white/35">
                   {did}
                 </span>
               ) : (
-                <span className="block text-[9px] text-dim">resolving…</span>
+                <span className="block pt-0.5 text-[9px] text-dim">resolving…</span>
               )}
-            </button>
+              </button>
+              <button type="button" onClick={() => void navigator.clipboard.writeText(did)} title={`Copy full DID: ${did}`} aria-label={`Copy full DID ${did}`} className="shrink-0 rounded p-1 text-white/25 opacity-60 hover:bg-white/5 hover:text-orange-300 focus:opacity-100 sm:opacity-0 sm:group-hover/account:opacity-100"><Copy className="size-3" /></button>
+            </div>
           );
         },
       }),
@@ -217,14 +233,14 @@ export function FirehoseView({
           const event = info.row.original,
             uri = recordUri(event);
           return (
-            <div className="flex min-w-0 gap-3">
+            <div className="flex min-w-0 items-center gap-2">
               <div className="min-w-0 flex-1">
                 {event.text ? (
-                  <p className="line-clamp-3 text-sm leading-relaxed text-white/80">
+                  <p className="line-clamp-2 text-xs leading-relaxed text-white/80" title={event.text}>
                     {event.text}
                   </p>
                 ) : (
-                  <p className="truncate font-mono text-[10px] text-white/40">
+                  <p className="truncate font-mono text-[10px] text-white/40" title={event.target || event.at_uri || event.event_id}>
                     {event.target || event.at_uri || event.event_id}
                   </p>
                 )}
@@ -298,14 +314,14 @@ export function FirehoseView({
             <div className="flex items-center gap-2">
               <h2 className="font-semibold">Live firehose</h2>
               <span
-                className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${live ? "bg-orange-400/10 text-orange-300" : "bg-red-300/10 text-red-300"}`}
+                className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${paused ? "bg-amber-400/10 text-amber-300" : live ? "bg-orange-400/10 text-orange-300" : "bg-red-300/10 text-red-300"}`}
               >
                 {live ? (
                   <Wifi className="size-3" />
                 ) : (
                   <WifiOff className="size-3" />
                 )}
-                {live ? "Streaming" : "Connecting"}
+                {paused ? "Paused" : live ? "Streaming" : "Connecting"}
               </span>
             </div>
             <p className="mt-1 text-xs text-white/45">
@@ -318,7 +334,11 @@ export function FirehoseView({
               {table.getFilteredRowModel().rows.length.toLocaleString()} events
               cached
             </span>
-            {pending.length > 0 && (
+            <button type="button" onClick={() => setPaused((value) => !value)} className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-2 font-medium text-white/70 hover:border-orange-400/40 hover:text-orange-300">
+              {paused ? <Play className="size-3" /> : <Pause className="size-3" />}
+              {paused ? "Resume" : "Pause"}
+            </button>
+            {pending.length > 0 && !paused && (
               <button
                 onClick={acceptPending}
                 className="rounded-lg bg-orange-400 px-3 py-2 font-semibold text-black hover:bg-orange-300"
@@ -333,18 +353,19 @@ export function FirehoseView({
             <Search className="absolute left-3 top-2.5 size-4 text-white/40" />
             <input
               value={globalFilter}
-              onChange={(event) => setGlobalFilter(event.target.value)}
+              onChange={(event) => { setGlobalFilter(event.target.value); setPagination((value) => ({ ...value, pageIndex: 0 })); }}
               placeholder="Filter text, DID, URL, or domain…"
               className="w-full rounded-lg border border-white/10 bg-black py-2 pl-9 pr-3 text-sm outline-none focus:border-orange-400/60"
             />
           </div>
           <select
             value={(table.getColumn("kind")?.getFilterValue() as string) || ""}
-            onChange={(event) =>
+            onChange={(event) => {
               table
                 .getColumn("kind")
-                ?.setFilterValue(event.target.value || undefined)
-            }
+                ?.setFilterValue(event.target.value || undefined);
+              setPagination((value) => ({ ...value, pageIndex: 0 }));
+            }}
             className="rounded-lg border border-white/10 bg-black px-3 py-2 text-sm"
           >
             <option value="">All event types</option>
@@ -356,7 +377,7 @@ export function FirehoseView({
           </select>
         </div>
         <div className="min-h-96 overflow-x-auto">
-          <table className="w-full table-fixed border-collapse">
+          <table className="w-full min-w-[52rem] table-fixed border-collapse">
             <thead className="sticky top-0 z-10 bg-black">
               <tr>
                 {table.getHeaderGroups()[0]?.headers.map((header) => (
@@ -365,13 +386,13 @@ export function FirehoseView({
                     style={{
                       width:
                         header.id === "time"
-                          ? "7rem"
+                          ? "6.5rem"
                           : header.id === "actor_did"
-                            ? "13rem"
+                            ? "15rem"
                             : header.id === "kind"
-                              ? "6rem"
+                              ? "5rem"
                               : header.id === "actions"
-                                ? "5rem"
+                                ? "4.5rem"
                                 : undefined,
                     }}
                     className="border-b border-white/10 px-4 py-3 text-left text-[10px] uppercase tracking-wider text-white/40"
@@ -421,10 +442,10 @@ export function FirehoseView({
                 table.getRowModel().rows.map((row) => (
                   <tr
                     key={row.original.event_id}
-                    className="h-28 border-b border-white/[.07] align-middle hover:bg-white/[.02]"
+                    className="border-b border-white/[.07] align-middle hover:bg-white/[.02]"
                   >
                     {row.getVisibleCells().map((cell) => (
-                      <td key={cell.id} className="overflow-hidden px-4 py-3">
+                      <td key={cell.id} className="overflow-hidden px-3 py-2.5">
                         {flexRender(
                           cell.column.columnDef.cell,
                           cell.getContext(),

@@ -13,18 +13,28 @@ export type LiveConnection = {
 const MAX_FIREHOSE_EVENTS = 5_000
 const MAX_PENDING_EVENTS = 5_000
 const FLUSH_INTERVAL_MS = 500
+export const FIREHOSE_PAUSE_EVENT = 'observatory:firehose-pause'
 
 export function LiveUpdates() {
   const queryClient = useQueryClient()
   const pendingEvents = useRef<FirehoseEvent[]>([])
   const knownEventIds = useRef(new Set<string>())
   const lastCachedEventId = useRef<string | undefined>(undefined)
+  const firehosePaused = useRef(false)
 
   useEffect(() => {
     let closed = false
+    const setFirehosePaused = (event: Event) => {
+      firehosePaused.current = (event as CustomEvent<boolean>).detail
+    }
+    window.addEventListener(FIREHOSE_PAUSE_EVENT, setFirehosePaused)
     queryClient.setQueryData<LiveConnection>(['live-connection'], { state: 'connecting' })
     const source = new EventSource('/api/live')
     const flush = window.setInterval(() => {
+      // Keep accepting a bounded SSE buffer while presentation is paused, but
+      // do not mutate TanStack's feed cache (and therefore the table) until the
+      // operator resumes it.
+      if (firehosePaused.current) return
       const incoming = pendingEvents.current.splice(0)
       if (!incoming.length) return
       queryClient.setQueryData<FirehoseFeed>(['firehose-feed'], current => {
@@ -96,7 +106,12 @@ export function LiveUpdates() {
       } catch { /* Ignore an invalid frame; EventSource remains connected. */ }
     })
 
-    return () => { closed = true; window.clearInterval(flush); source.close() }
+    return () => {
+      closed = true
+      window.removeEventListener(FIREHOSE_PAUSE_EVENT, setFirehosePaused)
+      window.clearInterval(flush)
+      source.close()
+    }
   }, [queryClient])
 
   return null
