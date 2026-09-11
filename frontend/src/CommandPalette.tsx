@@ -12,6 +12,11 @@ const destinations = [
     to: "/backfills",
   },
   {
+    label: "Identities",
+    hint: "DID and handle resolution operations",
+    to: "/identities",
+  },
+  {
     label: "Detections",
     hint: "Coordination and anomaly evidence",
     to: "/detections",

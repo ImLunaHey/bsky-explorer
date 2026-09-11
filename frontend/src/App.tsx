@@ -35,6 +35,7 @@ import { SearchPage } from "./SearchPage";
 import { AccountPage } from "./AccountPage";
 import { TopAccounts } from "./TopAccounts";
 import { BackfillDetailPage, BackfillsPage } from "./BackfillsPage";
+import { IdentitiesPage, IdentityDetailPage } from "./IdentitiesPage";
 import type {
   Anomalies,
   ClusterDetail,
@@ -1375,9 +1376,10 @@ function SystemView({
 }
 
 export type AppRoute =
-  | { view: "network" | "firehose" | "anomalies" | "system" | "backfills" }
+  | { view: "network" | "firehose" | "anomalies" | "system" | "backfills" | "identities" }
   | { view: "search"; query: string; searchType: SearchKind; offset: number }
   | { view: "backfill"; jobId: string }
+  | { view: "identity"; jobId: string }
   | { view: "account"; did: string }
   | { view: "record"; uri: string }
   | { view: "cluster"; clusterId: string }
@@ -1494,6 +1496,7 @@ export default function App({ route }: { route: AppRoute }) {
               ["/firehose", "Firehose", "firehose"],
               ["/search", "Search", "search"],
               ["/backfills", "Backfills", "backfills"],
+              ["/identities", "Identities", "identities"],
               ["/detections", "Detections", "anomalies"],
               ["/system", "System", "system"],
             ] as const
@@ -1736,6 +1739,8 @@ export default function App({ route }: { route: AppRoute }) {
         )}
         {route.view === "backfills" && <BackfillsPage />}
         {route.view === "backfill" && <BackfillDetailPage jobId={route.jobId} />}
+        {route.view === "identities" && <IdentitiesPage />}
+        {route.view === "identity" && <IdentityDetailPage jobId={route.jobId} />}
         {route.view === "system" && (
           <SystemView
             storage={storage.data}
