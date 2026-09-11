@@ -1,8 +1,10 @@
 use crate::{
+    community::CommunitySnapshot,
     identity::IdentityRecord,
     model::{Detection, NormalizedEvent},
 };
 use anyhow::{Context, Result};
+use chrono::Utc;
 use clickhouse::{Client, Row};
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +28,79 @@ pub struct ClickHouseStats {
     pub pending_mutations: u64,
     pub errors_since_restart: u64,
     pub active_queries: u64,
+}
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct CommunitySnapshotRow {
+    pub snapshot_id: String,
+    pub status: String,
+    pub window_seconds: u64,
+    pub generated_at_ms: i64,
+    pub completed_at_ms: Option<i64>,
+    pub community_count: u64,
+    pub node_count: u64,
+    pub edge_count: u64,
+    pub truncated_nodes: u64,
+    pub truncated_edges: u64,
+    pub parameters_json: String,
+    pub error: String,
+}
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct CommunitySummaryRow {
+    pub community_id: String,
+    pub account_count: u64,
+    pub internal_event_count: u64,
+    pub internal_weight: f64,
+    pub total_weight: f64,
+    pub density: f64,
+    pub score: f64,
+    pub top_members: Vec<String>,
+}
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct CommunityMemberRow {
+    pub did: String,
+    pub weighted_degree: f64,
+    pub internal_weight: f64,
+    pub external_weight: f64,
+}
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct CommunityEdgeRow {
+    pub source_community_id: String,
+    pub target_community_id: String,
+    pub weight: f64,
+    pub event_count: u64,
+    pub types: Vec<String>,
+    pub last_seen_ms: i64,
+}
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct CommunityMemberEdgeRow {
+    pub source_did: String,
+    pub target_did: String,
+    pub weight: f64,
+    pub event_count: u64,
+    pub types: Vec<String>,
+    pub last_seen_ms: i64,
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct CommunityOverview {
+    pub snapshot: CommunitySnapshotRow,
+    pub communities: Vec<CommunitySummaryRow>,
+    pub edges: Vec<CommunityEdgeRow>,
+    pub total: u64,
+    pub offset: u64,
+    pub limit: u64,
+    pub has_more: bool,
+    pub edges_truncated: bool,
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct CommunityDetail {
+    pub snapshot: CommunitySnapshotRow,
+    pub community: CommunitySummaryRow,
+    pub members: Vec<CommunityMemberRow>,
+    pub member_edges: Vec<CommunityMemberEdgeRow>,
+    pub cross_edges: Vec<CommunityEdgeRow>,
+    pub member_total: u64,
+    pub member_has_more: bool,
+    pub edges_truncated: bool,
 }
 #[derive(Debug, Clone, Deserialize, Row, Serialize)]
 pub struct CoverageCollection {
@@ -295,6 +370,70 @@ struct IdentityInsertRow {
     observed_at: i64,
     source: String,
 }
+#[derive(Row, Serialize)]
+struct CommunitySnapshotInsert {
+    snapshot_id: String,
+    status: String,
+    window_seconds: u64,
+    generated_at: i64,
+    completed_at: Option<i64>,
+    community_count: u64,
+    node_count: u64,
+    edge_count: u64,
+    truncated_nodes: u64,
+    truncated_edges: u64,
+    parameters_json: String,
+    error: String,
+}
+#[derive(Row, Serialize)]
+struct CommunitySummaryInsert {
+    snapshot_id: String,
+    community_id: String,
+    account_count: u64,
+    internal_event_count: u64,
+    internal_weight: f64,
+    total_weight: f64,
+    density: f64,
+    score: f64,
+    top_members: Vec<String>,
+}
+#[derive(Row, Serialize)]
+struct CommunityMembershipInsert {
+    snapshot_id: String,
+    community_id: String,
+    did: String,
+    weighted_degree: f64,
+    internal_weight: f64,
+    external_weight: f64,
+}
+#[derive(Row, Serialize)]
+struct CommunityEdgeInsert {
+    snapshot_id: String,
+    source_community_id: String,
+    target_community_id: String,
+    weight: f64,
+    event_count: u64,
+    types: Vec<String>,
+    last_seen: i64,
+}
+#[derive(Row, Serialize)]
+struct CommunityMemberEdgeInsert {
+    snapshot_id: String,
+    community_id: String,
+    source_did: String,
+    target_did: String,
+    weight: f64,
+    event_count: u64,
+    types: Vec<String>,
+    last_seen: i64,
+}
+#[derive(Row, Deserialize)]
+struct CommunityInteractionRow {
+    actor_did: String,
+    target_did: String,
+    kind: String,
+    timestamp_ms: i64,
+}
 impl From<&NormalizedEvent> for EventRow {
     fn from(e: &NormalizedEvent) -> Self {
         Self {
@@ -324,6 +463,154 @@ impl From<&NormalizedEvent> for EventRow {
     }
 }
 impl Storage {
+    pub async fn ensure_community_schema(&self) -> Result<()> {
+        for statement in include_str!("../migrations/006_communities.sql")
+            .split(';')
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            self.client.query(statement).execute().await?
+        }
+        Ok(())
+    }
+    pub async fn community_interactions(
+        &self,
+        window_seconds: u64,
+        event_types: &[String],
+        limit: u64,
+    ) -> Result<Vec<crate::community::CommunityInteraction>> {
+        let allowed = event_types
+            .iter()
+            .filter(|v| matches!(v.as_str(), "like" | "repost" | "quote" | "reply" | "follow"))
+            .collect::<Vec<_>>();
+        if allowed.is_empty() {
+            return Ok(vec![]);
+        }
+        let kinds = allowed
+            .iter()
+            .map(|v| format!("'{}'", v))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT actor_did,if(target_did!='',target_did,if(startsWith(target,'at://'),arrayElement(splitByChar('/',substring(target,6)),1),'')) target_did,kind,toUnixTimestamp64Milli(timestamp) timestamp_ms FROM events WHERE timestamp>=now()-INTERVAL ? SECOND AND kind IN ({kinds}) AND actor_did!='' AND (target_did!='' OR target!='') ORDER BY timestamp DESC LIMIT ?"
+        );
+        let rows = self
+            .client
+            .query(&sql)
+            .bind(window_seconds.clamp(60, 604800))
+            .bind(limit.min(2_000_000))
+            .fetch_all::<CommunityInteractionRow>()
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter(|r| !r.target_did.is_empty() && r.target_did != r.actor_did)
+            .filter_map(|r| {
+                Some(crate::community::CommunityInteraction {
+                    actor_did: r.actor_did,
+                    target_did: r.target_did,
+                    kind: r.kind,
+                    timestamp: chrono::DateTime::from_timestamp_millis(r.timestamp_ms)?,
+                    weight: 1.0,
+                })
+            })
+            .collect())
+    }
+    pub async fn insert_community_snapshot(&self, s: &CommunitySnapshot) -> Result<()> {
+        let start = CommunitySnapshotInsert {
+            snapshot_id: s.snapshot_id.clone(),
+            status: "building".into(),
+            window_seconds: s.window_seconds,
+            generated_at: s.generated_at.timestamp_millis(),
+            completed_at: None,
+            community_count: s.communities.len() as u64,
+            node_count: s.node_count as u64,
+            edge_count: s.edge_count as u64,
+            truncated_nodes: s.truncated_nodes as u64,
+            truncated_edges: s.truncated_edges as u64,
+            parameters_json: serde_json::to_string(&s.parameters)?,
+            error: String::new(),
+        };
+        let mut insert = self.client.insert("community_snapshots")?;
+        insert.write(&start).await?;
+        insert.end().await?;
+        let mut summaries = self.client.insert("community_summaries")?;
+        for c in &s.communities {
+            let n = c.account_count as f64;
+            let density = if n > 1.0 {
+                (2.0 * c.internal_weight) / (n * (n - 1.0))
+            } else {
+                0.0
+            };
+            summaries
+                .write(&CommunitySummaryInsert {
+                    snapshot_id: s.snapshot_id.clone(),
+                    community_id: c.community_id.clone(),
+                    account_count: c.account_count as u64,
+                    internal_event_count: c.internal_event_count,
+                    internal_weight: c.internal_weight,
+                    total_weight: c.total_weight,
+                    density,
+                    score: c.total_weight,
+                    top_members: c.top_members.clone(),
+                })
+                .await?
+        }
+        summaries.end().await?;
+        let mut members = self.client.insert("community_memberships")?;
+        for m in &s.memberships {
+            members
+                .write(&CommunityMembershipInsert {
+                    snapshot_id: s.snapshot_id.clone(),
+                    community_id: m.community_id.clone(),
+                    did: m.did.clone(),
+                    weighted_degree: m.weighted_degree,
+                    internal_weight: m.internal_weight,
+                    external_weight: m.external_weight,
+                })
+                .await?
+        }
+        members.end().await?;
+        let mut edges = self.client.insert("community_edges")?;
+        for e in &s.cross_community_edges {
+            edges
+                .write(&CommunityEdgeInsert {
+                    snapshot_id: s.snapshot_id.clone(),
+                    source_community_id: e.source_community.clone(),
+                    target_community_id: e.target_community.clone(),
+                    weight: e.weight,
+                    event_count: e.event_count,
+                    types: e.event_types.clone(),
+                    last_seen: e.last_seen.timestamp_millis(),
+                })
+                .await?
+        }
+        edges.end().await?;
+        let mut member_edges = self.client.insert("community_member_edges")?;
+        for e in &s.member_edges {
+            member_edges
+                .write(&CommunityMemberEdgeInsert {
+                    snapshot_id: s.snapshot_id.clone(),
+                    community_id: e.community_id.clone(),
+                    source_did: e.source_did.clone(),
+                    target_did: e.target_did.clone(),
+                    weight: e.weight,
+                    event_count: e.event_count,
+                    types: e.event_types.clone(),
+                    last_seen: e.last_seen.timestamp_millis(),
+                })
+                .await?
+        }
+        member_edges.end().await?;
+        let done = CommunitySnapshotInsert {
+            status: "completed".into(),
+            completed_at: Some(Utc::now().timestamp_millis()),
+            ..start
+        };
+        let mut insert = self.client.insert("community_snapshots")?;
+        insert.write(&done).await?;
+        insert.end().await?;
+        Ok(())
+    }
     pub async fn coverage(
         &self,
     ) -> Result<(CoverageTotals, Vec<CoverageCollection>, Vec<CoverageDay>)> {
@@ -589,6 +876,114 @@ impl Storage {
             .bind(limit.min(10_000))
             .fetch_all::<String>()
             .await?)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub async fn community_overview(
+        &self,
+        window: u64,
+        min_size: u64,
+        sort: &str,
+        descending: bool,
+        limit: u64,
+        offset: u64,
+        edge_limit: u64,
+        min_edge: f64,
+    ) -> Result<Option<CommunityOverview>> {
+        let snapshot=self.client.query("SELECT snapshot_id,status,window_seconds,toUnixTimestamp64Milli(generated_at) generated_at_ms,toUnixTimestamp64Milli(completed_at) completed_at_ms,community_count,node_count,edge_count,truncated_nodes,truncated_edges,parameters_json,error FROM community_snapshots FINAL WHERE status='completed' AND window_seconds=? ORDER BY generated_at DESC LIMIT 1").bind(window).fetch_optional::<CommunitySnapshotRow>().await?;
+        let Some(snapshot) = snapshot else {
+            return Ok(None);
+        };
+        let sort = match sort {
+            "account_count" => "account_count",
+            "event_count" => "internal_event_count",
+            "density" => "density",
+            _ => "score",
+        };
+        let order = if descending { "DESC" } else { "ASC" };
+        let total = self
+            .client
+            .query(
+                "SELECT count() FROM community_summaries WHERE snapshot_id=? AND account_count>=?",
+            )
+            .bind(&snapshot.snapshot_id)
+            .bind(min_size)
+            .fetch_one::<u64>()
+            .await?;
+        let sql = format!(
+            "SELECT community_id,account_count,internal_event_count,internal_weight,total_weight,density,score,top_members FROM community_summaries WHERE snapshot_id=? AND account_count>=? ORDER BY {sort} {order},community_id LIMIT ? OFFSET ?"
+        );
+        let communities = self
+            .client
+            .query(&sql)
+            .bind(&snapshot.snapshot_id)
+            .bind(min_size)
+            .bind(limit.min(100))
+            .bind(offset)
+            .fetch_all::<CommunitySummaryRow>()
+            .await?;
+        let edges=self.client.query("SELECT source_community_id,target_community_id,weight,event_count,types,toUnixTimestamp64Milli(last_seen) last_seen_ms FROM community_edges WHERE snapshot_id=? AND weight>=? ORDER BY weight DESC LIMIT ?").bind(&snapshot.snapshot_id).bind(min_edge).bind(edge_limit.min(500)+1).fetch_all::<CommunityEdgeRow>().await?;
+        let truncated = edges.len() > edge_limit.min(500) as usize;
+        Ok(Some(CommunityOverview {
+            snapshot,
+            communities,
+            edges: edges
+                .into_iter()
+                .take(edge_limit.min(500) as usize)
+                .collect(),
+            total,
+            offset,
+            limit: limit.min(100),
+            has_more: offset + limit.min(100) < total,
+            edges_truncated: truncated,
+        }))
+    }
+    pub async fn community_detail(
+        &self,
+        community_id: &str,
+        snapshot_id: Option<&str>,
+        member_limit: u64,
+        member_offset: u64,
+        edge_limit: u64,
+        min_edge: f64,
+    ) -> Result<Option<CommunityDetail>> {
+        let snapshot = if let Some(id) = snapshot_id {
+            self.client.query("SELECT snapshot_id,status,window_seconds,toUnixTimestamp64Milli(generated_at) generated_at_ms,toUnixTimestamp64Milli(completed_at) completed_at_ms,community_count,node_count,edge_count,truncated_nodes,truncated_edges,parameters_json,error FROM community_snapshots FINAL WHERE snapshot_id=? AND status='completed' LIMIT 1").bind(id).fetch_optional::<CommunitySnapshotRow>().await?
+        } else {
+            self.client.query("SELECT snapshot_id,status,window_seconds,toUnixTimestamp64Milli(generated_at) generated_at_ms,toUnixTimestamp64Milli(completed_at) completed_at_ms,community_count,node_count,edge_count,truncated_nodes,truncated_edges,parameters_json,error FROM community_snapshots FINAL WHERE status='completed' ORDER BY generated_at DESC LIMIT 1").fetch_optional::<CommunitySnapshotRow>().await?
+        };
+        let Some(snapshot) = snapshot else {
+            return Ok(None);
+        };
+        let community=self.client.query("SELECT community_id,account_count,internal_event_count,internal_weight,total_weight,density,score,top_members FROM community_summaries WHERE snapshot_id=? AND community_id=? LIMIT 1").bind(&snapshot.snapshot_id).bind(community_id).fetch_optional::<CommunitySummaryRow>().await?;
+        let Some(community) = community else {
+            return Ok(None);
+        };
+        let member_total = self
+            .client
+            .query(
+                "SELECT count() FROM community_memberships WHERE snapshot_id=? AND community_id=?",
+            )
+            .bind(&snapshot.snapshot_id)
+            .bind(community_id)
+            .fetch_one::<u64>()
+            .await?;
+        let members=self.client.query("SELECT did,weighted_degree,internal_weight,external_weight FROM community_memberships WHERE snapshot_id=? AND community_id=? ORDER BY weighted_degree DESC,did LIMIT ? OFFSET ?").bind(&snapshot.snapshot_id).bind(community_id).bind(member_limit.min(200)).bind(member_offset).fetch_all::<CommunityMemberRow>().await?;
+        let member_edges=self.client.query("SELECT source_did,target_did,weight,event_count,types,toUnixTimestamp64Milli(last_seen) last_seen_ms FROM community_member_edges WHERE snapshot_id=? AND community_id=? AND weight>=? ORDER BY weight DESC LIMIT ?").bind(&snapshot.snapshot_id).bind(community_id).bind(min_edge).bind(edge_limit.min(500)+1).fetch_all::<CommunityMemberEdgeRow>().await?;
+        let truncated = member_edges.len() > edge_limit.min(500) as usize;
+        let cross_edges=self.client.query("SELECT source_community_id,target_community_id,weight,event_count,types,toUnixTimestamp64Milli(last_seen) last_seen_ms FROM community_edges WHERE snapshot_id=? AND (source_community_id=? OR target_community_id=?) AND weight>=? ORDER BY weight DESC LIMIT ?").bind(&snapshot.snapshot_id).bind(community_id).bind(community_id).bind(min_edge).bind(edge_limit.min(500)).fetch_all::<CommunityEdgeRow>().await?;
+        Ok(Some(CommunityDetail {
+            snapshot,
+            community,
+            members,
+            member_edges: member_edges
+                .into_iter()
+                .take(edge_limit.min(500) as usize)
+                .collect(),
+            cross_edges,
+            member_total,
+            member_has_more: member_offset + member_limit.min(200) < member_total,
+            edges_truncated: truncated,
+        }))
     }
     pub async fn backfill_events(
         &self,
@@ -1142,5 +1537,21 @@ mod tests {
         assert!(schema.contains("identity_history"));
         assert!(schema.contains("ENGINE = ReplacingMergeTree(observed_at)"));
         assert!(!schema.contains("TTL observed_at"));
+    }
+    #[test]
+    fn community_schema_retains_immutable_bounded_graph_snapshots() {
+        let schema = include_str!("../migrations/006_communities.sql");
+        for table in [
+            "community_snapshots",
+            "community_summaries",
+            "community_memberships",
+            "community_edges",
+            "community_member_edges",
+        ] {
+            assert!(schema.contains(table))
+        }
+        assert!(schema.contains("MergeTree"));
+        assert!(!schema.contains("TTL "));
+        assert!(schema.contains("snapshot_id"));
     }
 }

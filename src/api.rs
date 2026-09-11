@@ -67,6 +67,8 @@ pub fn router(s: AppState) -> Router {
         .route_service("/backfills", spa())
         .route_service("/backfills/{id}", spa())
         .route_service("/crawls/{id}", spa())
+        .route_service("/communities", spa())
+        .route_service("/communities/{id}", spa())
         .route_service("/identities", spa())
         .route_service("/identities/{id}", spa())
         .route_service("/accounts/{did}", spa())
@@ -90,6 +92,8 @@ pub fn router(s: AppState) -> Router {
         .route("/api/crawls/{id}/pause", post(crawl_pause))
         .route("/api/crawls/{id}/resume", post(crawl_resume))
         .route("/api/crawls/{id}/cancel", post(crawl_cancel))
+        .route("/api/communities", get(communities))
+        .route("/api/communities/{id}", get(community_detail))
         .route("/api/firehose", get(firehose))
         .route("/api/live", get(live))
         .route("/api/trending/urls", get(urls))
@@ -529,6 +533,84 @@ async fn crawl_cancel(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     crawl_action(s, id, "cancel").await
+}
+#[derive(Deserialize)]
+struct CommunityQuery {
+    window: Option<u64>,
+    min_size: Option<u64>,
+    sort: Option<String>,
+    order: Option<String>,
+    limit: Option<u64>,
+    offset: Option<u64>,
+    edge_limit: Option<u64>,
+    min_edge: Option<f64>,
+}
+async fn communities(
+    State(s): State<AppState>,
+    Query(q): Query<CommunityQuery>,
+) -> Result<Json<crate::storage::CommunityOverview>, (StatusCode, String)> {
+    let window = q.window.unwrap_or(86400);
+    if !matches!(window, 3600 | 86400 | 604800) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "window must be 3600, 86400, or 604800".into(),
+        ));
+    }
+    let min_size = q.min_size.unwrap_or(2).clamp(1, 10_000);
+    let sort = q.sort.as_deref().unwrap_or("score");
+    if !matches!(sort, "score" | "account_count" | "event_count" | "density") {
+        return Err((StatusCode::BAD_REQUEST, "invalid sort".into()));
+    }
+    let limit = q.limit.unwrap_or(25).clamp(1, 100);
+    let offset = q.offset.unwrap_or(0).min(1_000_000);
+    s.storage
+        .community_overview(
+            window,
+            min_size,
+            sort,
+            q.order.as_deref() != Some("asc"),
+            limit,
+            offset,
+            q.edge_limit.unwrap_or(200).clamp(1, 500),
+            q.min_edge.unwrap_or(0.0).max(0.0),
+        )
+        .await
+        .map_err(internal_error)?
+        .map(Json)
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            "no completed community snapshot".into(),
+        ))
+}
+#[derive(Deserialize)]
+struct CommunityDetailQuery {
+    snapshot_id: Option<String>,
+    member_limit: Option<u64>,
+    member_offset: Option<u64>,
+    edge_limit: Option<u64>,
+    min_edge: Option<f64>,
+}
+async fn community_detail(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<CommunityDetailQuery>,
+) -> Result<Json<crate::storage::CommunityDetail>, (StatusCode, String)> {
+    if id.len() > 128 || q.snapshot_id.as_ref().is_some_and(|v| v.len() > 128) {
+        return Err((StatusCode::BAD_REQUEST, "invalid community id".into()));
+    }
+    s.storage
+        .community_detail(
+            &id,
+            q.snapshot_id.as_deref(),
+            q.member_limit.unwrap_or(50).clamp(1, 200),
+            q.member_offset.unwrap_or(0).min(1_000_000),
+            q.edge_limit.unwrap_or(200).clamp(1, 500),
+            q.min_edge.unwrap_or(0.0).max(0.0),
+        )
+        .await
+        .map_err(internal_error)?
+        .map(Json)
+        .ok_or((StatusCode::NOT_FOUND, "community not found".into()))
 }
 #[derive(Deserialize)]
 struct ControlScope {
