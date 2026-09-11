@@ -221,38 +221,58 @@ fn upsert(db: &Connection, j: &IdentityJob) -> Result<()> {
 }
 fn import_json(root: &PathBuf, db: &mut Connection) -> Result<()> {
     let tx = db.transaction()?;
-    let already: i64 = tx.query_row("SELECT count(*) FROM identity_jobs", [], |r| r.get(0))?;
     let mut imported_paths = Vec::new();
-    if already == 0 {
-        let mut imported = 0;
-        for entry in fs::read_dir(root)? {
-            let path = entry?.path();
-            if path.extension().and_then(|v| v.to_str()) == Some("json")
-                && let Ok(bytes) = fs::read(&path)
-                && let Ok(j) = serde_json::from_slice::<IdentityJob>(&bytes)
-            {
+    let mut imported = 0;
+    let mut already_present = 0;
+    for entry in fs::read_dir(root)? {
+        let path = entry?.path();
+        if path.extension().and_then(|v| v.to_str()) == Some("json")
+            && let Ok(bytes) = fs::read(&path)
+            && let Ok(j) = serde_json::from_slice::<IdentityJob>(&bytes)
+        {
+            if get_did(&tx, &j.did)?.is_none() {
                 upsert(&tx, &j)?;
                 imported += 1;
-                imported_paths.push(path);
+            } else {
+                already_present += 1;
             }
+            anyhow::ensure!(
+                get_did(&tx, &j.did)?.is_some(),
+                "legacy identity job import verification failed"
+            );
+            imported_paths.push(path);
         }
-        tracing::info!(
-            imported,
-            "imported legacy identity queue jobs into SQLite; JSON retained"
-        );
     }
+    tracing::info!(
+        imported,
+        already_present,
+        "verified legacy identity queue jobs in SQLite"
+    );
     tx.commit().context("commit identity queue JSON import")?;
     if !imported_paths.is_empty() {
         let backup = root.join("legacy-json-migration-backup");
         fs::create_dir_all(&backup)?;
         for path in imported_paths {
-            let target = backup.join(
+            let mut target = backup.join(
                 path.file_name()
                     .context("legacy identity filename missing")?,
             );
-            if !target.exists() {
-                fs::rename(path, target)?
+            if target.exists() {
+                let name = path
+                    .file_name()
+                    .and_then(|v| v.to_str())
+                    .context("legacy identity filename is not UTF-8")?;
+                let mut suffix = 1_u32;
+                loop {
+                    let candidate = backup.join(format!("{name}.duplicate-{suffix}"));
+                    if !candidate.exists() {
+                        target = candidate;
+                        break;
+                    }
+                    suffix += 1;
+                }
             }
+            fs::rename(path, target)?
         }
     }
     Ok(())
@@ -370,6 +390,47 @@ mod tests {
             q.enqueue("did:plc:abc").unwrap().id
         );
         assert_eq!(q.summary().total, 1)
+    }
+    #[test]
+    fn finishes_partial_prior_migration_without_overwriting_newer_state() {
+        let d = tempdir().unwrap();
+        let q = IdentityQueue::open(d.path().into(), 100, Duration::seconds(1)).unwrap();
+        let current = q.enqueue("did:plc:current").unwrap();
+        drop(q);
+        let mut stale = current.clone();
+        stale.status = IdentityJobStatus::Resolved;
+        let mut missing = current;
+        missing.id = "id-missing".into();
+        missing.did = "did:plc:missing".into();
+        missing.status = IdentityJobStatus::Resolved;
+        fs::write(
+            d.path().join("id-current.json"),
+            serde_json::to_vec(&stale).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            d.path().join("id-missing.json"),
+            serde_json::to_vec(&missing).unwrap(),
+        )
+        .unwrap();
+        let q = IdentityQueue::open(d.path().into(), 100, Duration::seconds(1)).unwrap();
+        assert_eq!(
+            q.summary().queued,
+            1,
+            "existing SQLite state must win over stale JSON"
+        );
+        assert_eq!(
+            q.summary().resolved,
+            1,
+            "missing legacy job must be imported"
+        );
+        assert!(!d.path().join("id-current.json").exists());
+        assert!(!d.path().join("id-missing.json").exists());
+        assert!(
+            d.path()
+                .join("legacy-json-migration-backup/id-current.json")
+                .exists()
+        );
     }
     #[test]
     fn capacity_counts_only_active() {
