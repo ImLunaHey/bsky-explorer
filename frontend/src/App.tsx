@@ -95,8 +95,6 @@ const clock = (value: number) =>
   });
 const pct = (x?: number) =>
   x == null ? "—" : `${(x * (x <= 1 ? 100 : 1)).toFixed(1)}%`;
-const shortDid = (did: string) =>
-  did.length > 30 ? `${did.slice(0, 18)}…${did.slice(-7)}` : did;
 const isDid = (value?: string) => Boolean(value?.startsWith("did:"));
 
 function AccountIdentity({
@@ -127,14 +125,15 @@ function AccountIdentity({
       title={`${handle ? `@${handle} · ` : ""}${did}`}
       className="group min-w-0 text-left text-cyan hover:text-mint focus:outline-none focus-visible:ring-2 focus-visible:ring-mint/60"
     >
-      <span className="block truncate font-medium">
-        {handle ? `@${handle}` : shortDid(did)}
+      <span className="block break-all font-medium">
+        {handle ? `@${handle}` : did}
       </span>
-      {!compact && handle && (
-        <span className="block truncate font-mono text-[10px] text-dim group-hover:text-dim/80">
-          {shortDid(did)}
+      {handle && (
+        <span className={`block break-all font-mono text-dim group-hover:text-dim/80 ${compact?'text-[9px]':'text-[10px]'}`}>
+          {did}
         </span>
       )}
+      {!handle&&<span className="block text-[9px] text-dim">resolving…</span>}
     </button>
   );
 }
@@ -214,7 +213,7 @@ function useIdentityMap(values: string[]) {
   return new Map(
     queries
       .flatMap((q) => q.data || [])
-      .map((identity) => [identity.did, identity.handle]),
+      .map((identity) => [identity.did, identity.handle || undefined]),
   );
 }
 type GraphEdge = ClusterDetail["graph_edges"][number];
@@ -264,7 +263,7 @@ function InteractionGraph({
     return did
       ? handles.get(did)
         ? `@${handles.get(did)}`
-        : shortDid(did)
+        : did
       : value;
   };
   const activeEdges = hovered
@@ -367,10 +366,9 @@ function InteractionGraph({
                   stroke="#000"
                   strokeWidth="4"
                 >
-                  {label(node.id).length > 23
-                    ? `${label(node.id).slice(0, 21)}…`
-                    : label(node.id)}
+                  {label(node.id)}
                 </text>
+                {did&&handles.get(did)&&<text y={size+25} textAnchor="middle" fill="#7f746b" fontSize="5.5" fontFamily="ui-monospace, monospace">{did}</text>}
               </g>
             );
           })}
@@ -582,12 +580,8 @@ function ConversationList({
             className="min-w-0 rounded-xl border border-line bg-black p-4 text-left transition hover:border-orange-500/40"
           >
             <div className="flex items-center gap-2 text-xs">
-              <span className="min-w-0 flex-1 truncate font-medium text-orange-300">
-                {item.handle
-                  ? `@${item.handle}`
-                  : record
-                    ? shortDid(record.actor_did)
-                    : "Observed conversation"}
+              <span className="min-w-0 flex-1 break-all font-medium text-orange-300">
+                {item.handle ? <><span className="block">@{item.handle}</span>{record&&<span className="block break-all font-mono text-[9px] text-dim">{record.actor_did}</span>}</> : record ? <>{record.actor_did}<span className="ml-2 text-[9px] text-dim">resolving…</span></> : "Observed conversation"}
               </span>
               <span className="shrink-0 rounded-md bg-orange-500/10 px-2 py-1 font-mono text-orange-300">
                 {compact.format(item.count)} replies
@@ -927,12 +921,13 @@ function ClusterPage({
               <span className="uppercase text-mint">{x.kind}</span>
               <button
                 onClick={() => onAccount(x.actor_did)}
-                className="truncate font-medium text-cyan hover:text-mint"
+                className="break-all text-left font-medium text-cyan hover:text-mint"
               >
                 {handles.get(x.actor_did)
                   ? `@${handles.get(x.actor_did)}`
-                  : shortDid(x.actor_did)}
+                  : x.actor_did}
               </button>
+              {handles.get(x.actor_did)&&<span className="break-all font-mono text-[9px] text-dim">{x.actor_did}</span>}
               <span className="text-dim">
                 · {new Date(x.timestamp).toLocaleTimeString()}
               </span>
@@ -1640,11 +1635,11 @@ export default function App({ route }: { route: AppRoute }) {
                             className="min-w-0 text-xs text-cyan"
                             title={a.did}
                           >
-                            <b className="block truncate">
-                              {anomalyHandles.get(a.did) || shortDid(a.did)}
+                            <b className="block break-all">
+                              {anomalyHandles.get(a.did) || a.did}
                             </b>
                             {anomalyHandles.get(a.did) && (
-                              <span className="block truncate font-mono text-[10px] text-dim">
+                              <span className="block break-all font-mono text-[10px] text-dim">
                                 {a.did}
                               </span>
                             )}

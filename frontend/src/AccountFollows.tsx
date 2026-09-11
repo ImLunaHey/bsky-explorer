@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowDownUp, ChevronLeft, ChevronRight } from "lucide-react";
 import { api } from "./api";
-import { shortDid, useIdentityMap } from "./identities";
+import { useIdentityMap } from "./identities";
 
 export type FollowWindow = {
   seconds: number;
@@ -53,7 +53,9 @@ function FollowEventTable({
   const [descending, setDescending] = useState(true);
   const pageSize = 10;
   const sorted = [...events].sort((a, b) =>
-    descending ? b.timestamp_ms - a.timestamp_ms : a.timestamp_ms - b.timestamp_ms,
+    descending
+      ? b.timestamp_ms - a.timestamp_ms
+      : a.timestamp_ms - b.timestamp_ms,
   );
   const pages = Math.max(1, Math.ceil(sorted.length / pageSize));
   const safePage = Math.min(page, pages - 1);
@@ -67,13 +69,111 @@ function FollowEventTable({
       <div className="overflow-x-auto rounded-xl border border-line">
         <table className="w-full min-w-105 text-left text-xs">
           <thead className="border-b border-line text-dim">
-            <tr><th className="px-3 py-3">Account</th><th className="px-3">Change</th><th className="px-3"><button className="flex items-center gap-1" onClick={()=>setDescending(value=>!value)}>Observed <ArrowDownUp className="size-3"/></button></th></tr>
+            <tr>
+              <th className="px-3 py-3">Account</th>
+              <th className="px-3">Change</th>
+              <th className="px-3">
+                <button
+                  className="flex items-center gap-1"
+                  onClick={() => setDescending((value) => !value)}
+                >
+                  Observed <ArrowDownUp className="size-3" />
+                </button>
+              </th>
+            </tr>
           </thead>
-          <tbody>{visible.map(event=>{const other=event.direction==='outbound'?event.target_did:event.actor_did;const handle=handles.get(other);return <tr key={event.event_id} className="border-b border-line/60 last:border-0"><td className="px-3 py-3">{other?<button onClick={()=>onAccount(other)} title={other} className="block max-w-52 text-left text-orange-300 hover:text-orange-200"><b className="block truncate">{handle?`@${handle}`:shortDid(other)}</b>{handle&&<span className="block truncate font-mono text-[10px] text-dim">{shortDid(other)}</span>}</button>:<span className="italic text-dim">Target unavailable</span>}</td><td className={event.kind==='follow'?'px-3 text-mint':'px-3 text-amber-300'}>{event.kind==='follow'?(event.direction==='inbound'?'Followed this account':'Followed'):(event.direction==='inbound'?'Stopped following':'Unfollowed')}</td><td className="whitespace-nowrap px-3 text-dim">{new Date(event.timestamp_ms).toLocaleString()}</td></tr>})}</tbody>
+          <tbody>
+            {visible.map((event) => {
+              const other =
+                event.direction === "outbound"
+                  ? event.target_did
+                  : event.actor_did;
+              const handle = handles.get(other);
+              return (
+                <tr
+                  key={event.event_id}
+                  className="border-b border-line/60 last:border-0"
+                >
+                  <td className="px-3 py-3">
+                    {other ? (
+                      <button
+                        onClick={() => onAccount(other)}
+                        title={other}
+                        className="block max-w-72 text-left text-orange-300 hover:text-orange-200"
+                      >
+                        <b className="block break-all">
+                          {handle ? `@${handle}` : other}
+                        </b>
+                        {handle ? (
+                          <span className="block break-all font-mono text-[10px] text-dim">
+                            {other}
+                          </span>
+                        ) : (
+                          <span className="block text-[9px] text-dim">
+                            resolving…
+                          </span>
+                        )}
+                      </button>
+                    ) : (
+                      <span className="italic text-dim">
+                        Target unavailable
+                      </span>
+                    )}
+                  </td>
+                  <td
+                    className={
+                      event.kind === "follow"
+                        ? "px-3 text-mint"
+                        : "px-3 text-amber-300"
+                    }
+                  >
+                    {event.kind === "follow"
+                      ? event.direction === "inbound"
+                        ? "Followed this account"
+                        : "Followed"
+                      : event.direction === "inbound"
+                        ? "Stopped following"
+                        : "Unfollowed"}
+                  </td>
+                  <td className="whitespace-nowrap px-3 text-dim">
+                    {new Date(event.timestamp_ms).toLocaleString()}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
         </table>
-        {!visible.length&&<div className="grid min-h-24 place-items-center text-sm text-dim">No {title.toLowerCase()} retained.</div>}
+        {!visible.length && (
+          <div className="grid min-h-24 place-items-center text-sm text-dim">
+            No {title.toLowerCase()} retained.
+          </div>
+        )}
       </div>
-      {sorted.length>pageSize&&<div className="mt-3 flex items-center justify-between text-xs text-dim"><span>Page {safePage+1} of {pages}</span><div className="flex gap-2"><button disabled={!safePage} onClick={()=>setPage(safePage-1)} className="rounded border border-line p-1.5 disabled:opacity-30" aria-label={`Previous ${title} page`}><ChevronLeft className="size-4"/></button><button disabled={safePage+1>=pages} onClick={()=>setPage(safePage+1)} className="rounded border border-line p-1.5 disabled:opacity-30" aria-label={`Next ${title} page`}><ChevronRight className="size-4"/></button></div></div>}
+      {sorted.length > pageSize && (
+        <div className="mt-3 flex items-center justify-between text-xs text-dim">
+          <span>
+            Page {safePage + 1} of {pages}
+          </span>
+          <div className="flex gap-2">
+            <button
+              disabled={!safePage}
+              onClick={() => setPage(safePage - 1)}
+              className="rounded border border-line p-1.5 disabled:opacity-30"
+              aria-label={`Previous ${title} page`}
+            >
+              <ChevronLeft className="size-4" />
+            </button>
+            <button
+              disabled={safePage + 1 >= pages}
+              onClick={() => setPage(safePage + 1)}
+              className="rounded border border-line p-1.5 disabled:opacity-30"
+              aria-label={`Next ${title} page`}
+            >
+              <ChevronRight className="size-4" />
+            </button>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -91,7 +191,13 @@ export function AccountFollows({
       api<FollowAnalytics>(`/api/accounts/${encodeURIComponent(did)}/follows`),
     staleTime: 15_000,
   });
-  const handles=useIdentityMap((analytics.data?.recent_events||[]).map(event=>event.direction==='outbound'?event.target_did:event.actor_did).filter(Boolean));
+  const handles = useIdentityMap(
+    (analytics.data?.recent_events || [])
+      .map((event) =>
+        event.direction === "outbound" ? event.target_did : event.actor_did,
+      )
+      .filter(Boolean),
+  );
   if (analytics.isLoading)
     return (
       <div className="mt-8 flex min-h-28 items-center justify-center text-sm text-dim">
@@ -163,8 +269,18 @@ export function AccountFollows({
         {analytics.data.unresolved_note}
       </p>
       <div className="mt-8 grid gap-6 xl:grid-cols-2">
-        <FollowEventTable title="Following activity" events={events.filter(event=>event.direction==='outbound')} handles={handles} onAccount={onAccount}/>
-        <FollowEventTable title="Follower activity" events={events.filter(event=>event.direction==='inbound')} handles={handles} onAccount={onAccount}/>
+        <FollowEventTable
+          title="Following activity"
+          events={events.filter((event) => event.direction === "outbound")}
+          handles={handles}
+          onAccount={onAccount}
+        />
+        <FollowEventTable
+          title="Follower activity"
+          events={events.filter((event) => event.direction === "inbound")}
+          handles={handles}
+          onAccount={onAccount}
+        />
       </div>
     </>
   );

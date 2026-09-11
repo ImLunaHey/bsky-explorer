@@ -19,7 +19,7 @@ export type SystemStats = {
   clickhouse_error?:string
 }
 export type SystemSample = { timestamp:number;events_per_second:number;posts_per_second:number;interactions_per_second:number;process_resident_memory_bytes:number;container_memory_used_bytes?:number;clickhouse_rows?:number;clickhouse_compressed_bytes?:number;process_cpu_utilization_percent?:number;container_cpu_utilization_percent?:number;host_cpu_utilization_percent?:number }
-export type Identity = { did:string;handle?:string;observed_at:string;source:string }
+export type Identity = { did:string;handle?:string|null;observed_at:string;source:string }
 export type RecordItem = { at_uri:string;actor_did:string;timestamp_ms:number;kind:string;text:string;reply_parent:string;reply_root:string;quote_target:string;urls:string[];domains:string[];languages:string[] }
 export type RecordDetail = { record:RecordItem;interaction_counts:{likes:number;reposts:number;replies:number;quotes:number};recent_interactions:{event_id:string;actor_did:string;kind:string;timestamp_ms:number;at_uri:string;target:string}[];conversation:RecordItem[] }
 export type RecordMedia = { kind:'image'|'video';url:string;thumbnail_url?:string;alt:string;width?:number;height?:number }
@@ -34,6 +34,9 @@ export type SearchResult = {
   target:string|null;urls:string[];domains:string[];collection:string|null;operation:string|null;record_json:string|null
 }
 export type BackfillStatus = 'queued'|'resolving'|'running'|'retrying'|'completed'|'dead_letter'|'cancelled'
-export type BackfillJob = { id:string;query:string;did?:string|null;handle?:string|null;status:BackfillStatus;job_type:'repository'|'associations';depends_on_job_id:string|null;include_associations:boolean;created_at:string;updated_at:string;collection?:string|null;cursor?:string|null;records_written:number;retry_count:number;max_retries:number;last_error?:string|null;next_attempt_at?:string|null }
+export type BackfillJob = { id:string;query:string;did?:string|null;handle?:string|null;status:BackfillStatus;job_type:'repository'|'associations';depends_on_job_id:string|null;include_associations:boolean;scope?:string;crawl_depth?:number;max_depth?:number;created_at:string;updated_at:string;collection?:string|null;cursor?:string|null;records_written:number;retry_count:number;max_retries:number;last_error?:string|null;next_attempt_at?:string|null }
 export type SearchResponse = { query:string;type:SearchKind;offset:number;limit:number;has_more:boolean;results:SearchResult[];backfill_job?:BackfillJob|null }
 export type BackfillJobsResponse = {jobs:BackfillJob[];total?:number;offset?:number;limit?:number;has_more?:boolean}
+export type IdentityQueueStatus = 'queued'|'running'|'retrying'|'resolved'|'negative'|'dead_letter'
+export type IdentityQueueJob = {id:string;did:string;status:IdentityQueueStatus;created_at:string;updated_at:string;next_attempt_at?:string|null;attempts:number;max_attempts:number;last_error?:string|null}
+export type IdentityQueueResponse = {summary:{total:number;queued:number;running:number;retrying:number;resolved:number;negative:number;dead_letter:number};jobs:IdentityQueueJob[]}

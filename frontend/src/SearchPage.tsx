@@ -1,45 +1,426 @@
-import { useCallback, useEffect, useState } from 'react'
-import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, ArrowRight, Clock3, DatabaseZap, Search, UserRound } from 'lucide-react'
-import { api } from './api'
-import { useIdentityMap } from './identities'
-import type { BackfillJob, BackfillJobsResponse, SearchKind, SearchResponse, SearchResult } from './types'
+import { useCallback, useEffect, useState } from "react";
+import {
+  keepPreviousData,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { Link, useNavigate } from "@tanstack/react-router";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Clock3,
+  DatabaseZap,
+  Search,
+  UserRound,
+} from "lucide-react";
+import { api } from "./api";
+import { useIdentityMap } from "./identities";
+import type {
+  BackfillJob,
+  BackfillJobsResponse,
+  SearchKind,
+  SearchResponse,
+  SearchResult,
+} from "./types";
 
-const PAGE_SIZE=25
-const kinds: {value:SearchKind;label:string}[]=[{value:'all',label:'Everything'},{value:'account',label:'Accounts'},{value:'record',label:'Posts'},{value:'event',label:'Events'}]
-const shortDid=(did:string)=>did.length>36?`${did.slice(0,22)}…${did.slice(-8)}`:did
-
-function Result({item}:{item:SearchResult}) {
-  const identities=useIdentityMap(item.handle?[]:[item.did])
-  const handle=item.handle||identities.get(item.did)
-  const account=<Link to="/accounts/$did" params={{did:item.did}} title={`${handle?`@${handle} · `:''}${item.did}`} className="block min-w-0 text-orange-300 hover:text-orange-200"><span className="block truncate font-medium">{handle?`@${handle}`:shortDid(item.did)}</span>{handle&&item.result_type!=='account'&&<span className="block truncate font-mono text-[10px] text-dim">{shortDid(item.did)}</span>}</Link>
-  if(item.result_type==='account') return <article className="rounded-xl border border-line bg-panel p-5"><div className="flex items-start gap-3"><div className="grid size-10 shrink-0 place-items-center rounded-xl border border-orange-500/20 bg-orange-500/10"><UserRound className="size-5 text-orange-400"/></div><div className="min-w-0"><h2 className="font-medium">{account}</h2><p className="mt-1 break-all font-mono text-[11px] text-dim">{item.did}</p></div></div></article>
-  const canOpen=Boolean(item.at_uri?.includes('/app.bsky.feed.post/'))
-  return <article className="rounded-xl border border-line bg-panel p-5 transition hover:border-orange-500/30"><div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs"><span className="rounded-md bg-orange-500/10 px-2 py-1 uppercase tracking-wide text-orange-300">{item.event_type||item.operation||item.result_type}</span>{item.collection&&<span className="font-mono text-[10px] text-dim">{item.collection}</span>}{account}{item.timestamp_ms!=null&&<time className="text-dim">{new Date(item.timestamp_ms).toLocaleString()}</time>}</div>{item.text?<p className="mt-4 whitespace-pre-wrap break-words text-sm leading-6 text-white/90">{item.text}</p>:item.target&&<p className="mt-4 break-all font-mono text-xs text-dim">Target: {item.target}</p>}{item.record_json&&<details className="mt-4"><summary className="cursor-pointer text-xs text-orange-300">Show complete record data</summary><pre className="scrollbar mt-3 max-h-80 overflow-auto rounded-lg bg-black p-4 text-[11px] leading-5 text-white/70">{item.record_json}</pre></details>}<div className="mt-4 flex flex-wrap items-center gap-3">{canOpen&&<Link to="/records/$uri" params={{uri:item.at_uri!}} className="text-xs font-medium text-orange-300 hover:text-orange-200">View full record →</Link>}{item.urls.slice(0,3).map(url=><span key={url} title={url} className="max-w-80 truncate rounded bg-white/5 px-2 py-1 text-[10px] text-dim">{url}</span>)}</div></article>
+const PAGE_SIZE = 25;
+const kinds: { value: SearchKind; label: string }[] = [
+  { value: "all", label: "Everything" },
+  { value: "account", label: "Accounts" },
+  { value: "record", label: "Posts" },
+  { value: "event", label: "Events" },
+];
+function Result({ item }: { item: SearchResult }) {
+  const identities = useIdentityMap(item.handle ? [] : [item.did]);
+  const handle = item.handle || identities.get(item.did);
+  const account = (
+    <Link
+      to="/accounts/$did"
+      params={{ did: item.did }}
+      title={`${handle ? `@${handle} · ` : ""}${item.did}`}
+      className="block min-w-0 text-orange-300 hover:text-orange-200"
+    >
+      <span className="block break-all font-medium">
+        {handle ? `@${handle}` : item.did}
+      </span>
+      {handle ? (
+        <span className="block break-all font-mono text-[10px] text-dim">
+          {item.did}
+        </span>
+      ) : <span className="block text-[9px] text-dim">resolving…</span>}
+    </Link>
+  );
+  if (item.result_type === "account")
+    return (
+      <article className="rounded-xl border border-line bg-panel p-5">
+        <div className="flex items-start gap-3">
+          <div className="grid size-10 shrink-0 place-items-center rounded-xl border border-orange-500/20 bg-orange-500/10">
+            <UserRound className="size-5 text-orange-400" />
+          </div>
+          <div className="min-w-0">
+            <h2 className="font-medium">{account}</h2>
+            <p className="mt-1 break-all font-mono text-[11px] text-dim">
+              {item.did}
+            </p>
+          </div>
+        </div>
+      </article>
+    );
+  const canOpen = Boolean(item.at_uri?.includes("/app.bsky.feed.post/"));
+  return (
+    <article className="rounded-xl border border-line bg-panel p-5 transition hover:border-orange-500/30">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+        <span className="rounded-md bg-orange-500/10 px-2 py-1 uppercase tracking-wide text-orange-300">
+          {item.event_type || item.operation || item.result_type}
+        </span>
+        {item.collection && (
+          <span className="font-mono text-[10px] text-dim">
+            {item.collection}
+          </span>
+        )}
+        {account}
+        {item.timestamp_ms != null && (
+          <time className="text-dim">
+            {new Date(item.timestamp_ms).toLocaleString()}
+          </time>
+        )}
+      </div>
+      {item.text ? (
+        <p className="mt-4 whitespace-pre-wrap break-words text-sm leading-6 text-white/90">
+          {item.text}
+        </p>
+      ) : (
+        item.target && (
+          <p className="mt-4 break-all font-mono text-xs text-dim">
+            Target: {item.target}
+          </p>
+        )
+      )}
+      {item.record_json && (
+        <details className="mt-4">
+          <summary className="cursor-pointer text-xs text-orange-300">
+            Show complete record data
+          </summary>
+          <pre className="scrollbar mt-3 max-h-80 overflow-auto rounded-lg bg-black p-4 text-[11px] leading-5 text-white/70">
+            {item.record_json}
+          </pre>
+        </details>
+      )}
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        {canOpen && (
+          <Link
+            to="/records/$uri"
+            params={{ uri: item.at_uri! }}
+            className="text-xs font-medium text-orange-300 hover:text-orange-200"
+          >
+            View full record →
+          </Link>
+        )}
+        {item.urls.slice(0, 3).map((url) => (
+          <span
+            key={url}
+            title={url}
+            className="max-w-80 truncate rounded bg-white/5 px-2 py-1 text-[10px] text-dim"
+          >
+            {url}
+          </span>
+        ))}
+      </div>
+    </article>
+  );
 }
 
-const activeStatuses=new Set(['queued','resolving','running','retrying'])
-function jobTime(value?:string|null){if(!value)return null;const time=new Date(value);return Number.isNaN(time.valueOf())?null:time}
-
-function BackfillState({initial,onCompleted,compact=false}:{initial:BackfillJob;onCompleted?:()=>void;compact?:boolean}) {
-  const status=useQuery({queryKey:['backfill',initial.id],queryFn:()=>api<BackfillJob>(`/api/backfills/${encodeURIComponent(initial.id)}/status`),initialData:initial,enabled:!compact,refetchInterval:query=>activeStatuses.has(query.state.data?.status||'')?2_000:false,staleTime:1_000})
-  const job=compact?initial:status.data||initial
-  useEffect(()=>{if(!compact&&job.status==='completed')onCompleted?.()},[compact,job.status,onCompleted])
-  const retryAt=jobTime(job.next_attempt_at);const waiting=retryAt&&retryAt.valueOf()>Date.now()
-  const label=job.status.replace('_',' ')
-  if(compact)return <div className="flex min-w-0 items-center gap-3"><span className={`size-2 shrink-0 rounded-full ${activeStatuses.has(job.status)?'animate-pulse bg-orange-400':job.status==='completed'?'bg-emerald-400':'bg-red-400'}`}/><span className="min-w-0 flex-1 truncate">{job.handle?`@${job.handle}`:job.did||job.query}</span><span className="shrink-0 text-[10px] uppercase text-dim">{job.job_type}</span><span className="shrink-0 uppercase text-dim">{label}</span><span className="shrink-0 font-mono text-orange-300">{job.records_written} records</span></div>
-  const repository=job.job_type==='repository';const waitingForDependency=job.depends_on_job_id&&job.status==='queued'
-  return <section className="rounded-xl border border-orange-500/30 bg-orange-500/[.06] p-5"><div className="flex flex-wrap items-start gap-4"><div className="grid size-10 place-items-center rounded-xl bg-orange-500/10"><DatabaseZap className={`size-5 text-orange-400 ${activeStatuses.has(job.status)?'animate-pulse':''}`}/></div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h2 className="font-medium">{repository?'Fetching public account records':'Fetching public account associations'}</h2><span className="rounded-md border border-orange-500/20 px-2 py-0.5 text-[10px] uppercase tracking-wide text-orange-300">{label}</span></div>{(job.handle||job.did)&&<div className="mt-2">{job.did?<Link to="/accounts/$did" params={{did:job.did}} className="text-sm text-orange-300 hover:text-orange-200">{job.handle?`@${job.handle}`:job.did} →</Link>:<span className="text-sm text-orange-300">@{job.handle}</span>}</div>}<p className="mt-3 text-xs leading-5 text-dim">{waitingForDependency?'Waiting for the account repository fetch to finish. ':''}This job runs durably in the background. You can leave this page; collected public data remains available to later searches.</p><div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-xs"><span><b className="font-mono text-white">{job.records_written}</b> records written</span>{job.retry_count>0&&<span>{job.retry_count} retries</span>}{waiting&&<span className="inline-flex items-center gap-1 text-orange-200"><Clock3 className="size-3"/>Rate limited · resumes {retryAt.toLocaleTimeString()}</span>}</div>{job.last_error&&<p className="mt-3 rounded-lg bg-red-500/10 p-3 text-xs text-red-200">{job.last_error}</p>}</div></div></section>
+const activeStatuses = new Set(["queued", "resolving", "running", "retrying"]);
+function jobTime(value?: string | null) {
+  if (!value) return null;
+  const time = new Date(value);
+  return Number.isNaN(time.valueOf()) ? null : time;
 }
 
-export function SearchPage({initialQuery,initialType,initialOffset}:{initialQuery:string;initialType:SearchKind;initialOffset:number}) {
-  const navigate=useNavigate(); const queryClient=useQueryClient(); const [input,setInput]=useState(initialQuery)
-  useEffect(()=>setInput(initialQuery),[initialQuery])
-  const query=initialQuery.trim(); const offset=Math.max(0,initialOffset)
-  const results=useQuery({queryKey:['search',query,initialType,offset],queryFn:()=>api<SearchResponse>(`/api/search?q=${encodeURIComponent(query)}&type=${initialType}&limit=${PAGE_SIZE}&offset=${offset}`),enabled:query.length>0,placeholderData:keepPreviousData,staleTime:30_000})
-  const recentJobs=useQuery({queryKey:['backfills','recent'],queryFn:()=>api<BackfillJobsResponse>('/api/backfills?limit=10'),staleTime:10_000,refetchInterval:query=>query.state.data?.jobs.some(job=>activeStatuses.has(job.status))?5_000:false})
-  const refreshSearch=useCallback(()=>{void queryClient.invalidateQueries({queryKey:['search',query,initialType,offset]})},[initialType,offset,query,queryClient])
-  const go=(next:{q?:string;type?:SearchKind;offset?:number})=>navigate({to:'/search',search:{q:next.q??query,type:next.type??initialType,offset:next.offset??0}})
-  return <section className="mx-auto max-w-5xl"><div className="mb-7"><p className="eyebrow">Retained public data</p><h1 className="mt-2 text-2xl font-semibold">Search the observatory</h1><p className="mt-2 text-sm text-dim">Find accounts, posts, and interactions collected since this observatory started.</p></div><form onSubmit={event=>{event.preventDefault();go({q:input.trim(),offset:0})}} className="flex gap-2"><label className="relative min-w-0 flex-1"><Search className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-dim"/><input autoFocus value={input} onChange={event=>setInput(event.target.value)} placeholder="Search handles, DIDs, post text, URLs, or AT URIs…" className="h-12 w-full rounded-xl border border-line bg-panel pl-11 pr-4 text-sm outline-none focus:border-orange-500/60"/></label><button className="rounded-xl bg-orange-500 px-5 text-sm font-semibold text-black hover:bg-orange-400">Search</button></form><div className="mt-3 flex flex-wrap gap-2">{kinds.map(kind=><button key={kind.value} onClick={()=>go({type:kind.value,offset:0})} className={`rounded-lg border px-3 py-1.5 text-xs ${initialType===kind.value?'border-orange-500 bg-orange-500/15 text-orange-300':'border-line text-dim hover:text-white'}`}>{kind.label}</button>)}</div><div className={`mt-7 space-y-3 transition-opacity ${results.isPlaceholderData?'opacity-50':''}`}>{!query&&<div className="panel flex min-h-56 items-center justify-center text-sm text-dim">Enter a search above to explore retained data.</div>}{results.isLoading&&<div className="panel flex min-h-56 items-center justify-center text-sm text-dim">Searching…</div>}{results.isError&&<div className="rounded-xl border border-red-500/30 bg-red-500/5 p-5 text-sm text-red-200">Search is temporarily unavailable.</div>}{results.data?.backfill_job&&<BackfillState initial={results.data.backfill_job} onCompleted={refreshSearch}/>} {results.data?.results.map((item,index)=><Result key={`${item.result_type}:${item.did}:${item.at_uri||item.event_id||index}`} item={item}/>)}{results.data&&!results.data.results.length&&!results.data.backfill_job&&<div className="panel flex min-h-56 items-center justify-center text-sm text-dim">No retained results matched this search.</div>}</div>{results.data&&results.data.results.length>0&&<div className="mt-5 flex items-center justify-between text-xs text-dim"><span>Showing {offset+1}–{offset+results.data.results.length}</span><div className="flex gap-2"><button disabled={offset===0||results.isPlaceholderData} onClick={()=>go({offset:Math.max(0,offset-PAGE_SIZE)})} className="inline-flex items-center gap-1 rounded-lg border border-line px-3 py-2 text-white disabled:opacity-30"><ArrowLeft className="size-3.5"/> Previous</button><button disabled={!results.data.has_more||results.isPlaceholderData} onClick={()=>go({offset:offset+PAGE_SIZE})} className="inline-flex items-center gap-1 rounded-lg border border-line px-3 py-2 text-white disabled:opacity-30">Next <ArrowRight className="size-3.5"/></button></div></div>}{recentJobs.data?.jobs.length?<details className="panel mt-10 p-5"><summary className="cursor-pointer text-sm font-medium">Recent repository fetches <span className="ml-2 text-xs font-normal text-dim">{recentJobs.data.jobs.length}</span></summary><div className="mt-4 space-y-3 text-xs">{recentJobs.data.jobs.map(job=><div key={job.id} className="rounded-lg border border-line px-3 py-3"><BackfillState initial={job} compact/></div>)}</div></details>:null}</section>
+function BackfillState({
+  initial,
+  onCompleted,
+  compact = false,
+}: {
+  initial: BackfillJob;
+  onCompleted?: () => void;
+  compact?: boolean;
+}) {
+  const status = useQuery({
+    queryKey: ["backfill", initial.id],
+    queryFn: () =>
+      api<BackfillJob>(
+        `/api/backfills/${encodeURIComponent(initial.id)}/status`,
+      ),
+    initialData: initial,
+    enabled: !compact,
+    refetchInterval: (query) =>
+      activeStatuses.has(query.state.data?.status || "") ? 2_000 : false,
+    staleTime: 1_000,
+  });
+  const job = compact ? initial : status.data || initial;
+  useEffect(() => {
+    if (!compact && job.status === "completed") onCompleted?.();
+  }, [compact, job.status, onCompleted]);
+  const retryAt = jobTime(job.next_attempt_at);
+  const waiting = retryAt && retryAt.valueOf() > Date.now();
+  const label = job.status.replace("_", " ");
+  if (compact)
+    return (
+      <div className="flex min-w-0 items-center gap-3">
+        <span
+          className={`size-2 shrink-0 rounded-full ${activeStatuses.has(job.status) ? "animate-pulse bg-orange-400" : job.status === "completed" ? "bg-emerald-400" : "bg-red-400"}`}
+        />
+        <span className="min-w-0 flex-1 break-all">
+          {job.handle ? <><span className="block">@{job.handle}</span>{job.did&&<span className="block font-mono text-[9px] text-dim">{job.did}</span>}</> : job.did || job.query}
+        </span>
+        <span className="shrink-0 text-[10px] uppercase text-dim">
+          {job.job_type}
+        </span>
+        <span className="shrink-0 uppercase text-dim">{label}</span>
+        <span className="shrink-0 font-mono text-orange-300">
+          {job.records_written} records
+        </span>
+      </div>
+    );
+  const repository = job.job_type === "repository";
+  const waitingForDependency = job.depends_on_job_id && job.status === "queued";
+  return (
+    <section className="rounded-xl border border-orange-500/30 bg-orange-500/[.06] p-5">
+      <div className="flex flex-wrap items-start gap-4">
+        <div className="grid size-10 place-items-center rounded-xl bg-orange-500/10">
+          <DatabaseZap
+            className={`size-5 text-orange-400 ${activeStatuses.has(job.status) ? "animate-pulse" : ""}`}
+          />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="font-medium">
+              {repository
+                ? "Fetching public account records"
+                : "Fetching public account associations"}
+            </h2>
+            <span className="rounded-md border border-orange-500/20 px-2 py-0.5 text-[10px] uppercase tracking-wide text-orange-300">
+              {label}
+            </span>
+          </div>
+          {(job.handle || job.did) && (
+            <div className="mt-2">
+              {job.did ? (
+                <Link
+                  to="/accounts/$did"
+                  params={{ did: job.did }}
+                  className="text-sm text-orange-300 hover:text-orange-200"
+                >
+                  {job.handle ? <><span className="block">@{job.handle}</span><span className="block break-all font-mono text-[9px] text-dim">{job.did}</span></> : <>{job.did} <span className="text-[9px] text-dim">resolving…</span></>} →
+                </Link>
+              ) : (
+                <span className="text-sm text-orange-300">@{job.handle}</span>
+              )}
+            </div>
+          )}
+          <p className="mt-3 text-xs leading-5 text-dim">
+            {waitingForDependency
+              ? "Waiting for the account repository fetch to finish. "
+              : ""}
+            This job runs durably in the background. You can leave this page;
+            collected public data remains available to later searches.
+          </p>
+          <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-xs">
+            <span>
+              <b className="font-mono text-white">{job.records_written}</b>{" "}
+              records written
+            </span>
+            {job.retry_count > 0 && <span>{job.retry_count} retries</span>}
+            {waiting && (
+              <span className="inline-flex items-center gap-1 text-orange-200">
+                <Clock3 className="size-3" />
+                Rate limited · resumes {retryAt.toLocaleTimeString()}
+              </span>
+            )}
+          </div>
+          {job.last_error && (
+            <p className="mt-3 rounded-lg bg-red-500/10 p-3 text-xs text-red-200">
+              {job.last_error}
+            </p>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export function SearchPage({
+  initialQuery,
+  initialType,
+  initialOffset,
+}: {
+  initialQuery: string;
+  initialType: SearchKind;
+  initialOffset: number;
+}) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [input, setInput] = useState(initialQuery);
+  useEffect(() => setInput(initialQuery), [initialQuery]);
+  const query = initialQuery.trim();
+  const offset = Math.max(0, initialOffset);
+  const results = useQuery({
+    queryKey: ["search", query, initialType, offset],
+    queryFn: () =>
+      api<SearchResponse>(
+        `/api/search?q=${encodeURIComponent(query)}&type=${initialType}&limit=${PAGE_SIZE}&offset=${offset}`,
+      ),
+    enabled: query.length > 0,
+    placeholderData: keepPreviousData,
+    staleTime: 30_000,
+  });
+  const recentJobs = useQuery({
+    queryKey: ["backfills", "recent"],
+    queryFn: () => api<BackfillJobsResponse>("/api/backfills?limit=10"),
+    staleTime: 10_000,
+    refetchInterval: (query) =>
+      query.state.data?.jobs.some((job) => activeStatuses.has(job.status))
+        ? 5_000
+        : false,
+  });
+  const refreshSearch = useCallback(() => {
+    void queryClient.invalidateQueries({
+      queryKey: ["search", query, initialType, offset],
+    });
+  }, [initialType, offset, query, queryClient]);
+  const go = (next: { q?: string; type?: SearchKind; offset?: number }) =>
+    navigate({
+      to: "/search",
+      search: {
+        q: next.q ?? query,
+        type: next.type ?? initialType,
+        offset: next.offset ?? 0,
+      },
+    });
+  return (
+    <section className="mx-auto max-w-5xl">
+      <div className="mb-7">
+        <p className="eyebrow">Retained public data</p>
+        <h1 className="mt-2 text-2xl font-semibold">Search the observatory</h1>
+        <p className="mt-2 text-sm text-dim">
+          Find accounts, posts, and interactions collected since this
+          observatory started.
+        </p>
+      </div>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          go({ q: input.trim(), offset: 0 });
+        }}
+        className="flex gap-2"
+      >
+        <label className="relative min-w-0 flex-1">
+          <Search className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-dim" />
+          <input
+            autoFocus
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            placeholder="Search handles, DIDs, post text, URLs, or AT URIs…"
+            className="h-12 w-full rounded-xl border border-line bg-panel pl-11 pr-4 text-sm outline-none focus:border-orange-500/60"
+          />
+        </label>
+        <button className="rounded-xl bg-orange-500 px-5 text-sm font-semibold text-black hover:bg-orange-400">
+          Search
+        </button>
+      </form>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {kinds.map((kind) => (
+          <button
+            key={kind.value}
+            onClick={() => go({ type: kind.value, offset: 0 })}
+            className={`rounded-lg border px-3 py-1.5 text-xs ${initialType === kind.value ? "border-orange-500 bg-orange-500/15 text-orange-300" : "border-line text-dim hover:text-white"}`}
+          >
+            {kind.label}
+          </button>
+        ))}
+      </div>
+      <div
+        className={`mt-7 space-y-3 transition-opacity ${results.isPlaceholderData ? "opacity-50" : ""}`}
+      >
+        {!query && (
+          <div className="panel flex min-h-56 items-center justify-center text-sm text-dim">
+            Enter a search above to explore retained data.
+          </div>
+        )}
+        {results.isLoading && (
+          <div className="panel flex min-h-56 items-center justify-center text-sm text-dim">
+            Searching…
+          </div>
+        )}
+        {results.isError && (
+          <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-5 text-sm text-red-200">
+            Search is temporarily unavailable.
+          </div>
+        )}
+        {results.data?.backfill_job && (
+          <BackfillState
+            initial={results.data.backfill_job}
+            onCompleted={refreshSearch}
+          />
+        )}{" "}
+        {results.data?.results.map((item, index) => (
+          <Result
+            key={`${item.result_type}:${item.did}:${item.at_uri || item.event_id || index}`}
+            item={item}
+          />
+        ))}
+        {results.data &&
+          !results.data.results.length &&
+          !results.data.backfill_job && (
+            <div className="panel flex min-h-56 items-center justify-center text-sm text-dim">
+              No retained results matched this search.
+            </div>
+          )}
+      </div>
+      {results.data && results.data.results.length > 0 && (
+        <div className="mt-5 flex items-center justify-between text-xs text-dim">
+          <span>
+            Showing {offset + 1}–{offset + results.data.results.length}
+          </span>
+          <div className="flex gap-2">
+            <button
+              disabled={offset === 0 || results.isPlaceholderData}
+              onClick={() => go({ offset: Math.max(0, offset - PAGE_SIZE) })}
+              className="inline-flex items-center gap-1 rounded-lg border border-line px-3 py-2 text-white disabled:opacity-30"
+            >
+              <ArrowLeft className="size-3.5" /> Previous
+            </button>
+            <button
+              disabled={!results.data.has_more || results.isPlaceholderData}
+              onClick={() => go({ offset: offset + PAGE_SIZE })}
+              className="inline-flex items-center gap-1 rounded-lg border border-line px-3 py-2 text-white disabled:opacity-30"
+            >
+              Next <ArrowRight className="size-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+      {recentJobs.data?.jobs.length ? (
+        <details className="panel mt-10 p-5">
+          <summary className="cursor-pointer text-sm font-medium">
+            Recent repository fetches{" "}
+            <span className="ml-2 text-xs font-normal text-dim">
+              {recentJobs.data.jobs.length}
+            </span>
+          </summary>
+          <div className="mt-4 space-y-3 text-xs">
+            {recentJobs.data.jobs.map((job) => (
+              <div
+                key={job.id}
+                className="rounded-lg border border-line px-3 py-3"
+              >
+                <BackfillState initial={job} compact />
+              </div>
+            ))}
+          </div>
+        </details>
+      ) : null}
+    </section>
+  );
 }

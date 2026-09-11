@@ -1,62 +1,691 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { createColumnHelper, flexRender, getCoreRowModel, getFilteredRowModel, getPaginationRowModel, getSortedRowModel, type SortingState, useReactTable } from '@tanstack/react-table'
-import { Chart } from '@tanstack/charts/react'
-import { defineChart, lineY } from '@tanstack/charts'
-import { scaleLinear } from '@tanstack/charts/scales/linear'
-import { tooltip } from '@tanstack/charts/tooltip'
-import { ArrowDownUp, Check, Copy, ExternalLink, UserRound } from 'lucide-react'
-import { useNavigate } from '@tanstack/react-router'
-import { api } from './api'
-import { AccountFollows } from './AccountFollows'
-import { AccountLexicons } from './AccountLexicons'
-import type { AccountDetail, AccountEvent, AccountProfile, Identity } from './types'
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  createColumnHelper,
+  flexRender,
+  getCoreRowModel,
+  getFilteredRowModel,
+  getPaginationRowModel,
+  getSortedRowModel,
+  type SortingState,
+  useReactTable,
+} from "@tanstack/react-table";
+import { Chart } from "@tanstack/charts/react";
+import { defineChart, lineY } from "@tanstack/charts";
+import { scaleLinear } from "@tanstack/charts/scales/linear";
+import { tooltip } from "@tanstack/charts/tooltip";
+import {
+  ArrowDownUp,
+  Check,
+  Copy,
+  ExternalLink,
+  UserRound,
+} from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
+import { api } from "./api";
+import { AccountFollows } from "./AccountFollows";
+import { AccountLexicons } from "./AccountLexicons";
+import type {
+  AccountDetail,
+  AccountEvent,
+  AccountProfile,
+  BackfillJob,
+  BackfillJobsResponse,
+  Identity,
+} from "./types";
 
-type AccountAnalytics={activity:{timestamp_ms:number;events:number;posts:number;interactions:number}[];event_kinds:{kind:string;count:number}[]}
-const number=new Intl.NumberFormat(undefined,{maximumFractionDigits:2})
-const compact=new Intl.NumberFormat(undefined,{notation:'compact',maximumFractionDigits:1})
-const short=(did:string)=>did.length>30?`${did.slice(0,18)}…${did.slice(-7)}`:did
-const clock=(ms:number)=>new Date(ms).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})
-const eventHelper=createColumnHelper<AccountEvent>()
+type AccountAnalytics = {
+  activity: {
+    timestamp_ms: number;
+    events: number;
+    posts: number;
+    interactions: number;
+  }[];
+  event_kinds: { kind: string; count: number }[];
+};
+const number = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
+const compact = new Intl.NumberFormat(undefined, {
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+const clock = (ms: number) =>
+  new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const eventHelper = createColumnHelper<AccountEvent>();
 
-function ActivityChart({data}:{data:AccountAnalytics['activity']}) {
-  const definition=useMemo(()=>defineChart({marks:[lineY(data,{id:'All events',x:'timestamp_ms',y:'events',stroke:'#ff8a1f',points:true}),lineY(data,{id:'Posts',x:'timestamp_ms',y:'posts',stroke:'#ffd0a3',points:true}),lineY(data,{id:'Interactions',x:'timestamp_ms',y:'interactions',stroke:'#ffb15c',points:true})],scales:{x:{scale:scaleLinear,axis:{label:'Observed time',ticks:{format:(value:number)=>clock(value)}}},y:{scale:scaleLinear,axis:{label:'Events / hour',ticks:{format:(value:number)=>compact.format(value)}}}},focus:'group-x',maxFocusDistance:Number.POSITIVE_INFINITY,tooltip:{use:tooltip,items:[{channel:'x',label:'Hour',text:item=>new Date(Number(item.xValue)).toLocaleString()},{channel:'y',label:'Events',text:item=>number.format(Number(item.yValue))}]}}),[data])
-  return data.length?<Chart definition={definition} height={190} ariaLabel="Account events, posts, and interactions per hour"/>:<div className="grid min-h-40 place-items-center text-sm text-dim">No activity observed in the last 24 hours.</div>
+function ActivityChart({ data }: { data: AccountAnalytics["activity"] }) {
+  const definition = useMemo(
+    () =>
+      defineChart({
+        marks: [
+          lineY(data, {
+            id: "All events",
+            x: "timestamp_ms",
+            y: "events",
+            stroke: "#ff8a1f",
+            points: true,
+          }),
+          lineY(data, {
+            id: "Posts",
+            x: "timestamp_ms",
+            y: "posts",
+            stroke: "#ffd0a3",
+            points: true,
+          }),
+          lineY(data, {
+            id: "Interactions",
+            x: "timestamp_ms",
+            y: "interactions",
+            stroke: "#ffb15c",
+            points: true,
+          }),
+        ],
+        scales: {
+          x: {
+            scale: scaleLinear,
+            axis: {
+              label: "Observed time",
+              ticks: { format: (value: number) => clock(value) },
+            },
+          },
+          y: {
+            scale: scaleLinear,
+            axis: {
+              label: "Events / hour",
+              ticks: { format: (value: number) => compact.format(value) },
+            },
+          },
+        },
+        focus: "group-x",
+        maxFocusDistance: Number.POSITIVE_INFINITY,
+        tooltip: {
+          use: tooltip,
+          items: [
+            {
+              channel: "x",
+              label: "Hour",
+              text: (item) => new Date(Number(item.xValue)).toLocaleString(),
+            },
+            {
+              channel: "y",
+              label: "Events",
+              text: (item) => number.format(Number(item.yValue)),
+            },
+          ],
+        },
+      }),
+    [data],
+  );
+  return data.length ? (
+    <Chart
+      definition={definition}
+      height={190}
+      ariaLabel="Account events, posts, and interactions per hour"
+    />
+  ) : (
+    <div className="grid min-h-40 place-items-center text-sm text-dim">
+      No activity observed in the last 24 hours.
+    </div>
+  );
 }
 
-export function AccountPage({did}:{did:string}) {
-  const navigate=useNavigate(),[copied,setCopied]=useState(false),[avatarFailed,setAvatarFailed]=useState(false),[sorting,setSorting]=useState<SortingState>([{id:'time',desc:true}]),[kind,setKind]=useState('all'),[search,setSearch]=useState('')
-  useEffect(()=>setAvatarFailed(false),[did])
-  const account=useQuery({queryKey:['account',did],queryFn:()=>api<AccountDetail>(`/api/accounts/${encodeURIComponent(did)}`),staleTime:30_000})
-  const profile=useQuery({queryKey:['account-profile',did],queryFn:()=>api<AccountProfile>(`/api/accounts/${encodeURIComponent(did)}/profile`),staleTime:300_000,retry:1})
-  const events=useQuery({queryKey:['account-events',did],queryFn:()=>api<AccountEvent[]>(`/api/accounts/${encodeURIComponent(did)}/events`),staleTime:15_000})
-  const analytics=useQuery({queryKey:['account-analytics',did],queryFn:()=>api<AccountAnalytics>(`/api/accounts/${encodeURIComponent(did)}/analytics`),staleTime:15_000})
+export function AccountPage({ did }: { did: string }) {
+  const navigate = useNavigate(),
+    queryClient = useQueryClient(),
+    [copied, setCopied] = useState(false),
+    [avatarFailed, setAvatarFailed] = useState(false),
+    [sorting, setSorting] = useState<SortingState>([
+      { id: "time", desc: true },
+    ]),
+    [kind, setKind] = useState("all"),
+    [search, setSearch] = useState("");
+  useEffect(() => setAvatarFailed(false), [did]);
+  const account = useQuery({
+    queryKey: ["account", did],
+    queryFn: () =>
+      api<AccountDetail>(`/api/accounts/${encodeURIComponent(did)}`),
+    staleTime: 30_000,
+  });
+  const profile = useQuery({
+    queryKey: ["account-profile", did],
+    queryFn: () =>
+      api<AccountProfile>(`/api/accounts/${encodeURIComponent(did)}/profile`),
+    staleTime: 300_000,
+    retry: 1,
+  });
+  const events = useQuery({
+    queryKey: ["account-events", did],
+    queryFn: () =>
+      api<AccountEvent[]>(`/api/accounts/${encodeURIComponent(did)}/events`),
+    staleTime: 15_000,
+  });
+  const analytics = useQuery({
+    queryKey: ["account-analytics", did],
+    queryFn: () =>
+      api<AccountAnalytics>(
+        `/api/accounts/${encodeURIComponent(did)}/analytics`,
+      ),
+    staleTime: 15_000,
+  });
+  const backfills = useQuery({
+    queryKey: ["account-backfills", did],
+    queryFn: () =>
+      api<BackfillJobsResponse>("/api/backfills?limit=100&offset=0"),
+    select: (data) => ({
+      ...data,
+      jobs: data.jobs.filter((job) => job.did === did),
+    }),
+    staleTime: 3_000,
+    refetchInterval: (query) =>
+      query.state.data?.jobs.some((job) =>
+        ["queued", "resolving", "running", "retrying"].includes(job.status),
+      )
+        ? 3_000
+        : false,
+  });
+  const enqueue = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/backfills", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: did,
+          did,
+          job_type: "repository",
+          include_associations: true,
+        }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json() as Promise<BackfillJob>;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["account-backfills", did],
+      });
+    },
+  });
   // Resolve the primary account publicly. Resolving every event target here
   // would serialize external profile requests and make a cold page very slow.
-  const identities=useQuery({queryKey:['identities',did],queryFn:()=>api<Identity[]>(`/api/identities?dids=${encodeURIComponent(did)}`),staleTime:300_000})
-  const handles=useMemo(()=>new Map((identities.data||[]).map(identity=>[identity.did,identity.handle])),[identities.data]),identity=profile.data?.handle||handles.get(did)||account.data?.current_identity.handle
-  const filtered=(events.data||[]).filter(event=>(kind==='all'||event.kind===kind)&&(!search||`${event.text} ${event.target} ${event.kind}`.toLowerCase().includes(search.toLowerCase())))
-  const columns=useMemo(()=>[
-    eventHelper.accessor('time_us',{id:'time',header:'Time',cell:cell=><time className="whitespace-nowrap text-dim">{new Date(cell.getValue()/1000).toLocaleString()}</time>}),
-    eventHelper.accessor('kind',{header:'Kind',cell:cell=><span className="uppercase text-mint">{cell.getValue()}</span>}),
-    eventHelper.accessor('text',{header:'Content / target',cell:cell=>{const row=cell.row.original,target=row.target,targetDid=target.startsWith('did:')?target:target.startsWith('at://')?target.slice(5).split('/')[0]:'';return <span className="block max-w-xl truncate" title={cell.getValue()||target}>{cell.getValue()||handles.get(targetDid)||target||'—'}</span>}}),
-  ],[handles])
-  const table=useReactTable({data:filtered,columns,state:{sorting},onSortingChange:setSorting,initialState:{pagination:{pageSize:10}},getCoreRowModel:getCoreRowModel(),getSortedRowModel:getSortedRowModel(),getFilteredRowModel:getFilteredRowModel(),getPaginationRowModel:getPaginationRowModel()})
-  const stored=account.data?.stored,activity=account.data?.activity,kinds=analytics.data?.event_kinds||[],maxKind=Math.max(...kinds.map(item=>item.count),1)
-  const copy=async()=>{await navigator.clipboard.writeText(did);setCopied(true);setTimeout(()=>setCopied(false),1500)}
-  if(account.isLoading)return <div className="grid min-h-56 place-items-center text-sm text-dim">Loading account activity…</div>
-  return <section className="panel mx-auto max-w-6xl p-6"><p className="eyebrow">Account activity</p><div className="mt-5 flex items-start gap-4">{profile.data?.avatar_url&&!avatarFailed?<img src={profile.data.avatar_url} alt="" onError={()=>setAvatarFailed(true)} referrerPolicy="no-referrer" className="size-16 shrink-0 rounded-2xl border border-orange-500/20 bg-black object-cover"/>:<div className="grid size-16 shrink-0 place-items-center rounded-2xl border border-mint/20 bg-mint/10"><UserRound className="size-7 text-mint"/></div>}<div className="min-w-0 flex-1">{profile.data?.display_name&&<h1 className="truncate text-2xl font-semibold text-white">{profile.data.display_name}</h1>}<h2 className={`truncate font-semibold text-cyan ${profile.data?.display_name?'mt-0.5 text-sm':'text-xl'}`}>{identity?`@${identity}`:short(did)}</h2><p className="mt-1 break-all font-mono text-[11px] text-dim">{did}</p>{profile.data?.description&&<p className="mt-4 max-w-3xl whitespace-pre-wrap text-sm leading-6 text-white/80">{profile.data.description}</p>}<div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-dim">{profile.data?.followers_count!=null&&<span><b className="text-white">{compact.format(profile.data.followers_count)}</b> followers</span>}{profile.data?.follows_count!=null&&<span><b className="text-white">{compact.format(profile.data.follows_count)}</b> following</span>}{profile.data?.posts_count!=null&&<span><b className="text-white">{compact.format(profile.data.posts_count)}</b> posts</span>}{profile.data&&<span title={`Fetched ${new Date(profile.data.observed_at).toLocaleString()}`}>Profile observed {new Date(profile.data.indexed_at||profile.data.observed_at).toLocaleString()}</span>}</div>{profile.data?.labels.length?<div className="mt-2 flex flex-wrap gap-1">{profile.data.labels.map(label=><span key={label} className="rounded border border-orange-500/20 px-2 py-0.5 text-[10px] text-orange-300">{label}</span>)}</div>:null}</div></div>
-    <div className="mt-5 flex flex-wrap gap-2"><button onClick={copy} className="flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-xs">{copied?<Check className="size-3.5 text-mint"/>:<Copy className="size-3.5"/>}{copied?'Copied':'Copy DID'}</button><a href={`https://bsky.app/profile/${encodeURIComponent(identity||did)}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-xs">Open on Bluesky <ExternalLink className="size-3.5"/></a></div>
-    <div className="mt-8 grid grid-cols-2 gap-3 md:grid-cols-4"><Stat label="Retained events" value={stored?.event_count}/><Stat label="Posts" value={stored?.post_count}/><Stat label="Likes / reposts" value={stored?`${number.format(stored.like_count)} / ${number.format(stored.repost_count)}`:undefined}/><Stat label="Unique targets" value={stored?.unique_targets}/><Stat label="First observed" value={stored?new Date(stored.first_seen_ms).toLocaleDateString():undefined}/><Stat label="Last observed" value={stored?new Date(stored.last_seen_ms).toLocaleString():undefined}/><Stat label="Clusters" value={activity?.cluster_ids.length}/><Stat label="Automation signal" value={activity?.scores.automation_score.toFixed(2)}/></div>
-    <div className="mt-8 grid gap-5 lg:grid-cols-[2fr_1fr]"><div className="rounded-xl border border-line p-4"><h3 className="eyebrow mb-4">Activity · last 24 hours</h3><ActivityChart data={analytics.data?.activity||[]}/><div className="mt-2 flex flex-wrap justify-center gap-4 text-[10px] uppercase text-dim"><Legend color="#ff8a1f" label="All events"/><Legend color="#ffd0a3" label="Posts"/><Legend color="#ffb15c" label="Interactions"/></div></div><div className="rounded-xl border border-line p-4"><h3 className="eyebrow mb-4">Event kind distribution · 24h</h3><div className="space-y-3">{kinds.map(item=><div key={item.kind}><div className="mb-1 flex justify-between text-xs"><span className="uppercase text-dim">{item.kind}</span><b>{number.format(item.count)}</b></div><div className="h-1.5 rounded bg-line"><div className="h-full rounded bg-mint" style={{width:`${item.count/maxKind*100}%`}}/></div></div>)}</div></div></div>
-    <div className="mt-8 grid gap-5 md:grid-cols-2"><Tags title="Top retained domains" values={stored?.domains||[]}/><Tags title="Top retained URLs" values={stored?.urls||[]}/></div>
-    <AccountFollows did={did} onAccount={accountDid=>navigate({to:'/accounts/$did',params:{did:accountDid}})}/>
-    <AccountLexicons did={did}/>
-    <h3 className="eyebrow mb-3 mt-8">Recent observed events</h3><div className="mb-4 flex flex-wrap gap-2"><input value={search} onChange={event=>setSearch(event.target.value)} placeholder="Filter content or target…" className="min-w-56 flex-1 rounded-lg border border-line bg-black px-3 py-2 text-sm outline-none focus:border-mint"/><select value={kind} onChange={event=>setKind(event.target.value)} className="rounded-lg border border-line bg-black px-3 py-2 text-sm"><option value="all">All kinds</option>{[...new Set((events.data||[]).map(event=>event.kind))].sort().map(value=><option key={value}>{value}</option>)}</select></div>
-    <div className="scrollbar overflow-x-auto rounded-xl border border-line"><table className="w-full min-w-180 text-left text-xs"><thead className="border-b border-line text-dim">{table.getHeaderGroups().map(group=><tr key={group.id}>{group.headers.map(header=><th className="px-3 py-3" key={header.id}><button className="flex items-center gap-1" onClick={header.column.getToggleSortingHandler()}>{flexRender(header.column.columnDef.header,header.getContext())}<ArrowDownUp className="size-3"/></button></th>)}</tr>)}</thead><tbody>{table.getRowModel().rows.map(row=><tr key={row.id} className="cursor-pointer border-b border-line/60 hover:bg-white/[.025]" onClick={()=>{const event=row.original;if(['post','reply','quote'].includes(event.kind)&&event.at_uri)navigate({to:'/records/$uri',params:{uri:event.at_uri}})}}>{row.getVisibleCells().map(cell=><td className="px-3 py-3" key={cell.id}>{flexRender(cell.column.columnDef.cell,cell.getContext())}</td>)}</tr>)}</tbody></table></div><div className="mt-3 flex items-center justify-between text-xs text-dim"><span>{filtered.length} events · page {table.getState().pagination.pageIndex+1} of {Math.max(table.getPageCount(),1)}</span><div className="flex gap-2"><button disabled={!table.getCanPreviousPage()} onClick={()=>table.previousPage()} className="rounded border border-line px-3 py-1.5 disabled:opacity-30">Previous</button><button disabled={!table.getCanNextPage()} onClick={()=>table.nextPage()} className="rounded border border-line px-3 py-1.5 disabled:opacity-30">Next</button></div></div>
-  </section>
+  const identities = useQuery({
+    queryKey: ["identities", did],
+    queryFn: () =>
+      api<Identity[]>(`/api/identities?dids=${encodeURIComponent(did)}`),
+    staleTime: 300_000,
+  });
+  const handles = useMemo(
+      () =>
+        new Map(
+          (identities.data || []).map((identity) => [
+            identity.did,
+            identity.handle,
+          ]),
+        ),
+      [identities.data],
+    ),
+    identity =
+      profile.data?.handle ||
+      handles.get(did) ||
+      account.data?.current_identity.handle;
+  const filtered = (events.data || []).filter(
+    (event) =>
+      (kind === "all" || event.kind === kind) &&
+      (!search ||
+        `${event.text} ${event.target} ${event.kind}`
+          .toLowerCase()
+          .includes(search.toLowerCase())),
+  );
+  const columns = useMemo(
+    () => [
+      eventHelper.accessor("time_us", {
+        id: "time",
+        header: "Time",
+        cell: (cell) => (
+          <time className="whitespace-nowrap text-dim">
+            {new Date(cell.getValue() / 1000).toLocaleString()}
+          </time>
+        ),
+      }),
+      eventHelper.accessor("kind", {
+        header: "Kind",
+        cell: (cell) => (
+          <span className="uppercase text-mint">{cell.getValue()}</span>
+        ),
+      }),
+      eventHelper.accessor("text", {
+        header: "Content / target",
+        cell: (cell) => {
+          const row = cell.row.original,
+            target = row.target,
+            targetDid = target.startsWith("did:")
+              ? target
+              : target.startsWith("at://")
+                ? target.slice(5).split("/")[0]
+                : "";
+          const handle = handles.get(targetDid);
+          return cell.getValue() ? (
+            <span className="block max-w-xl truncate" title={cell.getValue()}>
+              {cell.getValue()}
+            </span>
+          ) : targetDid ? (
+            <span className="block max-w-xl">
+              <b className="block break-all text-orange-300">
+                {handle ? `@${handle}` : targetDid}
+              </b>
+              {handle ? (
+                <span className="block break-all font-mono text-[9px] text-dim">
+                  {targetDid}
+                </span>
+              ) : (
+                <span className="block text-[9px] text-dim">resolving…</span>
+              )}
+            </span>
+          ) : (
+            <span className="block max-w-xl break-all">{target || "—"}</span>
+          );
+        },
+      }),
+    ],
+    [handles],
+  );
+  const table = useReactTable({
+    data: filtered,
+    columns,
+    state: { sorting },
+    onSortingChange: setSorting,
+    initialState: { pagination: { pageSize: 10 } },
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+  });
+  const stored = account.data?.stored,
+    activity = account.data?.activity,
+    kinds = analytics.data?.event_kinds || [],
+    maxKind = Math.max(...kinds.map((item) => item.count), 1);
+  const accountJobs = backfills.data?.jobs || [],
+    repositoryJob = accountJobs.find((job) => job.job_type === "repository"),
+    associationJob = accountJobs.find(
+      (job) =>
+        job.job_type === "associations" &&
+        job.depends_on_job_id === repositoryJob?.id,
+    ),
+    backfillActive = accountJobs.some((job) =>
+      ["queued", "resolving", "running", "retrying"].includes(job.status),
+    );
+  const copy = async () => {
+    await navigator.clipboard.writeText(did);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  if (account.isLoading)
+    return (
+      <div className="grid min-h-56 place-items-center text-sm text-dim">
+        Loading account activity…
+      </div>
+    );
+  return (
+    <section className="panel mx-auto max-w-6xl p-6">
+      <p className="eyebrow">Account activity</p>
+      <div className="mt-5 flex items-start gap-4">
+        {profile.data?.avatar_url && !avatarFailed ? (
+          <img
+            src={profile.data.avatar_url}
+            alt=""
+            onError={() => setAvatarFailed(true)}
+            referrerPolicy="no-referrer"
+            className="size-16 shrink-0 rounded-2xl border border-orange-500/20 bg-black object-cover"
+          />
+        ) : (
+          <div className="grid size-16 shrink-0 place-items-center rounded-2xl border border-mint/20 bg-mint/10">
+            <UserRound className="size-7 text-mint" />
+          </div>
+        )}
+        <div className="min-w-0 flex-1">
+          {profile.data?.display_name && (
+            <h1 className="truncate text-2xl font-semibold text-white">
+              {profile.data.display_name}
+            </h1>
+          )}
+          <h2
+            className={`break-all font-semibold text-cyan ${profile.data?.display_name ? "mt-0.5 text-sm" : "text-xl"}`}
+          >
+            {identity ? `@${identity}` : did}
+          </h2>
+          <p className="mt-1 break-all font-mono text-[11px] text-dim">{did}</p>
+          {!identity && <p className="mt-1 text-[10px] text-dim">resolving…</p>}
+          {profile.data?.description && (
+            <p className="mt-4 max-w-3xl whitespace-pre-wrap text-sm leading-6 text-white/80">
+              {profile.data.description}
+            </p>
+          )}
+          <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-dim">
+            {profile.data?.followers_count != null && (
+              <span>
+                <b className="text-white">
+                  {compact.format(profile.data.followers_count)}
+                </b>{" "}
+                followers
+              </span>
+            )}
+            {profile.data?.follows_count != null && (
+              <span>
+                <b className="text-white">
+                  {compact.format(profile.data.follows_count)}
+                </b>{" "}
+                following
+              </span>
+            )}
+            {profile.data?.posts_count != null && (
+              <span>
+                <b className="text-white">
+                  {compact.format(profile.data.posts_count)}
+                </b>{" "}
+                posts
+              </span>
+            )}
+            {profile.data && (
+              <span
+                title={`Fetched ${new Date(profile.data.observed_at).toLocaleString()}`}
+              >
+                Profile observed{" "}
+                {new Date(
+                  profile.data.indexed_at || profile.data.observed_at,
+                ).toLocaleString()}
+              </span>
+            )}
+          </div>
+          {profile.data?.labels.length ? (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {profile.data.labels.map((label) => (
+                <span
+                  key={label}
+                  className="rounded border border-orange-500/20 px-2 py-0.5 text-[10px] text-orange-300"
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+      <div className="mt-5 flex flex-wrap gap-2">
+        <button
+          onClick={copy}
+          className="flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-xs"
+        >
+          {copied ? (
+            <Check className="size-3.5 text-mint" />
+          ) : (
+            <Copy className="size-3.5" />
+          )}
+          {copied ? "Copied" : "Copy DID"}
+        </button>
+        <a
+          href={`https://bsky.app/profile/${encodeURIComponent(identity || did)}`}
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-xs"
+        >
+          Open on Bluesky <ExternalLink className="size-3.5" />
+        </a>
+        <button
+          disabled={
+            enqueue.isPending ||
+            backfillActive ||
+            repositoryJob?.status === "completed"
+          }
+          onClick={() => enqueue.mutate()}
+          className="rounded-lg bg-orange-500 px-3 py-2 text-xs font-semibold text-black disabled:opacity-50"
+        >
+          {enqueue.isPending
+            ? "Queueing…"
+            : backfillActive
+              ? "Backfill running…"
+              : repositoryJob?.status === "completed"
+                ? "Backfill complete"
+                : "Backfill account"}
+        </button>
+      </div>
+      <div className="mt-3 rounded-lg border border-line bg-black/40 p-3 text-xs text-dim">
+        <p>
+          <b className="text-white">Backfill scope:</b> this selected account’s
+          complete public repository, engagement on its posts, and participant
+          profile/identity metadata only. It does not recursively backfill
+          participant accounts.
+        </p>
+        {repositoryJob && (
+          <p className="mt-2">
+            Repository:{" "}
+            <span className="text-orange-300">
+              {repositoryJob.status.replace("_", " ")}
+            </span>{" "}
+            · {repositoryJob.records_written.toLocaleString()} records
+            {associationJob && (
+              <>
+                {" "}
+                · Associations:{" "}
+                <span className="text-orange-300">
+                  {associationJob.status.replace("_", " ")}
+                </span>{" "}
+                · {associationJob.records_written.toLocaleString()} records
+              </>
+            )}
+          </p>
+        )}
+        {enqueue.isError && (
+          <p className="mt-2 text-red-300">{enqueue.error.message}</p>
+        )}
+      </div>
+      <div className="mt-8 grid grid-cols-2 gap-3 md:grid-cols-4">
+        <Stat label="Retained events" value={stored?.event_count} />
+        <Stat label="Posts" value={stored?.post_count} />
+        <Stat
+          label="Likes / reposts"
+          value={
+            stored
+              ? `${number.format(stored.like_count)} / ${number.format(stored.repost_count)}`
+              : undefined
+          }
+        />
+        <Stat label="Unique targets" value={stored?.unique_targets} />
+        <Stat
+          label="First observed"
+          value={
+            stored
+              ? new Date(stored.first_seen_ms).toLocaleDateString()
+              : undefined
+          }
+        />
+        <Stat
+          label="Last observed"
+          value={
+            stored ? new Date(stored.last_seen_ms).toLocaleString() : undefined
+          }
+        />
+        <Stat label="Clusters" value={activity?.cluster_ids.length} />
+        <Stat
+          label="Automation signal"
+          value={activity?.scores.automation_score.toFixed(2)}
+        />
+      </div>
+      <div className="mt-8 grid gap-5 lg:grid-cols-[2fr_1fr]">
+        <div className="rounded-xl border border-line p-4">
+          <h3 className="eyebrow mb-4">Activity · last 24 hours</h3>
+          <ActivityChart data={analytics.data?.activity || []} />
+          <div className="mt-2 flex flex-wrap justify-center gap-4 text-[10px] uppercase text-dim">
+            <Legend color="#ff8a1f" label="All events" />
+            <Legend color="#ffd0a3" label="Posts" />
+            <Legend color="#ffb15c" label="Interactions" />
+          </div>
+        </div>
+        <div className="rounded-xl border border-line p-4">
+          <h3 className="eyebrow mb-4">Event kind distribution · 24h</h3>
+          <div className="space-y-3">
+            {kinds.map((item) => (
+              <div key={item.kind}>
+                <div className="mb-1 flex justify-between text-xs">
+                  <span className="uppercase text-dim">{item.kind}</span>
+                  <b>{number.format(item.count)}</b>
+                </div>
+                <div className="h-1.5 rounded bg-line">
+                  <div
+                    className="h-full rounded bg-mint"
+                    style={{ width: `${(item.count / maxKind) * 100}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="mt-8 grid gap-5 md:grid-cols-2">
+        <Tags title="Top retained domains" values={stored?.domains || []} />
+        <Tags title="Top retained URLs" values={stored?.urls || []} />
+      </div>
+      <AccountFollows
+        did={did}
+        onAccount={(accountDid) =>
+          navigate({ to: "/accounts/$did", params: { did: accountDid } })
+        }
+      />
+      <AccountLexicons did={did} />
+      <h3 className="eyebrow mb-3 mt-8">Recent observed events</h3>
+      <div className="mb-4 flex flex-wrap gap-2">
+        <input
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Filter content or target…"
+          className="min-w-56 flex-1 rounded-lg border border-line bg-black px-3 py-2 text-sm outline-none focus:border-mint"
+        />
+        <select
+          value={kind}
+          onChange={(event) => setKind(event.target.value)}
+          className="rounded-lg border border-line bg-black px-3 py-2 text-sm"
+        >
+          <option value="all">All kinds</option>
+          {[...new Set((events.data || []).map((event) => event.kind))]
+            .sort()
+            .map((value) => (
+              <option key={value}>{value}</option>
+            ))}
+        </select>
+      </div>
+      <div className="scrollbar overflow-x-auto rounded-xl border border-line">
+        <table className="w-full min-w-180 text-left text-xs">
+          <thead className="border-b border-line text-dim">
+            {table.getHeaderGroups().map((group) => (
+              <tr key={group.id}>
+                {group.headers.map((header) => (
+                  <th className="px-3 py-3" key={header.id}>
+                    <button
+                      className="flex items-center gap-1"
+                      onClick={header.column.getToggleSortingHandler()}
+                    >
+                      {flexRender(
+                        header.column.columnDef.header,
+                        header.getContext(),
+                      )}
+                      <ArrowDownUp className="size-3" />
+                    </button>
+                  </th>
+                ))}
+              </tr>
+            ))}
+          </thead>
+          <tbody>
+            {table.getRowModel().rows.map((row) => (
+              <tr
+                key={row.id}
+                className="cursor-pointer border-b border-line/60 hover:bg-white/[.025]"
+                onClick={() => {
+                  const event = row.original;
+                  if (
+                    ["post", "reply", "quote"].includes(event.kind) &&
+                    event.at_uri
+                  )
+                    navigate({
+                      to: "/records/$uri",
+                      params: { uri: event.at_uri },
+                    });
+                }}
+              >
+                {row.getVisibleCells().map((cell) => (
+                  <td className="px-3 py-3" key={cell.id}>
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-3 flex items-center justify-between text-xs text-dim">
+        <span>
+          {filtered.length} events · page{" "}
+          {table.getState().pagination.pageIndex + 1} of{" "}
+          {Math.max(table.getPageCount(), 1)}
+        </span>
+        <div className="flex gap-2">
+          <button
+            disabled={!table.getCanPreviousPage()}
+            onClick={() => table.previousPage()}
+            className="rounded border border-line px-3 py-1.5 disabled:opacity-30"
+          >
+            Previous
+          </button>
+          <button
+            disabled={!table.getCanNextPage()}
+            onClick={() => table.nextPage()}
+            className="rounded border border-line px-3 py-1.5 disabled:opacity-30"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+    </section>
+  );
 }
 
-function Stat({label,value}:{label:string;value?:number|string}) {return <div className="rounded-xl border border-line p-4"><div className="text-lg font-semibold">{value==null?'—':typeof value==='number'?number.format(value):value}</div><div className="eyebrow mt-1">{label}</div></div>}
-function Legend({color,label}:{color:string;label:string}) {return <span className="flex items-center gap-1.5"><i className="size-2 rounded-full" style={{backgroundColor:color}}/>{label}</span>}
-function Tags({title,values}:{title:string;values:string[]}) {return <div><h3 className="eyebrow mb-3">{title}</h3>{values.length?<div className="flex max-h-28 flex-wrap gap-2 overflow-y-auto scrollbar">{values.slice(0,30).map(value=><span key={value} title={value} className="max-w-full truncate rounded bg-mint/10 px-2 py-1 text-xs text-mint">{value}</span>)}</div>:<p className="text-sm text-dim">None retained</p>}</div>}
+function Stat({ label, value }: { label: string; value?: number | string }) {
+  return (
+    <div className="rounded-xl border border-line p-4">
+      <div className="text-lg font-semibold">
+        {value == null
+          ? "—"
+          : typeof value === "number"
+            ? number.format(value)
+            : value}
+      </div>
+      <div className="eyebrow mt-1">{label}</div>
+    </div>
+  );
+}
+function Legend({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="flex items-center gap-1.5">
+      <i className="size-2 rounded-full" style={{ backgroundColor: color }} />
+      {label}
+    </span>
+  );
+}
+function Tags({ title, values }: { title: string; values: string[] }) {
+  return (
+    <div>
+      <h3 className="eyebrow mb-3">{title}</h3>
+      {values.length ? (
+        <div className="flex max-h-28 flex-wrap gap-2 overflow-y-auto scrollbar">
+          {values.slice(0, 30).map((value) => (
+            <span
+              key={value}
+              title={value}
+              className="max-w-full truncate rounded bg-mint/10 px-2 py-1 text-xs text-mint"
+            >
+              {value}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm text-dim">None retained</p>
+      )}
+    </div>
+  );
+}
