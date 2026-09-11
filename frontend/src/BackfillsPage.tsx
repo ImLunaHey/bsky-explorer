@@ -20,7 +20,6 @@ import type {
   BackfillEventsResponse,
   BackfillJobsResponse,
   BackfillStatus,
-  IdentityQueueResponse,
 } from "./types";
 
 const active = new Set<BackfillStatus>([
@@ -131,17 +130,6 @@ export function BackfillsPage() {
   const handles = useIdentityMap(
     (jobs.data?.jobs || []).flatMap((job) => (job.did ? [job.did] : [])),
   );
-  const identityQueue = useQuery({
-    queryKey: ["identity-queue"],
-    queryFn: () => api<IdentityQueueResponse>("/api/identity-queue?limit=25"),
-    staleTime: 10_000,
-    refetchInterval: (query) => {
-      const summary = query.state.data?.summary;
-      return summary && (summary.queued || summary.running || summary.retrying)
-        ? 10_000
-        : false;
-    },
-  });
   const data = useMemo(() => {
     const needle = filter.trim().toLowerCase();
     return (jobs.data?.jobs || []).map((job) => ({...job,handle:job.handle || (job.did ? handles.get(job.did) : undefined) || null})).filter(
@@ -201,13 +189,6 @@ export function BackfillsPage() {
           </div>
         ))}
       </div>
-      <section className="panel mt-5 p-5">
-        <div className="flex items-start justify-between gap-4">
-          <div><h2 className="font-semibold">Identity resolution queue</h2><p className="mt-1 text-xs text-dim">Handles are resolved asynchronously without delaying live pages.</p></div>
-          {identityQueue.isFetching&&<span className="animate-pulse text-xs text-orange-300">Updating…</span>}
-        </div>
-        {identityQueue.data?<div className="mt-4 grid gap-2 sm:grid-cols-3 lg:grid-cols-7">{([['Total',identityQueue.data.summary.total],['Queued',identityQueue.data.summary.queued],['Running',identityQueue.data.summary.running],['Retrying',identityQueue.data.summary.retrying],['Resolved',identityQueue.data.summary.resolved],['Negative',identityQueue.data.summary.negative],['Dead letter',identityQueue.data.summary.dead_letter]] as const).map(([label,value])=><div key={label} className="rounded-lg border border-line p-3"><b className="text-lg">{value.toLocaleString()}</b><p className="mt-1 text-[10px] uppercase tracking-wide text-dim">{label}</p></div>)}</div>:<p className="mt-4 text-sm text-dim">{identityQueue.isError?'Identity queue status is temporarily unavailable.':'Loading identity queue…'}</p>}
-      </section>
       <section className="panel mt-5 p-5">
         <div className="flex flex-wrap gap-2">
           <label className="relative min-w-56 flex-1">
