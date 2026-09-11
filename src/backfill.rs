@@ -16,6 +16,7 @@ pub enum JobType {
 #[serde(rename_all = "snake_case")]
 pub enum JobStatus {
     Queued,
+    Paused,
     Resolving,
     Running,
     Retrying,
@@ -53,6 +54,49 @@ pub struct BackfillJob {
     pub last_error: Option<String>,
     pub lease_token: Option<String>,
     pub lease_until: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub crawl_id: Option<String>,
+    #[serde(default)]
+    pub parent_job_id: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CrawlStatus {
+    Queued,
+    Running,
+    Paused,
+    Completed,
+    Cancelled,
+    Failed,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrawlLimits {
+    pub max_accounts: u64,
+    pub max_jobs: u64,
+    pub max_records: u64,
+    pub max_requests: u64,
+}
+impl Default for CrawlLimits {
+    fn default() -> Self {
+        Self {
+            max_accounts: 1_000,
+            max_jobs: 10_000,
+            max_records: 10_000_000,
+            max_requests: 1_000_000,
+        }
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrawlRequest {
+    pub id: String,
+    pub root_query: String,
+    pub root_did: Option<String>,
+    pub status: CrawlStatus,
+    pub max_depth: u8,
+    pub relations: Vec<String>,
+    pub limits: CrawlLimits,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -82,12 +126,14 @@ impl BackfillQueue {
         db.pragma_update(None, "journal_mode", "WAL")?;
         db.pragma_update(None, "synchronous", "NORMAL")?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
-        db.execute_batch("CREATE TABLE IF NOT EXISTS backfill_jobs(id TEXT PRIMARY KEY,status TEXT NOT NULL,job_type TEXT NOT NULL,updated_at TEXT NOT NULL,next_attempt_at TEXT,lease_until TEXT,depends_on TEXT,job_json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS backfill_checkpoints(job_id TEXT PRIMARY KEY,kind TEXT NOT NULL,payload TEXT NOT NULL,updated_at TEXT NOT NULL);")?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS backfill_jobs(id TEXT PRIMARY KEY,status TEXT NOT NULL,job_type TEXT NOT NULL,updated_at TEXT NOT NULL,next_attempt_at TEXT,lease_until TEXT,depends_on TEXT,job_json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS backfill_checkpoints(job_id TEXT PRIMARY KEY,kind TEXT NOT NULL,payload TEXT NOT NULL,updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS crawl_requests(id TEXT PRIMARY KEY,status TEXT NOT NULL,updated_at TEXT NOT NULL,payload TEXT NOT NULL);")?;
         ensure_backfill_column(&db, "next_attempt_at", "TEXT")?;
         ensure_backfill_column(&db, "lease_until", "TEXT")?;
         ensure_backfill_column(&db, "depends_on", "TEXT")?;
+        ensure_backfill_column(&db, "crawl_id", "TEXT")?;
+        ensure_backfill_column(&db, "parent_job_id", "TEXT")?;
         backfill_index_columns(&mut db)?;
-        db.execute_batch("CREATE INDEX IF NOT EXISTS backfill_claim_v2 ON backfill_jobs(status,next_attempt_at,lease_until,updated_at); CREATE INDEX IF NOT EXISTS backfill_dependency_v2 ON backfill_jobs(depends_on);")?;
+        db.execute_batch("CREATE INDEX IF NOT EXISTS backfill_claim_v2 ON backfill_jobs(status,next_attempt_at,lease_until,updated_at); CREATE INDEX IF NOT EXISTS backfill_dependency_v2 ON backfill_jobs(depends_on); CREATE INDEX IF NOT EXISTS backfill_crawl_lineage ON backfill_jobs(crawl_id,parent_job_id); CREATE INDEX IF NOT EXISTS crawls_status_updated ON crawl_requests(status,updated_at DESC);")?;
         import_legacy_backfills(&root, &mut db)?;
         recover_expired_backfills(&mut db, Utc::now())?;
         Ok(Self {
@@ -103,6 +149,31 @@ impl BackfillQueue {
         dependency: Option<String>,
         include_associations: bool,
     ) -> Result<BackfillJob> {
+        self.enqueue_with_lineage(
+            query,
+            did,
+            kind,
+            dependency,
+            include_associations,
+            None,
+            None,
+            0,
+            1,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn enqueue_with_lineage(
+        &self,
+        query: &str,
+        did: Option<&str>,
+        kind: JobType,
+        dependency: Option<String>,
+        include_associations: bool,
+        crawl_id: Option<String>,
+        parent_job_id: Option<String>,
+        crawl_depth: u8,
+        max_depth: u8,
+    ) -> Result<BackfillJob> {
         anyhow::ensure!(valid_backfill_query(query), "invalid backfill identity");
         if let Some(did) = did {
             anyhow::ensure!(
@@ -117,7 +188,14 @@ impl BackfillQueue {
         let identity = did.unwrap_or(query).to_ascii_lowercase();
         let id = format!(
             "bf-{:016x}",
-            xxh3_64(format!("v1\0{scope}\0{identity}").as_bytes())
+            xxh3_64(
+                if let Some(crawl) = crawl_id.as_deref() {
+                    format!("v2\0{crawl}\0{scope}\0{identity}")
+                } else {
+                    format!("v1\0{scope}\0{identity}")
+                }
+                .as_bytes()
+            )
         );
         let db = self.db.lock();
         if let Some(job) = get_job(&db, &id)? {
@@ -126,7 +204,7 @@ impl BackfillQueue {
         let active:i64=db.query_row("SELECT count(*) FROM backfill_jobs WHERE status IN ('queued','resolving','running','retrying')",[],|r|r.get(0))?;
         anyhow::ensure!(active < 100, "backfill queue is at its active-job limit");
         let now = Utc::now();
-        let crawl_depth = u8::from(matches!(kind, JobType::Associations));
+        let crawl_depth = crawl_depth.max(u8::from(matches!(kind, JobType::Associations)));
         let job = BackfillJob {
             id: id.clone(),
             query: query.into(),
@@ -134,10 +212,10 @@ impl BackfillQueue {
             handle: None,
             job_type: kind,
             status: JobStatus::Queued,
-            depends_on_job_id: dependency,
+            depends_on_job_id: dependency.clone(),
             include_associations,
             crawl_depth,
-            max_depth: 1,
+            max_depth,
             scope: "repository_own_associations".into(),
             created_at: now,
             updated_at: now,
@@ -150,9 +228,208 @@ impl BackfillQueue {
             last_error: None,
             lease_token: None,
             lease_until: None,
+            crawl_id,
+            parent_job_id: parent_job_id.or(dependency),
         };
         persist_job(&db, &job)?;
         Ok(job)
+    }
+    pub fn create_crawl(
+        &self,
+        root: &str,
+        did: Option<&str>,
+        max_depth: u8,
+        relations: Vec<String>,
+        limits: CrawlLimits,
+    ) -> Result<(CrawlRequest, BackfillJob)> {
+        anyhow::ensure!(
+            valid_backfill_query(root) && max_depth <= 3,
+            "invalid crawl request"
+        );
+        let allowed = ["posts", "likes", "reposts", "quotes", "replies", "profiles"];
+        anyhow::ensure!(
+            !relations.is_empty() && relations.iter().all(|v| allowed.contains(&v.as_str())),
+            "invalid crawl relations"
+        );
+        let now = Utc::now();
+        let id = format!(
+            "cr-{:016x}",
+            xxh3_64(
+                format!("{root}\0{}", now.timestamp_nanos_opt().unwrap_or_default()).as_bytes()
+            )
+        );
+        let crawl = CrawlRequest {
+            id: id.clone(),
+            root_query: root.into(),
+            root_did: did.map(str::to_owned),
+            status: CrawlStatus::Queued,
+            max_depth,
+            relations: relations.clone(),
+            limits,
+            created_at: now,
+            updated_at: now,
+        };
+        let mut db = self.db.lock();
+        let tx = db.transaction()?;
+        persist_crawl(&tx, &crawl)?;
+        tx.commit()?;
+        drop(db);
+        let include = relations
+            .iter()
+            .any(|v| matches!(v.as_str(), "likes" | "reposts" | "quotes" | "replies"));
+        let job = self.enqueue_with_lineage(
+            root,
+            did,
+            JobType::Repository,
+            None,
+            include,
+            Some(id),
+            None,
+            0,
+            max_depth,
+        )?;
+        Ok((crawl, job))
+    }
+    pub fn crawl(&self, id: &str) -> Result<Option<(CrawlRequest, Vec<BackfillJob>)>> {
+        let db = self.db.lock();
+        let Some(crawl) = get_crawl(&db, id)? else {
+            return Ok(None);
+        };
+        let mut q=db.prepare("SELECT job_json FROM backfill_jobs WHERE crawl_id=?1 ORDER BY json_extract(job_json,'$.crawl_depth'),updated_at")?;
+        let jobs = q
+            .query_map([id], |r| r.get::<_, String>(0))?
+            .map(|v| Ok(serde_json::from_str(&v?)?))
+            .collect::<Result<_>>()?;
+        Ok(Some((crawl, jobs)))
+    }
+    pub fn list_crawls(
+        &self,
+        limit: usize,
+        offset: usize,
+        status: Option<&str>,
+    ) -> Result<(Vec<CrawlRequest>, usize)> {
+        let db = self.db.lock();
+        let total = db.query_row(
+            "SELECT count(*) FROM crawl_requests WHERE (?1 IS NULL OR status=?1)",
+            params![status],
+            |r| r.get::<_, usize>(0),
+        )?;
+        let mut q=db.prepare("SELECT payload FROM crawl_requests WHERE (?1 IS NULL OR status=?1) ORDER BY updated_at DESC LIMIT ?2 OFFSET ?3")?;
+        let rows = q
+            .query_map(params![status, limit.min(100), offset], |r| {
+                r.get::<_, String>(0)
+            })?
+            .map(|v| Ok(serde_json::from_str(&v?)?))
+            .collect::<Result<_>>()?;
+        Ok((rows, total))
+    }
+    pub fn control(&self, id: &str, action: &str, scope: &str) -> Result<usize> {
+        anyhow::ensure!(
+            matches!(action, "pause" | "resume" | "cancel")
+                && matches!(scope, "job" | "branch" | "crawl"),
+            "invalid control"
+        );
+        let now = Utc::now();
+        let mut db = self.db.lock();
+        let tx = db.transaction()?;
+        let root = get_job(&tx, id)?.context("job not found")?;
+        if scope == "crawl" {
+            let crawl_id = root.crawl_id.as_deref().context("job has no crawl")?;
+            let status = match action {
+                "pause" => CrawlStatus::Paused,
+                "resume" => CrawlStatus::Running,
+                _ => CrawlStatus::Cancelled,
+            };
+            let mut crawl = get_crawl(&tx, crawl_id)?.context("crawl not found")?;
+            crawl.status = status;
+            crawl.updated_at = now;
+            persist_crawl(&tx, &crawl)?;
+            if action == "cancel" {
+                let ids: Vec<String> = {
+                    let mut q=tx.prepare("SELECT id FROM backfill_jobs WHERE crawl_id=?1 AND status IN ('queued','paused','retrying')")?;
+                    q.query_map([crawl_id], |r| r.get(0))?
+                        .collect::<rusqlite::Result<_>>()?
+                };
+                for id in ids {
+                    if let Some(mut j) = get_job(&tx, &id)? {
+                        j.status = JobStatus::Cancelled;
+                        j.updated_at = now;
+                        persist_job(&tx, &j)?
+                    }
+                }
+            }
+            tx.commit()?;
+            return Ok(1);
+        }
+        let ids = if scope == "branch" {
+            let mut q=tx.prepare("WITH RECURSIVE branch(id) AS (SELECT ?1 UNION ALL SELECT j.id FROM backfill_jobs j JOIN branch b ON j.parent_job_id=b.id) SELECT id FROM branch")?;
+            q.query_map([id], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?
+        } else {
+            vec![id.into()]
+        };
+        let mut changed = 0;
+        for id in ids {
+            if let Some(mut job) = get_job(&tx, &id)? {
+                if job.status == JobStatus::Running && job.lease_until.is_some_and(|v| v > now) {
+                    anyhow::bail!("leased running jobs cannot be controlled until lease expiry")
+                };
+                match action {
+                    "pause" if matches!(job.status, JobStatus::Queued | JobStatus::Retrying) => {
+                        job.status = JobStatus::Paused
+                    }
+                    "resume" if job.status == JobStatus::Paused => job.status = JobStatus::Queued,
+                    "cancel"
+                        if !matches!(job.status, JobStatus::Completed | JobStatus::Cancelled) =>
+                    {
+                        job.status = JobStatus::Cancelled
+                    }
+                    _ => continue,
+                }
+                job.updated_at = now;
+                persist_job(&tx, &job)?;
+                changed += 1
+            }
+        }
+        tx.commit()?;
+        Ok(changed)
+    }
+    pub fn control_crawl(&self, id: &str, action: &str) -> Result<usize> {
+        anyhow::ensure!(
+            matches!(action, "pause" | "resume" | "cancel"),
+            "invalid crawl control"
+        );
+        let mut db = self.db.lock();
+        let tx = db.transaction()?;
+        let mut crawl = get_crawl(&tx, id)?.context("crawl not found")?;
+        crawl.status = match action {
+            "pause" => CrawlStatus::Paused,
+            "resume" => CrawlStatus::Running,
+            _ => CrawlStatus::Cancelled,
+        };
+        crawl.updated_at = Utc::now();
+        persist_crawl(&tx, &crawl)?;
+        if action == "cancel" {
+            let ids: Vec<String> = {
+                let mut q=tx.prepare("SELECT id FROM backfill_jobs WHERE crawl_id=?1 AND status IN ('queued','paused','retrying')")?;
+                q.query_map([id], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            for job_id in &ids {
+                if let Some(mut j) = get_job(&tx, job_id)? {
+                    j.status = JobStatus::Cancelled;
+                    j.updated_at = Utc::now();
+                    persist_job(&tx, &j)?
+                }
+            }
+        }
+        let count = tx.query_row(
+            "SELECT count(*) FROM backfill_jobs WHERE crawl_id=?1",
+            [id],
+            |r| r.get::<_, usize>(0),
+        )?;
+        tx.commit()?;
+        Ok(count)
     }
     pub fn get(&self, id: &str) -> Option<BackfillJob> {
         get_job(&self.db.lock(), id).unwrap_or_else(|e| {
@@ -246,7 +523,7 @@ impl BackfillQueue {
             }
         }
         let ids: Vec<String> = {
-            let mut q=tx.prepare("SELECT c.id FROM backfill_jobs c LEFT JOIN backfill_jobs p ON p.id=c.depends_on WHERE c.status IN ('queued','retrying','running') AND (c.next_attempt_at IS NULL OR c.next_attempt_at<=?1) AND (c.lease_until IS NULL OR c.lease_until<=?1) AND (c.depends_on IS NULL OR p.status='completed') ORDER BY c.updated_at LIMIT 1")?;
+            let mut q=tx.prepare("SELECT c.id FROM backfill_jobs c LEFT JOIN backfill_jobs p ON p.id=c.depends_on LEFT JOIN crawl_requests cr ON cr.id=c.crawl_id WHERE c.status IN ('queued','retrying','running') AND (c.next_attempt_at IS NULL OR c.next_attempt_at<=?1) AND (c.lease_until IS NULL OR c.lease_until<=?1) AND (c.depends_on IS NULL OR p.status='completed') AND (c.crawl_id IS NULL OR cr.status IN ('queued','running')) ORDER BY c.updated_at LIMIT 1")?;
             q.query_map([now.to_rfc3339()], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?
         };
@@ -265,6 +542,14 @@ impl BackfillQueue {
             ));
             job.lease_until = Some(now + Duration::seconds(lease_seconds));
             persist_job(&tx, &job)?;
+            if let Some(crawl_id) = job.crawl_id.as_deref()
+                && let Some(mut crawl) = get_crawl(&tx, crawl_id)?
+                && crawl.status == CrawlStatus::Queued
+            {
+                crawl.status = CrawlStatus::Running;
+                crawl.updated_at = now;
+                persist_crawl(&tx, &crawl)?
+            }
             tx.commit()?;
             Ok(Some(job))
         } else {
@@ -369,6 +654,7 @@ impl BackfillQueue {
 fn status_name(s: &JobStatus) -> &'static str {
     match s {
         JobStatus::Queued => "queued",
+        JobStatus::Paused => "paused",
         JobStatus::Resolving => "resolving",
         JobStatus::Running => "running",
         JobStatus::Retrying => "retrying",
@@ -377,6 +663,31 @@ fn status_name(s: &JobStatus) -> &'static str {
         JobStatus::Cancelled => "cancelled",
     }
 }
+fn crawl_status_name(s: &CrawlStatus) -> &'static str {
+    match s {
+        CrawlStatus::Queued => "queued",
+        CrawlStatus::Running => "running",
+        CrawlStatus::Paused => "paused",
+        CrawlStatus::Completed => "completed",
+        CrawlStatus::Cancelled => "cancelled",
+        CrawlStatus::Failed => "failed",
+    }
+}
+fn persist_crawl(db: &Connection, c: &CrawlRequest) -> Result<()> {
+    db.execute("INSERT INTO crawl_requests(id,status,updated_at,payload) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,payload=excluded.payload",params![c.id,crawl_status_name(&c.status),c.updated_at.to_rfc3339(),serde_json::to_string(c)?])?;
+    Ok(())
+}
+fn get_crawl(db: &Connection, id: &str) -> Result<Option<CrawlRequest>> {
+    let raw: Option<String> = db
+        .query_row(
+            "SELECT payload FROM crawl_requests WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    raw.map(|v| serde_json::from_str(&v).map_err(Into::into))
+        .transpose()
+}
 fn kind_name(k: &JobType) -> &'static str {
     match k {
         JobType::Repository => "repository",
@@ -384,7 +695,7 @@ fn kind_name(k: &JobType) -> &'static str {
     }
 }
 fn persist_job(db: &Connection, j: &BackfillJob) -> Result<()> {
-    db.execute("INSERT INTO backfill_jobs(id,status,job_type,updated_at,next_attempt_at,lease_until,depends_on,job_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id) DO UPDATE SET status=excluded.status,job_type=excluded.job_type,updated_at=excluded.updated_at,next_attempt_at=excluded.next_attempt_at,lease_until=excluded.lease_until,depends_on=excluded.depends_on,job_json=excluded.job_json",params![j.id,status_name(&j.status),kind_name(&j.job_type),j.updated_at.to_rfc3339(),j.next_attempt_at.map(|v|v.to_rfc3339()),j.lease_until.map(|v|v.to_rfc3339()),j.depends_on_job_id,serde_json::to_string(j)?])?;
+    db.execute("INSERT INTO backfill_jobs(id,status,job_type,updated_at,next_attempt_at,lease_until,depends_on,job_json,crawl_id,parent_job_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(id) DO UPDATE SET status=excluded.status,job_type=excluded.job_type,updated_at=excluded.updated_at,next_attempt_at=excluded.next_attempt_at,lease_until=excluded.lease_until,depends_on=excluded.depends_on,job_json=excluded.job_json,crawl_id=excluded.crawl_id,parent_job_id=excluded.parent_job_id",params![j.id,status_name(&j.status),kind_name(&j.job_type),j.updated_at.to_rfc3339(),j.next_attempt_at.map(|v|v.to_rfc3339()),j.lease_until.map(|v|v.to_rfc3339()),j.depends_on_job_id,serde_json::to_string(j)?,j.crawl_id,j.parent_job_id])?;
     Ok(())
 }
 fn get_job(db: &Connection, id: &str) -> Result<Option<BackfillJob>> {
@@ -420,7 +731,7 @@ fn backfill_index_columns(db: &mut Connection) -> Result<usize> {
     let mut updated = 0;
     for (id, raw) in rows {
         if let Ok(job) = serde_json::from_str::<BackfillJob>(&raw) {
-            tx.execute("UPDATE backfill_jobs SET status=?2,job_type=?3,updated_at=?4,next_attempt_at=?5,lease_until=?6,depends_on=?7 WHERE id=?1",params![id,status_name(&job.status),kind_name(&job.job_type),job.updated_at.to_rfc3339(),job.next_attempt_at.map(|v|v.to_rfc3339()),job.lease_until.map(|v|v.to_rfc3339()),job.depends_on_job_id])?;
+            tx.execute("UPDATE backfill_jobs SET status=?2,job_type=?3,updated_at=?4,next_attempt_at=?5,lease_until=?6,depends_on=?7,crawl_id=?8,parent_job_id=?9 WHERE id=?1",params![id,status_name(&job.status),kind_name(&job.job_type),job.updated_at.to_rfc3339(),job.next_attempt_at.map(|v|v.to_rfc3339()),job.lease_until.map(|v|v.to_rfc3339()),job.depends_on_job_id,job.crawl_id,job.parent_job_id])?;
             updated += 1
         }
     }
@@ -673,7 +984,17 @@ async fn execute_job(queue: &BackfillQueue, mut job: BackfillJob) -> Result<()> 
         && job.include_associations
         && job.crawl_depth < job.max_depth
     {
-        queue.enqueue(&did, Some(&did), JobType::Associations, Some(job.id), false)?;
+        queue.enqueue_with_lineage(
+            &did,
+            Some(&did),
+            JobType::Associations,
+            Some(job.id.clone()),
+            false,
+            job.crawl_id.clone(),
+            Some(job.id),
+            job.crawl_depth + 1,
+            job.max_depth,
+        )?;
     }
     Ok(())
 }
@@ -1007,6 +1328,8 @@ mod tests {
             last_error: None,
             lease_token: Some("old".into()),
             lease_until: Some(now - Duration::minutes(5)),
+            crawl_id: None,
+            parent_job_id: None,
         };
         db.execute(
             "INSERT INTO backfill_jobs VALUES(?1,'running','repository',?2,NULL,?3)",
@@ -1025,6 +1348,33 @@ mod tests {
         assert_eq!(recovered.retry_count, 2);
         assert!(recovered.lease_until.is_none());
         assert!(queue.claim(120).unwrap().is_some());
+    }
+    #[test]
+    fn crawl_lineage_and_controls_are_durable_and_lease_safe() {
+        let d = tempfile::tempdir().unwrap();
+        let q = BackfillQueue::open(d.path().into()).unwrap();
+        let (crawl, root) = q
+            .create_crawl(
+                "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+                Some("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"),
+                1,
+                vec!["posts".into(), "likes".into()],
+                CrawlLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(root.crawl_id.as_deref(), Some(crawl.id.as_str()));
+        assert_eq!(root.crawl_depth, 0);
+        assert_eq!(q.control(&root.id, "pause", "job").unwrap(), 1);
+        assert_eq!(q.get(&root.id).unwrap().status, JobStatus::Paused);
+        assert_eq!(q.control(&root.id, "resume", "job").unwrap(), 1);
+        let running = q.claim(120).unwrap().unwrap();
+        assert!(q.control(&running.id, "cancel", "job").is_err());
+        assert_eq!(q.control_crawl(&crawl.id, "pause").unwrap(), 1);
+        drop(q);
+        let q = BackfillQueue::open(d.path().into()).unwrap();
+        let (crawl2, jobs) = q.crawl(&crawl.id).unwrap().unwrap();
+        assert_eq!(crawl2.status, CrawlStatus::Paused);
+        assert_eq!(jobs.len(), 1);
     }
 
     #[test]

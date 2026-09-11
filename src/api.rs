@@ -65,6 +65,7 @@ pub fn router(s: AppState) -> Router {
         .route_service("/search", spa())
         .route_service("/backfills", spa())
         .route_service("/backfills/{id}", spa())
+        .route_service("/crawls/{id}", spa())
         .route_service("/identities", spa())
         .route_service("/identities/{id}", spa())
         .route_service("/accounts/{did}", spa())
@@ -81,6 +82,13 @@ pub fn router(s: AppState) -> Router {
         .route("/api/backfills/{id}/events", get(backfill_events))
         .route("/api/backfills/{id}/cancel", post(backfill_cancel))
         .route("/api/backfills/{id}/retry", post(backfill_retry))
+        .route("/api/backfills/{id}/pause", post(backfill_pause))
+        .route("/api/backfills/{id}/resume", post(backfill_resume))
+        .route("/api/crawls", get(crawls).post(create_crawl))
+        .route("/api/crawls/{id}", get(crawl_detail))
+        .route("/api/crawls/{id}/pause", post(crawl_pause))
+        .route("/api/crawls/{id}/resume", post(crawl_resume))
+        .route("/api/crawls/{id}/cancel", post(crawl_cancel))
         .route("/api/firehose", get(firehose))
         .route("/api/live", get(live))
         .route("/api/trending/urls", get(urls))
@@ -437,6 +445,119 @@ async fn enqueue_backfill(
         .map(Json)
         .map_err(internal_error)
 }
+#[derive(Deserialize)]
+struct CreateCrawl {
+    root: String,
+    did: Option<String>,
+    max_depth: u8,
+    relations: Vec<String>,
+    limits: Option<crate::backfill::CrawlLimits>,
+}
+async fn create_crawl(
+    State(s): State<AppState>,
+    Json(body): Json<CreateCrawl>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let (crawl, job) = s
+        .backfills
+        .create_crawl(
+            body.root.trim(),
+            body.did.as_deref(),
+            body.max_depth,
+            body.relations,
+            body.limits.unwrap_or_default(),
+        )
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(serde_json::json!({"crawl":crawl,"root_job":job})))
+}
+#[derive(Deserialize)]
+struct CrawlList {
+    limit: Option<usize>,
+    offset: Option<usize>,
+    status: Option<String>,
+}
+async fn crawls(
+    State(s): State<AppState>,
+    Query(q): Query<CrawlList>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let limit = q.limit.unwrap_or(25).clamp(1, 100);
+    let offset = q.offset.unwrap_or(0).min(1_000_000);
+    let (rows, total) = s
+        .backfills
+        .list_crawls(limit, offset, q.status.as_deref())
+        .map_err(internal_error)?;
+    Ok(Json(
+        serde_json::json!({"crawls":rows,"total":total,"limit":limit,"offset":offset,"has_more":offset+rows.len()<total}),
+    ))
+}
+async fn crawl_detail(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    s.backfills
+        .crawl(&id)
+        .map_err(internal_error)?
+        .map(|(crawl, jobs)| Json(serde_json::json!({"crawl":crawl,"jobs":jobs})))
+        .ok_or((StatusCode::NOT_FOUND, "crawl not found".into()))
+}
+async fn crawl_action(
+    s: AppState,
+    id: String,
+    action: &str,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let affected = s
+        .backfills
+        .control_crawl(&id, action)
+        .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+    Ok(Json(serde_json::json!({"affected":affected})))
+}
+async fn crawl_pause(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    crawl_action(s, id, "pause").await
+}
+async fn crawl_resume(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    crawl_action(s, id, "resume").await
+}
+async fn crawl_cancel(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    crawl_action(s, id, "cancel").await
+}
+#[derive(Deserialize)]
+struct ControlScope {
+    scope: Option<String>,
+}
+async fn job_action(
+    s: AppState,
+    id: String,
+    q: ControlScope,
+    action: &str,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let affected = s
+        .backfills
+        .control(&id, action, q.scope.as_deref().unwrap_or("job"))
+        .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+    Ok(Json(serde_json::json!({"affected":affected})))
+}
+async fn backfill_pause(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<ControlScope>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    job_action(s, id, q, "pause").await
+}
+async fn backfill_resume(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<ControlScope>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    job_action(s, id, q, "resume").await
+}
 #[derive(Serialize)]
 struct BackfillProgress {
     kind: String,
@@ -572,10 +693,16 @@ async fn backfill_events(
         Err(error) => internal_error(error).into_response(),
     }
 }
-async fn backfill_cancel(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
-    match s.backfills.cancel(&id) {
-        Ok(Some(j)) => Json(j).into_response(),
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+async fn backfill_cancel(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<ControlScope>,
+) -> impl IntoResponse {
+    match s
+        .backfills
+        .control(&id, "cancel", q.scope.as_deref().unwrap_or("job"))
+    {
+        Ok(affected) => Json(serde_json::json!({"affected":affected})).into_response(),
         Err(e) => (StatusCode::CONFLICT, e.to_string()).into_response(),
     }
 }
