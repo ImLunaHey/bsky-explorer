@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowDownUp, ChevronLeft, ChevronRight } from "lucide-react";
 import { api } from "./api";
@@ -52,11 +52,9 @@ function FollowEventTable({
   const [page, setPage] = useState(0);
   const [descending, setDescending] = useState(true);
   const pageSize = 10;
-  const sorted = [...events].sort((a, b) =>
-    descending
-      ? b.timestamp_ms - a.timestamp_ms
-      : a.timestamp_ms - b.timestamp_ms,
-  );
+  const sorted = useMemo(() => [...events].sort((a, b) =>
+    descending ? b.timestamp_ms - a.timestamp_ms : a.timestamp_ms - b.timestamp_ms,
+  ), [descending, events]);
   const pages = Math.max(1, Math.ceil(sorted.length / pageSize));
   const safePage = Math.min(page, pages - 1);
   const visible = sorted.slice(safePage * pageSize, (safePage + 1) * pageSize);
@@ -178,7 +176,7 @@ function FollowEventTable({
   );
 }
 
-export function AccountFollows({
+export const AccountFollows = memo(function AccountFollows({
   did,
   onAccount,
 }: {
@@ -211,6 +209,8 @@ export function AccountFollows({
       </div>
     );
   const events = analytics.data.recent_events;
+  const outbound = events.filter((event) => event.direction === "outbound");
+  const inbound = events.filter((event) => event.direction === "inbound");
   return (
     <>
       <h3 className="eyebrow mb-3 mt-8">Follow activity</h3>
@@ -271,17 +271,17 @@ export function AccountFollows({
       <div className="mt-8 grid gap-6 xl:grid-cols-2">
         <FollowEventTable
           title="Following activity"
-          events={events.filter((event) => event.direction === "outbound")}
+          events={outbound}
           handles={handles}
           onAccount={onAccount}
         />
         <FollowEventTable
           title="Follower activity"
-          events={events.filter((event) => event.direction === "inbound")}
+          events={inbound}
           handles={handles}
           onAccount={onAccount}
         />
       </div>
     </>
   );
-}
+});

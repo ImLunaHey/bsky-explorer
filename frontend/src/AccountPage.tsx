@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createColumnHelper,
@@ -51,8 +51,10 @@ const compact = new Intl.NumberFormat(undefined, {
 const clock = (ms: number) =>
   new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const eventHelper = createColumnHelper<AccountEvent>();
+const EMPTY_ACTIVITY: AccountAnalytics["activity"] = [];
+const EMPTY_EVENTS: AccountEvent[] = [];
 
-function ActivityChart({ data }: { data: AccountAnalytics["activity"] }) {
+const ActivityChart = memo(function ActivityChart({ data }: { data: AccountAnalytics["activity"] }) {
   const definition = useMemo(
     () =>
       defineChart({
@@ -126,9 +128,9 @@ function ActivityChart({ data }: { data: AccountAnalytics["activity"] }) {
       No activity observed in the last 24 hours.
     </div>
   );
-}
+});
 
-export function AccountPage({ did }: { did: string }) {
+export const AccountPage = memo(function AccountPage({ did }: { did: string }) {
   const navigate = useNavigate(),
     queryClient = useQueryClient(),
     [copied, setCopied] = useState(false),
@@ -174,12 +176,12 @@ export function AccountPage({ did }: { did: string }) {
       ...data,
       jobs: data.jobs.filter((job) => job.did === did),
     }),
-    staleTime: 3_000,
+    staleTime: 10_000,
     refetchInterval: (query) =>
       query.state.data?.jobs.some((job) =>
         ["queued", "resolving", "running", "retrying"].includes(job.status),
       )
-        ? 3_000
+        ? 10_000
         : false,
   });
   const enqueue = useMutation({
@@ -225,13 +227,20 @@ export function AccountPage({ did }: { did: string }) {
       profile.data?.handle ||
       handles.get(did) ||
       account.data?.current_identity.handle;
-  const filtered = (events.data || []).filter(
-    (event) =>
-      (kind === "all" || event.kind === kind) &&
-      (!search ||
-        `${event.text} ${event.target} ${event.kind}`
-          .toLowerCase()
-          .includes(search.toLowerCase())),
+  const filtered = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return (events.data || EMPTY_EVENTS).filter(
+      (event) =>
+        (kind === "all" || event.kind === kind) &&
+        (!needle ||
+          `${event.text} ${event.target} ${event.kind}`
+            .toLowerCase()
+            .includes(needle)),
+    );
+  }, [events.data, kind, search]);
+  const eventKinds = useMemo(
+    () => [...new Set((events.data || EMPTY_EVENTS).map((event) => event.kind))].sort(),
+    [events.data],
   );
   const columns = useMemo(
     () => [
@@ -316,6 +325,11 @@ export function AccountPage({ did }: { did: string }) {
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
+  const openAccount = useCallback(
+    (accountDid: string) =>
+      navigate({ to: "/accounts/$did", params: { did: accountDid } }),
+    [navigate],
+  );
   if (account.isLoading)
     return (
       <div className="grid min-h-56 place-items-center text-sm text-dim">
@@ -510,7 +524,7 @@ export function AccountPage({ did }: { did: string }) {
       <div className="mt-8 grid gap-5 lg:grid-cols-[2fr_1fr]">
         <div className="rounded-xl border border-line p-4">
           <h3 className="eyebrow mb-4">Activity · last 24 hours</h3>
-          <ActivityChart data={analytics.data?.activity || []} />
+          <ActivityChart data={analytics.data?.activity || EMPTY_ACTIVITY} />
           <div className="mt-2 flex flex-wrap justify-center gap-4 text-[10px] uppercase text-dim">
             <Legend color="#ff8a1f" label="All events" />
             <Legend color="#ffd0a3" label="Posts" />
@@ -543,9 +557,7 @@ export function AccountPage({ did }: { did: string }) {
       </div>
       <AccountFollows
         did={did}
-        onAccount={(accountDid) =>
-          navigate({ to: "/accounts/$did", params: { did: accountDid } })
-        }
+        onAccount={openAccount}
       />
       <AccountLexicons did={did} />
       <h3 className="eyebrow mb-3 mt-8">Recent observed events</h3>
@@ -562,9 +574,7 @@ export function AccountPage({ did }: { did: string }) {
           className="rounded-lg border border-line bg-black px-3 py-2 text-sm"
         >
           <option value="all">All kinds</option>
-          {[...new Set((events.data || []).map((event) => event.kind))]
-            .sort()
-            .map((value) => (
+          {eventKinds.map((value) => (
               <option key={value}>{value}</option>
             ))}
         </select>
@@ -643,7 +653,7 @@ export function AccountPage({ did }: { did: string }) {
       </div>
     </section>
   );
-}
+});
 
 function Stat({ label, value }: { label: string; value?: number | string }) {
   return (

@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { useMemo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ChevronLeft, ChevronRight, Database, ListTree } from 'lucide-react'
@@ -30,7 +30,7 @@ function sampleLabel(sample:CollectionSample) {
   return sample.at_uri.split('/').at(-1)||sample.at_uri
 }
 
-export function AccountLexicons({did}:{did:string}) {
+export const AccountLexicons = memo(function AccountLexicons({did}:{did:string}) {
   const inventory=useQuery({queryKey:['account-lexicons',did],queryFn:()=>api<Inventory>(`/api/accounts/${encodeURIComponent(did)}/lexicons`),staleTime:60_000})
   const [page,setPage]=useState(0)
   const data=inventory.data
@@ -48,4 +48,4 @@ export function AccountLexicons({did}:{did:string}) {
     {families.length>PAGE_SIZE&&<div className="mt-3 flex items-center justify-end gap-2 text-xs text-dim"><span>Page {page+1} of {pages}</span><button disabled={!page} onClick={()=>setPage(value=>value-1)} className="rounded border border-line p-1.5 disabled:opacity-30"><ChevronLeft className="size-4"/></button><button disabled={page+1>=pages} onClick={()=>setPage(value=>value+1)} className="rounded border border-line p-1.5 disabled:opacity-30"><ChevronRight className="size-4"/></button></div>}
     <div className="mt-5 rounded-xl border border-line p-4"><div className="flex items-center gap-2"><ListTree className="size-4 text-orange-400"/><h3 className="text-sm font-semibold">Observed inbound list memberships</h3></div><p className="mt-1 text-xs text-dim">Lists created by others that currently include this DID in retained listitem history. This differs from lists the account created or populated above.</p>{data?.inbound_list_memberships.length?<div className="mt-4 grid gap-2 sm:grid-cols-2">{data.inbound_list_memberships.slice(0,50).map(item=><div key={item.listitem_uri} className="min-w-0 rounded-lg bg-white/[.025] p-3"><Link to="/search" search={{q:item.list_uri,type:'all',offset:0}} className="block truncate font-mono text-xs text-orange-300" title={item.list_uri}>{item.list_uri}</Link><div className="mt-2 flex items-end justify-between gap-2"><IdentityLink did={item.creator_did} handle={handles.get(item.creator_did)} className="max-w-56 text-xs"/><time className="shrink-0 text-[10px] text-dim">{new Date(item.observed_at_ms).toLocaleDateString()}</time></div></div>)}</div>:<p className="mt-4 text-sm text-dim">No retained inbound list memberships observed.</p>}</div>
   </section>
-}
+})
