@@ -82,8 +82,14 @@ impl BackfillQueue {
         db.pragma_update(None, "journal_mode", "WAL")?;
         db.pragma_update(None, "synchronous", "NORMAL")?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
-        db.execute_batch("CREATE TABLE IF NOT EXISTS backfill_jobs(id TEXT PRIMARY KEY,status TEXT NOT NULL,job_type TEXT NOT NULL,updated_at TEXT NOT NULL,next_attempt_at TEXT,lease_until TEXT,depends_on TEXT,job_json TEXT NOT NULL); CREATE INDEX IF NOT EXISTS backfill_claim ON backfill_jobs(status,next_attempt_at,lease_until,updated_at); CREATE INDEX IF NOT EXISTS backfill_dependency ON backfill_jobs(depends_on); CREATE TABLE IF NOT EXISTS backfill_checkpoints(job_id TEXT PRIMARY KEY,kind TEXT NOT NULL,payload TEXT NOT NULL,updated_at TEXT NOT NULL);")?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS backfill_jobs(id TEXT PRIMARY KEY,status TEXT NOT NULL,job_type TEXT NOT NULL,updated_at TEXT NOT NULL,next_attempt_at TEXT,lease_until TEXT,depends_on TEXT,job_json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS backfill_checkpoints(job_id TEXT PRIMARY KEY,kind TEXT NOT NULL,payload TEXT NOT NULL,updated_at TEXT NOT NULL);")?;
+        ensure_backfill_column(&db, "next_attempt_at", "TEXT")?;
+        ensure_backfill_column(&db, "lease_until", "TEXT")?;
+        ensure_backfill_column(&db, "depends_on", "TEXT")?;
+        backfill_index_columns(&mut db)?;
+        db.execute_batch("CREATE INDEX IF NOT EXISTS backfill_claim_v2 ON backfill_jobs(status,next_attempt_at,lease_until,updated_at); CREATE INDEX IF NOT EXISTS backfill_dependency_v2 ON backfill_jobs(depends_on);")?;
         import_legacy_backfills(&root, &mut db)?;
+        recover_expired_backfills(&mut db, Utc::now())?;
         Ok(Self {
             db_path,
             db: Arc::new(Mutex::new(db)),
@@ -225,6 +231,7 @@ impl BackfillQueue {
         let now = Utc::now();
         let mut db = self.db.lock();
         let tx = db.transaction()?;
+        recover_expired_backfills_tx(&tx, now)?;
         let blocked: Vec<String> = {
             let mut q=tx.prepare("SELECT c.id FROM backfill_jobs c JOIN backfill_jobs p ON p.id=c.depends_on WHERE c.status='queued' AND p.status IN ('dead_letter','cancelled')")?;
             q.query_map([], |r| r.get(0))?
@@ -390,6 +397,63 @@ fn get_job(db: &Connection, id: &str) -> Result<Option<BackfillJob>> {
         .optional()?;
     raw.map(|s| serde_json::from_str(&s).map_err(Into::into))
         .transpose()
+}
+fn ensure_backfill_column(db: &Connection, column: &str, kind: &str) -> Result<()> {
+    let mut q = db.prepare("PRAGMA table_info(backfill_jobs)")?;
+    let exists = q
+        .query_map([], |r| r.get::<_, String>(1))?
+        .any(|v| v.ok().as_deref() == Some(column));
+    if !exists {
+        db.execute_batch(&format!(
+            "ALTER TABLE backfill_jobs ADD COLUMN {column} {kind}"
+        ))?
+    }
+    Ok(())
+}
+fn backfill_index_columns(db: &mut Connection) -> Result<usize> {
+    let tx = db.transaction()?;
+    let rows: Vec<(String, String)> = {
+        let mut q = tx.prepare("SELECT id,job_json FROM backfill_jobs")?;
+        q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    let mut updated = 0;
+    for (id, raw) in rows {
+        if let Ok(job) = serde_json::from_str::<BackfillJob>(&raw) {
+            tx.execute("UPDATE backfill_jobs SET status=?2,job_type=?3,updated_at=?4,next_attempt_at=?5,lease_until=?6,depends_on=?7 WHERE id=?1",params![id,status_name(&job.status),kind_name(&job.job_type),job.updated_at.to_rfc3339(),job.next_attempt_at.map(|v|v.to_rfc3339()),job.lease_until.map(|v|v.to_rfc3339()),job.depends_on_job_id])?;
+            updated += 1
+        }
+    }
+    tx.commit()?;
+    Ok(updated)
+}
+fn recover_expired_backfills(db: &mut Connection, now: DateTime<Utc>) -> Result<usize> {
+    let tx = db.transaction()?;
+    let count = recover_expired_backfills_tx(&tx, now)?;
+    tx.commit()?;
+    Ok(count)
+}
+fn recover_expired_backfills_tx(db: &Connection, now: DateTime<Utc>) -> Result<usize> {
+    let ids: Vec<String> = {
+        let mut q=db.prepare("SELECT id FROM backfill_jobs WHERE status='running' AND (lease_until IS NULL OR lease_until<=?1)")?;
+        q.query_map([now.to_rfc3339()], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    let count = ids.len();
+    for id in ids {
+        if let Some(mut job) = get_job(db, &id)? {
+            job.status = JobStatus::Queued;
+            job.updated_at = now;
+            job.next_attempt_at = None;
+            job.lease_token = None;
+            job.lease_until = None;
+            persist_job(db, &job)?
+        }
+    }
+    if count > 0 {
+        tracing::warn!(count, "requeued backfill jobs with expired leases")
+    };
+    Ok(count)
 }
 fn import_legacy_backfills(root: &PathBuf, db: &mut Connection) -> Result<()> {
     let tx = db.transaction()?;
@@ -912,6 +976,55 @@ mod tests {
                 .exists()
         );
         assert!(!target.path().join(format!("{}.json", job.id)).exists());
+    }
+    #[test]
+    fn upgrades_partial_sqlite_schema_and_recovers_expired_running_job() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("queue.sqlite3");
+        let db = Connection::open(path).unwrap();
+        db.execute_batch("CREATE TABLE backfill_jobs(id TEXT PRIMARY KEY,status TEXT NOT NULL,job_type TEXT NOT NULL,updated_at TEXT NOT NULL,depends_on TEXT,job_json TEXT NOT NULL); CREATE TABLE backfill_checkpoints(job_id TEXT PRIMARY KEY,kind TEXT NOT NULL,payload TEXT NOT NULL,updated_at TEXT NOT NULL);").unwrap();
+        let now = Utc::now();
+        let job = BackfillJob {
+            id: "bf-aaaaaaaaaaaaaaaa".into(),
+            query: "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            did: Some("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa".into()),
+            handle: None,
+            job_type: JobType::Repository,
+            status: JobStatus::Running,
+            depends_on_job_id: None,
+            include_associations: false,
+            crawl_depth: 0,
+            max_depth: 1,
+            scope: default_crawl_scope(),
+            created_at: now - Duration::hours(1),
+            updated_at: now - Duration::minutes(10),
+            next_attempt_at: None,
+            collection: Some("app.bsky.feed.post".into()),
+            cursor: Some("cursor".into()),
+            records_written: 42,
+            retry_count: 2,
+            max_retries: 8,
+            last_error: None,
+            lease_token: Some("old".into()),
+            lease_until: Some(now - Duration::minutes(5)),
+        };
+        db.execute(
+            "INSERT INTO backfill_jobs VALUES(?1,'running','repository',?2,NULL,?3)",
+            params![
+                job.id,
+                job.updated_at.to_rfc3339(),
+                serde_json::to_string(&job).unwrap()
+            ],
+        )
+        .unwrap();
+        drop(db);
+        let queue = BackfillQueue::open(directory.path().into()).unwrap();
+        let recovered = queue.get(&job.id).unwrap();
+        assert_eq!(recovered.status, JobStatus::Queued);
+        assert_eq!(recovered.records_written, 42);
+        assert_eq!(recovered.retry_count, 2);
+        assert!(recovered.lease_until.is_none());
+        assert!(queue.claim(120).unwrap().is_some());
     }
 
     #[test]
