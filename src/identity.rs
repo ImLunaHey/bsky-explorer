@@ -5,7 +5,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -15,6 +15,11 @@ use tokio::sync::Mutex as AsyncMutex;
 pub enum RemoteIdentityResult {
     Resolved(IdentityRecord),
     Negative,
+    RetryAfter(Duration, String),
+}
+#[derive(Debug)]
+pub enum RemoteIdentityBatchResult {
+    Resolved(HashMap<String, IdentityRecord>),
     RetryAfter(Duration, String),
 }
 
@@ -311,6 +316,73 @@ impl IdentityService {
         Ok(RemoteIdentityResult::Resolved(identity))
     }
 
+    /// Resolve up to the AppView limit in one paced request. Missing requested
+    /// actors are intentional negative results; unexpected or duplicate DIDs
+    /// reject the whole response so no job is incorrectly completed.
+    pub async fn resolve_remote_batch(&self, dids: &[String]) -> Result<RemoteIdentityBatchResult> {
+        anyhow::ensure!(
+            !dids.is_empty() && dids.len() <= 25,
+            "identity batch must contain 1..=25 DIDs"
+        );
+        let requested: HashSet<&str> = dids.iter().map(String::as_str).collect();
+        anyhow::ensure!(
+            requested.len() == dids.len() && requested.iter().all(|v| v.starts_with("did:")),
+            "invalid identity batch"
+        );
+        let mut last = self.inner.last_request.lock().await;
+        if let Some(previous) = *last {
+            tokio::time::sleep(
+                self.inner
+                    .minimum_request_interval
+                    .saturating_sub(previous.elapsed()),
+            )
+            .await
+        }
+        *last = Some(Instant::now());
+        drop(last);
+        let endpoint = self
+            .inner
+            .profile_endpoint
+            .replace("app.bsky.actor.getProfile", "app.bsky.actor.getProfiles");
+        let response = self
+            .inner
+            .client
+            .get(endpoint)
+            .query(&dids.iter().map(|v| ("actors", v)).collect::<Vec<_>>())
+            .send()
+            .await?;
+        let status = response.status();
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+            || status.is_server_error()
+        {
+            let delay = crate::backfill::retry_delay(response.headers(), Utc::now())
+                .unwrap_or_else(|| chrono::Duration::seconds(30))
+                .to_std()
+                .unwrap_or(Duration::from_secs(30))
+                .min(Duration::from_secs(3600));
+            return Ok(RemoteIdentityBatchResult::RetryAfter(
+                delay,
+                format!("profile service returned {status}"),
+            ));
+        }
+        let response = response.error_for_status()?;
+        anyhow::ensure!(
+            response.content_length().is_none_or(|n| n <= 1_048_576),
+            "profile batch response too large"
+        );
+        let body = response.bytes().await?;
+        anyhow::ensure!(body.len() <= 1_048_576, "profile batch response too large");
+        let value: Value = serde_json::from_slice(&body)?;
+        let found = parse_batch_profiles(&value, &requested)?;
+        let identities = found.values().cloned().collect::<Vec<_>>();
+        for identity in &identities {
+            self.put_cache(identity.clone(), self.inner.ttl);
+        }
+        self.inner.storage.insert_identities(&identities).await?;
+        Ok(RemoteIdentityBatchResult::Resolved(found))
+    }
+
     fn cached(&self, did: &str) -> Option<IdentityRecord> {
         let mut cache = self.inner.cache.lock();
         match cache.values.get(did) {
@@ -349,9 +421,86 @@ impl IdentityService {
     }
 }
 
+fn parse_batch_profiles(
+    value: &Value,
+    requested: &HashSet<&str>,
+) -> Result<HashMap<String, IdentityRecord>> {
+    let profiles = value
+        .get("profiles")
+        .and_then(Value::as_array)
+        .context("profile batch has no profiles array")?;
+    let mut found = HashMap::new();
+    for profile in profiles {
+        let did = profile
+            .get("did")
+            .and_then(Value::as_str)
+            .context("batch profile has no DID")?;
+        anyhow::ensure!(
+            requested.contains(did),
+            "profile batch returned unrequested DID"
+        );
+        anyhow::ensure!(
+            !found.contains_key(did),
+            "profile batch returned duplicate DID"
+        );
+        let handle = profile
+            .get("handle")
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty() && *v != "handle.invalid")
+            .map(str::to_owned);
+        if handle.is_some() {
+            found.insert(
+                did.into(),
+                IdentityRecord {
+                    did: did.into(),
+                    handle,
+                    observed_at: Utc::now(),
+                    source: "identity_worker_batch".into(),
+                },
+            );
+        }
+    }
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn test_service(endpoint: String) -> IdentityService {
+        IdentityService {
+            inner: Arc::new(Inner {
+                storage: Storage::new("http://localhost:8123", "observatory", "default", ""),
+                client: reqwest::Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .unwrap(),
+                profile_endpoint: endpoint,
+                ttl: Duration::from_secs(60),
+                negative_ttl: Duration::from_secs(1),
+                capacity: 100,
+                minimum_request_interval: Duration::ZERO,
+                cache: Mutex::new(Cache::default()),
+                last_request: AsyncMutex::new(None),
+            }),
+        }
+    }
+    fn mock_once(response: &'static str) -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut bytes = [0_u8; 16384];
+            let n = stream.read(&mut bytes).unwrap();
+            let _ = tx.send(String::from_utf8_lossy(&bytes[..n]).into_owned());
+            stream.write_all(response.as_bytes()).unwrap()
+        });
+        (
+            format!("http://{address}/xrpc/app.bsky.actor.getProfile"),
+            rx,
+        )
+    }
 
     #[test]
     fn parses_handle_change_and_invalid_handle() {
@@ -418,5 +567,85 @@ mod tests {
             Some("renamed.test")
         );
         assert!(service.cached("did:plc:c").is_some());
+    }
+
+    #[test]
+    fn parses_full_and_partial_profile_batches_safely() {
+        let dids = (0..25)
+            .map(|n| format!("did:plc:test{n}"))
+            .collect::<Vec<_>>();
+        let requested = dids.iter().map(String::as_str).collect::<HashSet<_>>();
+        let profiles = dids
+            .iter()
+            .map(|did| serde_json::json!({"did":did,"handle":format!("{did}.test")}))
+            .collect::<Vec<_>>();
+        let found =
+            parse_batch_profiles(&serde_json::json!({"profiles":profiles}), &requested).unwrap();
+        assert_eq!(found.len(), 25);
+        let partial = parse_batch_profiles(
+            &serde_json::json!({"profiles":[{"did":dids[0],"handle":"one.test"}]}),
+            &requested,
+        )
+        .unwrap();
+        assert_eq!(partial.len(), 1);
+        assert!(
+            parse_batch_profiles(
+                &serde_json::json!({"profiles":[{"did":"did:plc:unexpected","handle":"bad.test"}]}),
+                &requested
+            )
+            .is_err()
+        );
+    }
+    #[tokio::test]
+    async fn batches_twenty_five_actors_in_one_request() {
+        let (endpoint, request) = mock_once(
+            "HTTP/1.1 200 OK\r\nContent-Length: 15\r\nConnection: close\r\n\r\n{\"profiles\":[]}",
+        );
+        let dids = (0..25)
+            .map(|n| format!("did:plc:test{n}"))
+            .collect::<Vec<_>>();
+        let result = test_service(endpoint)
+            .resolve_remote_batch(&dids)
+            .await
+            .unwrap();
+        assert!(matches!(result,RemoteIdentityBatchResult::Resolved(found) if found.is_empty()));
+        let request = request.recv().unwrap();
+        assert_eq!(request.matches("actors=").count(), 25);
+        assert!(request.starts_with("GET /xrpc/app.bsky.actor.getProfiles?"));
+    }
+    #[tokio::test]
+    async fn batch_retry_after_and_response_limits_are_enforced() {
+        let (endpoint, _) = mock_once(
+            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 7\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        let result = test_service(endpoint)
+            .resolve_remote_batch(&["did:plc:a".into()])
+            .await
+            .unwrap();
+        assert!(
+            matches!(result,RemoteIdentityBatchResult::RetryAfter(d,_) if d==Duration::from_secs(7))
+        );
+        let (endpoint, _) =
+            mock_once("HTTP/1.1 200 OK\r\nContent-Length: 2000000\r\nConnection: close\r\n\r\n");
+        assert!(
+            test_service(endpoint)
+                .resolve_remote_batch(&["did:plc:a".into()])
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("too large")
+        );
+    }
+    #[tokio::test]
+    async fn batch_client_does_not_follow_redirects() {
+        let (endpoint, _) = mock_once(
+            "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/private\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        assert!(
+            test_service(endpoint)
+                .resolve_remote_batch(&["did:plc:a".into()])
+                .await
+                .is_err()
+        );
     }
 }

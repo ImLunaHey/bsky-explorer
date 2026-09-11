@@ -1,4 +1,4 @@
-use crate::identity::{IdentityService, RemoteIdentityResult};
+use crate::identity::{IdentityService, RemoteIdentityBatchResult};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::Mutex;
@@ -227,25 +227,30 @@ impl IdentityQueue {
     pub fn get(&self, id: &str) -> Result<Option<IdentityJob>> {
         get_id(&self.db.lock(), id)
     }
+    #[cfg(test)]
     fn claim(&self) -> Result<Option<IdentityJob>> {
+        Ok(self.claim_batch(1)?.into_iter().next())
+    }
+    fn claim_batch(&self, limit: usize) -> Result<Vec<IdentityJob>> {
         let now = Utc::now();
         let mut db = self.db.lock();
         let tx = db.transaction()?;
         recover_expired_tx(&tx, now)?;
-        let id:Option<String>=tx.query_row("SELECT id FROM identity_jobs WHERE status IN ('queued','retrying') AND (next_attempt_at IS NULL OR next_attempt_at<=?1) AND (lease_until IS NULL OR lease_until<=?1) ORDER BY created_at LIMIT 1",[stamp(now)],|r|r.get(0)).optional()?;
-        let Some(id) = id else {
-            tx.commit()?;
-            return Ok(None);
+        let ids: Vec<String> = {
+            let mut q=tx.prepare("SELECT id FROM identity_jobs WHERE status IN ('queued','retrying') AND (next_attempt_at IS NULL OR next_attempt_at<=?1) AND (lease_until IS NULL OR lease_until<=?1) ORDER BY created_at LIMIT ?2")?;
+            q.query_map(params![stamp(now), limit.clamp(1, 25) as i64], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?
         };
-        let token = format!("{:016x}", xxh3_64(format!("{id}{now}").as_bytes()));
-        tx.execute("UPDATE identity_jobs SET status='running',attempts=attempts+1,updated_at=?2,lease_token=?3,lease_until=?4 WHERE id=?1",params![id,stamp(now),token,stamp(now+Duration::minutes(2))])?;
-        tx.execute(
-            "UPDATE identity_jobs SET started_at=COALESCE(started_at,?2) WHERE id=?1",
-            params![id, stamp(now)],
-        )?;
-        let j = get_id(&tx, &id)?;
+        let mut jobs = Vec::with_capacity(ids.len());
+        for id in ids {
+            let token = format!("{:016x}", xxh3_64(format!("{id}{now}").as_bytes()));
+            tx.execute("UPDATE identity_jobs SET status='running',attempts=attempts+1,updated_at=?2,lease_token=?3,lease_until=?4,started_at=COALESCE(started_at,?2) WHERE id=?1",params![id,stamp(now),token,stamp(now+Duration::minutes(2))])?;
+            if let Some(job) = get_id(&tx, &id)? {
+                jobs.push(job)
+            }
+        }
         tx.commit()?;
-        Ok(j)
+        Ok(jobs)
     }
     fn finish(
         &self,
@@ -589,45 +594,54 @@ fn analytics_db(
 pub async fn run_worker(queue: IdentityQueue, service: IdentityService) {
     let mut idle_ticks = 0_u32;
     loop {
-        match queue.claim() {
-            Ok(Some(j)) => {
-                let result = service.resolve_remote(&j.did).await;
-                let (status, err, delay, handle) = match result {
-                    Ok(RemoteIdentityResult::Resolved(identity)) => {
-                        (IdentityJobStatus::Resolved, None, None, identity.handle)
-                    }
-                    Ok(RemoteIdentityResult::Negative) => {
-                        (IdentityJobStatus::Negative, None, None, None)
-                    }
-                    Ok(RemoteIdentityResult::RetryAfter(d, e)) => {
-                        (IdentityJobStatus::Retrying, Some(e), Some(d), None)
-                    }
-                    Err(e) => {
-                        let base = (2u64.pow(j.attempts.min(8))).min(300);
-                        let jitter = xxh3_64(format!("{}:{}", j.id, j.attempts).as_bytes()) % 1000;
-                        let d = std::time::Duration::from_millis(base * 1000 + jitter);
-                        if j.attempts >= j.max_attempts {
-                            (
-                                IdentityJobStatus::DeadLetter,
-                                Some(e.to_string()),
-                                None,
-                                None,
-                            )
-                        } else {
-                            (
-                                IdentityJobStatus::Retrying,
-                                Some(e.to_string()),
-                                Some(d),
-                                None,
-                            )
+        match queue.claim_batch(25) {
+            Ok(jobs) if !jobs.is_empty() => {
+                let dids = jobs.iter().map(|j| j.did.clone()).collect::<Vec<_>>();
+                let result = service.resolve_remote_batch(&dids).await;
+                for j in jobs {
+                    let (status, err, delay, handle) = match &result {
+                        Ok(RemoteIdentityBatchResult::Resolved(found)) => found.get(&j.did).map_or(
+                            (IdentityJobStatus::Negative, None, None, None),
+                            |identity| {
+                                (
+                                    IdentityJobStatus::Resolved,
+                                    None,
+                                    None,
+                                    identity.handle.clone(),
+                                )
+                            },
+                        ),
+                        Ok(RemoteIdentityBatchResult::RetryAfter(d, e)) => {
+                            (IdentityJobStatus::Retrying, Some(e.clone()), Some(*d), None)
                         }
+                        Err(e) => {
+                            let base = (2u64.pow(j.attempts.min(8))).min(300);
+                            let jitter =
+                                xxh3_64(format!("{}:{}", j.id, j.attempts).as_bytes()) % 1000;
+                            let d = std::time::Duration::from_millis(base * 1000 + jitter);
+                            if j.attempts >= j.max_attempts {
+                                (
+                                    IdentityJobStatus::DeadLetter,
+                                    Some(e.to_string()),
+                                    None,
+                                    None,
+                                )
+                            } else {
+                                (
+                                    IdentityJobStatus::Retrying,
+                                    Some(e.to_string()),
+                                    Some(d),
+                                    None,
+                                )
+                            }
+                        }
+                    };
+                    if let Err(e) = queue.finish(j, status, err, delay, handle) {
+                        tracing::error!(%e,"persist identity batch job")
                     }
-                };
-                if let Err(e) = queue.finish(j, status, err, delay, handle) {
-                    tracing::error!(%e,"persist identity job")
                 }
             }
-            Ok(None) => {
+            Ok(_) => {
                 idle_ticks = idle_ticks.wrapping_add(1);
                 if idle_ticks.is_multiple_of(120) {
                     match service.unresolved_candidates(250).await {
@@ -814,5 +828,21 @@ mod tests {
         assert!(recovered.lease_until.is_none());
         assert!(recovered.lease_token.is_none());
         assert_eq!(q.claim().unwrap().unwrap().did, "did:plc:expired");
+    }
+    #[test]
+    fn claims_at_most_twenty_five_in_one_atomic_batch() {
+        let d = tempdir().unwrap();
+        let q = IdentityQueue::open(d.path().into(), 100, Duration::seconds(1)).unwrap();
+        for n in 0..30 {
+            q.enqueue(&format!("did:plc:batch{n}")).unwrap();
+        }
+        let jobs = q.claim_batch(25).unwrap();
+        assert_eq!(jobs.len(), 25);
+        assert_eq!(q.summary().running, 25);
+        assert_eq!(q.summary().queued, 5);
+        assert!(
+            jobs.iter()
+                .all(|j| j.lease_token.is_some() && j.attempts == 1)
+        );
     }
 }
