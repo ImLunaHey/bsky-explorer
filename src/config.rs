@@ -66,6 +66,10 @@ pub struct Config {
     pub min_cluster_events: usize,
     #[arg(long, env = "STATE_RETENTION_HOURS", default_value_t = 24)]
     pub state_retention_hours: i64,
+    #[arg(long, env = "HOT_DETAIL_RETENTION_SECONDS", default_value_t = 3600)]
+    pub hot_detail_retention_seconds: i64,
+    #[arg(long, env = "HOT_DETAIL_MAX_EVENTS", default_value_t = 250_000)]
+    pub hot_detail_max_events: usize,
     #[arg(
         long,
         env = "IDENTITY_PROFILE_ENDPOINT",

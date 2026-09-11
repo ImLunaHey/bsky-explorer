@@ -161,6 +161,9 @@ async fn consume(
         processed_since_yield += 1;
         if processed_since_yield >= 128 {
             processed_since_yield = 0;
+            metrics
+                .hot_detail_events
+                .set(analysis.retained_event_count() as i64);
             tokio::task::yield_now().await;
         }
     }

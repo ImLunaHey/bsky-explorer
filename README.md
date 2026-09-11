@@ -52,6 +52,13 @@ Jetstream identity events update a bounded in-memory DID/handle cache immediatel
 
 ## Configuration and verification
 
+The detailed in-memory analysis queue is independently bounded by
+`HOT_DETAIL_RETENTION_SECONDS` (default one hour) and `HOT_DETAIL_MAX_EVENTS`
+(default 250,000); the smaller bound wins. Compact per-second counters preserve
+configured rate windows through 24 hours. Full normalized events remain in
+ClickHouse and raw payloads remain in the compressed archive. Prometheus exposes
+the current queue size as `observatory_hot_detail_events`.
+
 Identity enrichment is asynchronous. Durable jobs live on the storage array at
 `DATA_DIR/identity-queue` (or `IDENTITY_QUEUE_DIR`), use leased restart recovery,
 and are inspectable at `GET /api/identity-queue?limit=25&offset=0`. Queue state is

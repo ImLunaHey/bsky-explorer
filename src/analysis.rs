@@ -170,6 +170,8 @@ pub struct Analyzer {
     min_accounts: usize,
     min_events: usize,
     retention_hours: i64,
+    detail_retention_seconds: i64,
+    max_detail_events: usize,
     windows_seconds: Arc<Vec<u64>>,
 }
 struct State {
@@ -180,7 +182,18 @@ struct State {
     detections: HashMap<String, Detection>,
     url_counts: HashMap<String, u64>,
     domain_counts: HashMap<String, u64>,
+    rate_buckets: VecDeque<RateBucket>,
 }
+#[derive(Clone, Default)]
+struct RateBucket {
+    second: i64,
+    events: u64,
+    posts: u64,
+    likes: u64,
+    follows: u64,
+    interactions: u64,
+}
+const MAX_HOT_DETECTIONS: usize = 10_000;
 impl Analyzer {
     pub fn new(
         coordination_secs: i64,
@@ -217,14 +230,22 @@ impl Analyzer {
                 detections: HashMap::new(),
                 url_counts: HashMap::new(),
                 domain_counts: HashMap::new(),
+                rate_buckets: VecDeque::new(),
             })),
             live_events,
             coordination_secs,
             min_accounts,
             min_events,
             retention_hours,
+            detail_retention_seconds: retention_hours.saturating_mul(3600),
+            max_detail_events: usize::MAX,
             windows_seconds: Arc::new(windows_seconds),
         }
+    }
+    pub fn with_detail_limits(mut self, retention_seconds: i64, max_events: usize) -> Self {
+        self.detail_retention_seconds = retention_seconds.max(self.coordination_secs).max(1);
+        self.max_detail_events = max_events.max(self.min_events).max(1);
+        self
     }
     pub fn observe(&self, e: NormalizedEvent) -> Option<Detection> {
         self.observe_inner(e, true)
@@ -234,6 +255,11 @@ impl Analyzer {
     }
     fn observe_inner(&self, e: NormalizedEvent, detect: bool) -> Option<Detection> {
         let mut s = self.inner.write();
+        update_rate_buckets(
+            &mut s.rate_buckets,
+            &e,
+            *self.windows_seconds.last().unwrap_or(&60),
+        );
         for x in &e.urls {
             *s.url_counts.entry(x.clone()).or_default() += 1
         }
@@ -249,7 +275,11 @@ impl Analyzer {
         retained.record_json = None;
         s.events.push_back(retained);
         s.watermark = Some(s.watermark.map_or(e.timestamp, |w| w.max(e.timestamp)));
-        let cutoff = s.watermark.unwrap() - Duration::hours(self.retention_hours);
+        let cutoff = s.watermark.unwrap()
+            - Duration::seconds(
+                self.detail_retention_seconds
+                    .min(self.retention_hours.saturating_mul(3600)),
+            );
         if ordered {
             while s
                 .events
@@ -277,6 +307,12 @@ impl Analyzer {
             }
             s.url_counts = url_counts;
             s.domain_counts = domain_counts;
+        }
+        while s.events.len() > self.max_detail_events {
+            if let Some(expired) = s.events.pop_front() {
+                remove_counts(&mut s.url_counts, &expired.urls);
+                remove_counts(&mut s.domain_counts, &expired.domains);
+            }
         }
         // Broadcast is deliberately best-effort and bounded. A missing or slow
         // dashboard must never apply backpressure to ingestion.
@@ -374,12 +410,26 @@ impl Analyzer {
                 })
                 .collect(),
         };
+        s.detections
+            .retain(|_, detection| detection.last_seen >= cutoff);
+        if s.detections.len() >= MAX_HOT_DETECTIONS
+            && let Some(oldest) = s
+                .detections
+                .iter()
+                .min_by_key(|(_, detection)| detection.last_seen)
+                .map(|(id, _)| id.clone())
+        {
+            s.detections.remove(&oldest);
+        }
         s.detections.insert(cluster_id, d.clone());
         Some(d)
     }
 
     pub fn subscribe_live(&self) -> broadcast::Receiver<NormalizedEvent> {
         self.live_events.subscribe()
+    }
+    pub fn retained_event_count(&self) -> usize {
+        self.inner.read().events.len()
     }
 
     /// Returns a bounded, chronological view over the already-retained hot
@@ -508,7 +558,7 @@ impl Analyzer {
         let windows: Vec<_> = self
             .windows_seconds
             .iter()
-            .map(|seconds| window_rates(&s.events, now, *seconds))
+            .map(|seconds| bucket_rates(&s.rate_buckets, now, *seconds))
             .collect();
         let primary = windows
             .iter()
@@ -843,29 +893,80 @@ impl Analyzer {
 fn truncate_sample(text: &str) -> String {
     text.chars().take(160).collect()
 }
-fn window_rates(
-    events: &VecDeque<NormalizedEvent>,
+fn update_rate_buckets(
+    buckets: &mut VecDeque<RateBucket>,
+    event: &NormalizedEvent,
+    max_window: u64,
+) {
+    let second = event.timestamp.timestamp();
+    let bucket = if buckets.back().is_some_and(|bucket| bucket.second == second) {
+        buckets.back_mut().unwrap()
+    } else if buckets.back().is_none_or(|bucket| bucket.second < second) {
+        buckets.push_back(RateBucket {
+            second,
+            ..Default::default()
+        });
+        buckets.back_mut().unwrap()
+    } else if let Some(index) = buckets.iter().position(|bucket| bucket.second == second) {
+        &mut buckets[index]
+    } else {
+        let index = buckets
+            .iter()
+            .position(|bucket| bucket.second > second)
+            .unwrap_or(buckets.len());
+        buckets.insert(
+            index,
+            RateBucket {
+                second,
+                ..Default::default()
+            },
+        );
+        &mut buckets[index]
+    };
+    bucket.events += 1;
+    if matches!(
+        event.kind,
+        EventKind::Post | EventKind::Reply | EventKind::Quote
+    ) {
+        bucket.posts += 1
+    }
+    if matches!(event.kind, EventKind::Like) {
+        bucket.likes += 1
+    }
+    if matches!(event.kind, EventKind::Follow) {
+        bucket.follows += 1
+    }
+    if !matches!(event.kind, EventKind::Post) {
+        bucket.interactions += 1
+    }
+    let cutoff = buckets.back().map_or(second, |bucket| bucket.second)
+        - max_window.min(i64::MAX as u64) as i64;
+    while buckets.front().is_some_and(|bucket| bucket.second < cutoff) {
+        buckets.pop_front();
+    }
+}
+fn bucket_rates(
+    buckets: &VecDeque<RateBucket>,
     now: chrono::DateTime<Utc>,
     seconds: u64,
 ) -> WindowRates {
-    let cutoff = now - Duration::seconds(seconds.min(i64::MAX as u64) as i64);
-    let xs: Vec<_> = events
-        .iter()
-        .filter(|event| event.timestamp >= cutoff)
-        .collect();
+    let cutoff = now.timestamp() - seconds.min(i64::MAX as u64) as i64;
+    let mut totals = RateBucket::default();
+    for bucket in buckets.iter().filter(|bucket| bucket.second >= cutoff) {
+        totals.events += bucket.events;
+        totals.posts += bucket.posts;
+        totals.likes += bucket.likes;
+        totals.follows += bucket.follows;
+        totals.interactions += bucket.interactions;
+    }
     let divisor = seconds as f64;
-    let count = |kind: &str| xs.iter().filter(|e| e.kind.as_str() == kind).count() as f64;
     WindowRates {
         seconds,
-        events_per_sec: xs.len() as f64 / divisor,
-        posts_per_sec: (count("post") + count("reply") + count("quote")) / divisor,
-        likes_per_sec: count("like") / divisor,
-        follows_per_sec: count("follow") / divisor,
-        interactions_per_sec: xs
-            .iter()
-            .filter(|e| !matches!(e.kind, crate::model::EventKind::Post))
-            .count() as f64
-            / divisor,
+        events_per_sec: totals.events as f64 / divisor,
+        posts_per_sec: totals.posts as f64 / divisor,
+        likes_per_sec: totals.likes as f64 / divisor,
+        follows_per_sec: totals.follows as f64 / divisor,
+        interactions_per_sec: totals.interactions as f64 / divisor,
     }
 }
 fn near_simhash(a: Option<u64>, b: Option<u64>) -> bool {
@@ -1132,6 +1233,23 @@ mod tests {
         assert_eq!(rates.windows[0].events_per_sec, 0.1);
         assert_eq!(rates.windows[1].events_per_sec, 2.0 / 60.0);
         assert_eq!(rates.events_per_sec, rates.windows[1].events_per_sec);
+    }
+
+    #[test]
+    fn detailed_state_is_hard_bounded_while_rate_buckets_keep_the_full_window() {
+        let analyzer =
+            Analyzer::with_windows(30, 3, 3, 24, vec![86_400]).with_detail_limits(86_400, 100);
+        for second in 0..10_000 {
+            let mut event = e("load", second);
+            event.urls = vec![format!("https://example.test/{second}")];
+            analyzer.observe_without_detection(event);
+        }
+        assert_eq!(analyzer.retained_event_count(), 100);
+        assert_eq!(analyzer.inner.read().url_counts.len(), 100);
+        assert_eq!(
+            analyzer.rates().windows[0].events_per_sec,
+            10_000.0 / 86_400.0
+        );
     }
 
     #[test]

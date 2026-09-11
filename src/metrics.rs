@@ -10,6 +10,7 @@ pub struct Metrics {
     pub connected: IntGauge,
     pub archive_bytes: IntGauge,
     pub clickhouse_bytes: IntGauge,
+    pub hot_detail_events: IntGauge,
 }
 impl Metrics {
     pub fn new() -> Result<Arc<Self>> {
@@ -25,16 +26,22 @@ impl Metrics {
         let archive_bytes = IntGauge::new("observatory_archive_bytes", "Compressed archive bytes")?;
         let clickhouse_bytes =
             IntGauge::new("observatory_clickhouse_bytes", "ClickHouse bytes on disk")?;
+        let hot_detail_events = IntGauge::new(
+            "observatory_hot_detail_events",
+            "Events retained in bounded detailed analysis memory",
+        )?;
         registry.register(Box::new(events.clone()))?;
         registry.register(Box::new(connected.clone()))?;
         registry.register(Box::new(archive_bytes.clone()))?;
         registry.register(Box::new(clickhouse_bytes.clone()))?;
+        registry.register(Box::new(hot_detail_events.clone()))?;
         Ok(Arc::new(Self {
             registry,
             events,
             connected,
             archive_bytes,
             clickhouse_bytes,
+            hot_detail_events,
         }))
     }
     pub fn event(&self, k: &EventKind) {

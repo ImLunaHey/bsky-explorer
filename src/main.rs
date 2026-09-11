@@ -31,7 +31,8 @@ async fn main() -> Result<()> {
         cfg.min_cluster_events,
         cfg.state_retention_hours,
         cfg.windows_seconds.clone(),
-    );
+    )
+    .with_detail_limits(cfg.hot_detail_retention_seconds, cfg.hot_detail_max_events);
     let identities = IdentityService::new(
         storage.clone(),
         cfg.identity_profile_endpoint.clone(),
