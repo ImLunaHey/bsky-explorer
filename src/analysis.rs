@@ -241,7 +241,13 @@ impl Analyzer {
             *s.domain_counts.entry(x.clone()).or_default() += 1
         }
         let ordered = s.watermark.is_none_or(|watermark| e.timestamp >= watermark);
-        s.events.push_back(e.clone());
+        // ClickHouse and the compressed archive retain the replayable record.
+        // The rolling analyzer only needs extracted fields; retaining generic
+        // record JSON here multiplied high-throughput firehose memory by up to
+        // MAX_RECORD_JSON_BYTES per event.
+        let mut retained = e.clone();
+        retained.record_json = None;
+        s.events.push_back(retained);
         s.watermark = Some(s.watermark.map_or(e.timestamp, |w| w.max(e.timestamp)));
         let cutoff = s.watermark.unwrap() - Duration::hours(self.retention_hours);
         if ordered {
@@ -250,12 +256,27 @@ impl Analyzer {
                 .front()
                 .is_some_and(|event| event.timestamp < cutoff)
             {
-                s.events.pop_front();
+                if let Some(expired) = s.events.pop_front() {
+                    remove_counts(&mut s.url_counts, &expired.urls);
+                    remove_counts(&mut s.domain_counts, &expired.domains);
+                }
             }
         } else {
             // Replay may be out of order; keep its slower correctness path away
             // from the latency-sensitive ordered firehose.
             s.events.retain(|event| event.timestamp >= cutoff);
+            let mut url_counts = HashMap::new();
+            let mut domain_counts = HashMap::new();
+            for event in &s.events {
+                for url in &event.urls {
+                    *url_counts.entry(url.clone()).or_default() += 1;
+                }
+                for domain in &event.domains {
+                    *domain_counts.entry(domain.clone()).or_default() += 1;
+                }
+            }
+            s.url_counts = url_counts;
+            s.domain_counts = domain_counts;
         }
         // Broadcast is deliberately best-effort and bounded. A missing or slow
         // dashboard must never apply backpressure to ingestion.
@@ -861,6 +882,20 @@ fn dominant_ratio<'a>(items: impl Iterator<Item = &'a str>) -> f64 {
     counts.values().copied().max().unwrap_or(0) as f64 / total.max(1) as f64
 }
 
+fn remove_counts(counts: &mut HashMap<String, u64>, values: &[String]) {
+    for value in values {
+        let remove = if let Some(count) = counts.get_mut(value) {
+            *count = count.saturating_sub(1);
+            *count == 0
+        } else {
+            false
+        };
+        if remove {
+            counts.remove(value);
+        }
+    }
+}
+
 fn content_similarity(events: &[NormalizedEvent]) -> f64 {
     let with_content: Vec<_> = events
         .iter()
@@ -1286,10 +1321,23 @@ mod tests {
     async fn live_subscribers_receive_observed_events() {
         let analyzer = Analyzer::new(30, 3, 3, 24);
         let mut subscriber = analyzer.subscribe_live();
-        let event = e("live-account", 123);
+        let mut event = e("live-account", 123);
+        event.record_json = Some(r#"{"$type":"com.example.record","value":"live"}"#.into());
         analyzer.observe_without_detection(event.clone());
         let received = subscriber.recv().await.expect("live event");
         assert_eq!(received.event_id, event.event_id);
         assert_eq!(received.time_us, event.time_us);
+        assert_eq!(received.record_json, event.record_json);
+        assert_eq!(
+            analyzer
+                .recent_events(RecentEventFilter {
+                    limit: 1,
+                    ..Default::default()
+                })
+                .events[0]
+                .record_json,
+            None,
+            "generic JSON belongs in durable storage, not the rolling analyzer"
+        );
     }
 }
