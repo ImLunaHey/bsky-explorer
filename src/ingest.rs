@@ -147,7 +147,10 @@ async fn consume(
         let lag_us = chrono::Utc::now()
             .timestamp_micros()
             .saturating_sub(event.time_us);
-        if lag_us > 5 * 60 * 1_000_000 {
+        metrics
+            .jetstream_lag_milliseconds
+            .set(lag_us.saturating_div(1_000));
+        if !should_run_detection(lag_us, cfg.analysis_max_lag_seconds) {
             // Prioritize durable catch-up after downtime. Running pairwise
             // coordination analysis over stale backlog would delay the live
             // stream further; replay can analyze it later.
@@ -170,4 +173,24 @@ async fn consume(
     drop(archive_tx);
     archive_task.await.context("archive worker panicked")??;
     Ok(())
+}
+
+fn should_run_detection(lag_us: i64, max_lag_seconds: u64) -> bool {
+    lag_us
+        <= i64::try_from(max_lag_seconds)
+            .unwrap_or(i64::MAX)
+            .saturating_mul(1_000_000)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_run_detection;
+
+    #[test]
+    fn coordination_detection_yields_to_live_catch_up() {
+        assert!(should_run_detection(9_999_999, 10));
+        assert!(should_run_detection(10_000_000, 10));
+        assert!(!should_run_detection(10_000_001, 10));
+        assert!(!should_run_detection(285_000_000, 10));
+    }
 }

@@ -82,6 +82,10 @@ a missing profile may be retried. Identity API misses return immediately and
 queue work rather than putting public-network latency on API or firehose paths.
 
 Copy `.env.example`; all options are shown by `cargo run -- --help`. Analysis defaults are 1m/5m/1h/24h windows and a 30-second coordination interval.
+When ingestion is catching up, coordination detection yields after
+`ANALYSIS_MAX_LAG_SECONDS` (10 seconds by default) while archival, ClickHouse
+storage, counters, and SSE delivery continue. Current upstream lag is exported as
+`observatory_jetstream_lag_milliseconds`.
 
 ```bash
 cargo test

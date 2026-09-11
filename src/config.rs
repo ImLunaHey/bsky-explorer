@@ -60,6 +60,10 @@ pub struct Config {
     pub windows_seconds: Vec<u64>,
     #[arg(long, env = "COORDINATION_WINDOW_SECONDS", default_value_t = 30)]
     pub coordination_window_seconds: i64,
+    /// Skip synchronous coordination detection while ingest is further behind
+    /// upstream than this. Raw and normalized events are still retained.
+    #[arg(long, env = "ANALYSIS_MAX_LAG_SECONDS", default_value_t = 10)]
+    pub analysis_max_lag_seconds: u64,
     #[arg(long, env = "MIN_CLUSTER_ACCOUNTS", default_value_t = 3)]
     pub min_cluster_accounts: usize,
     #[arg(long, env = "MIN_CLUSTER_EVENTS", default_value_t = 3)]
