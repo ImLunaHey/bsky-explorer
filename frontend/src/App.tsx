@@ -94,6 +94,22 @@ const clock = (value: number) =>
     minute: "2-digit",
     second: "2-digit",
   });
+const observedTime = (value: number) => {
+  const observed = new Date(value);
+  const today = new Date();
+  const sameDay =
+    observed.getFullYear() === today.getFullYear() &&
+    observed.getMonth() === today.getMonth() &&
+    observed.getDate() === today.getDate();
+  return sameDay
+    ? clock(value)
+    : observed.toLocaleString([], {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+};
 const pct = (x?: number) =>
   x == null ? "—" : `${(x * (x <= 1 ? 100 : 1)).toFixed(1)}%`;
 const isDid = (value?: string) => Boolean(value?.startsWith("did:"));
@@ -998,7 +1014,10 @@ function SystemHistoryChart({ history }: { history: SystemSample[] }) {
       scales: {
         x: {
           scale: scaleLinear,
-          axis: { label: "Time", ticks: { format: (v: number) => clock(v) } },
+          axis: {
+            label: "Local time",
+            ticks: { format: (v: number) => observedTime(v) },
+          },
         },
         y: {
           scale: scaleLinear,
@@ -1016,7 +1035,7 @@ function SystemHistoryChart({ history }: { history: SystemSample[] }) {
           {
             channel: "x",
             label: "Observed",
-            text: (p) => clock(Number(p.xValue)),
+            text: (p) => observedTime(Number(p.xValue)),
           },
           {
             channel: "y",
@@ -1075,7 +1094,10 @@ function CpuHistoryChart({ history }: { history: SystemSample[] }) {
       scales: {
         x: {
           scale: scaleLinear,
-          axis: { label: "Time", ticks: { format: (v: number) => clock(v) } },
+          axis: {
+            label: "Local time",
+            ticks: { format: (v: number) => observedTime(v) },
+          },
         },
         y: {
           scale: scaleLinear,
@@ -1087,7 +1109,21 @@ function CpuHistoryChart({ history }: { history: SystemSample[] }) {
       },
       focus: "group-x",
       maxFocusDistance: Number.POSITIVE_INFINITY,
-      tooltip,
+      tooltip: {
+        use: tooltip,
+        items: [
+          {
+            channel: "x",
+            label: "Observed",
+            text: (p) => observedTime(Number(p.xValue)),
+          },
+          {
+            channel: "y",
+            label: "CPU utilization",
+            text: (p) => `${n.format(Number(p.yValue))}%`,
+          },
+        ],
+      },
     });
   }, [history]);
   return history.filter((x) => x.host_cpu_utilization_percent != null).length >
@@ -1138,7 +1174,10 @@ function MemoryHistoryChart({ history }: { history: SystemSample[] }) {
       scales: {
         x: {
           scale: scaleLinear,
-          axis: { label: "Time", ticks: { format: (v: number) => clock(v) } },
+          axis: {
+            label: "Local time",
+            ticks: { format: (v: number) => observedTime(v) },
+          },
         },
         y: {
           scale: scaleLinear,
@@ -1153,7 +1192,7 @@ function MemoryHistoryChart({ history }: { history: SystemSample[] }) {
           {
             channel: "x",
             label: "Observed",
-            text: (p) => clock(Number(p.xValue)),
+            text: (p) => observedTime(Number(p.xValue)),
           },
           {
             channel: "y",
