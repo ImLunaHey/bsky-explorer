@@ -100,6 +100,7 @@ pub fn router(s: AppState) -> Router {
         .route("/api/records/media", get(record_media))
         .route("/api/identities", get(identities))
         .route("/api/identity-queue", get(identity_queue))
+        .route("/api/identity-queue/{id}", get(identity_queue_detail))
         .route("/api/storage", get(storage))
         .route("/api/system", get(system))
         .route("/api/system/history", get(system_history))
@@ -1775,20 +1776,52 @@ struct IdentityQueueQuery {
     limit: Option<usize>,
     #[serde(default)]
     offset: usize,
-}
-#[derive(Serialize)]
-struct IdentityQueueResponse {
-    summary: crate::identity_queue::IdentityQueueSummary,
-    jobs: Vec<crate::identity_queue::IdentityJob>,
+    status: Option<String>,
+    q: Option<String>,
+    sort: Option<String>,
+    order: Option<String>,
+    hours: Option<u32>,
+    bucket_minutes: Option<u32>,
 }
 async fn identity_queue(
     State(s): State<AppState>,
     Query(q): Query<IdentityQueueQuery>,
-) -> Json<IdentityQueueResponse> {
-    Json(IdentityQueueResponse {
-        summary: s.identity_queue.summary(),
-        jobs: s.identity_queue.list(q.limit.unwrap_or(25), q.offset),
-    })
+) -> Result<Json<crate::identity_queue::IdentityQueuePage>, (StatusCode, String)> {
+    if q.status.as_ref().is_some_and(|v| {
+        !matches!(
+            v.as_str(),
+            "queued" | "running" | "retrying" | "resolved" | "negative" | "dead_letter"
+        )
+    }) {
+        return Err((StatusCode::BAD_REQUEST, "invalid status".into()));
+    }
+    let descending = q.order.as_deref() != Some("asc");
+    s.identity_queue
+        .page(crate::identity_queue::IdentityPageQuery {
+            limit: q.limit.unwrap_or(25).clamp(1, 100),
+            offset: q.offset.min(1_000_000),
+            status: q.status.as_deref(),
+            search: q.q.as_deref().filter(|v| !v.is_empty()),
+            sort: q.sort.as_deref().unwrap_or("updated_at"),
+            descending,
+            hours: q.hours.unwrap_or(24),
+            bucket_minutes: q.bucket_minutes.unwrap_or(15),
+        })
+        .map(Json)
+        .map_err(internal_error)
+}
+async fn identity_queue_detail(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::identity_queue::IdentityJob>, (StatusCode, String)> {
+    if id.len() > 64 {
+        return Err((StatusCode::BAD_REQUEST, "invalid job id".into()));
+    }
+    s.identity_queue
+        .get(&id)
+        .map_err(internal_error)?
+        .map(Json)
+        .ok_or((StatusCode::NOT_FOUND, "identity job not found".into()))
 }
 
 #[derive(Serialize)]
