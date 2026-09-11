@@ -33,6 +33,7 @@ import { TrendPage } from "./TrendPage";
 import { CommandPalette } from "./CommandPalette";
 import { SearchPage } from "./SearchPage";
 import { AccountPage } from "./AccountPage";
+import { TopAccounts } from "./TopAccounts";
 import { BackfillsPage } from "./BackfillsPage";
 import type {
   Anomalies,
@@ -1541,6 +1542,7 @@ export default function App({ route }: { route: AppRoute }) {
                 </div>
               </Panel>
             </div>
+            <TopAccounts />
             <div className="mt-5 grid gap-5 md:grid-cols-2 lg:grid-cols-3">
               <Panel
                 title="Top domains"

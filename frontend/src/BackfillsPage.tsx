@@ -13,6 +13,7 @@ import {
 import { ArrowDownUp, ChevronDown, ChevronRight, Search } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { api } from "./api";
+import { useIdentityMap } from "./identities";
 import type {
   BackfillJob,
   BackfillJobsResponse,
@@ -125,6 +126,9 @@ export function BackfillsPage() {
     refetchInterval: (q) =>
       q.state.data?.jobs.some((job) => active.has(job.status)) ? 3_000 : false,
   });
+  const handles = useIdentityMap(
+    (jobs.data?.jobs || []).flatMap((job) => (job.did ? [job.did] : [])),
+  );
   const identityQueue = useQuery({
     queryKey: ["identity-queue"],
     queryFn: () => api<IdentityQueueResponse>("/api/identity-queue?limit=25"),
@@ -138,7 +142,7 @@ export function BackfillsPage() {
   });
   const data = useMemo(() => {
     const needle = filter.trim().toLowerCase();
-    return (jobs.data?.jobs || []).filter(
+    return (jobs.data?.jobs || []).map((job) => ({...job,handle:job.handle || (job.did ? handles.get(job.did) : undefined) || null})).filter(
       (job) =>
         (status === "all" || job.status === status) &&
         (type === "all" || job.job_type === type) &&
@@ -147,7 +151,7 @@ export function BackfillsPage() {
             (value) => value?.toLowerCase().includes(needle),
           )),
     );
-  }, [filter, jobs.data, status, type]);
+  }, [filter, handles, jobs.data, status, type]);
   const table = useReactTable({
     data,
     columns,
