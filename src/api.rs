@@ -81,6 +81,7 @@ pub fn router(s: AppState) -> Router {
         .route("/api/trending/urls", get(urls))
         .route("/api/trending/domains", get(domains))
         .route("/api/trending/fingerprints", get(fingerprints))
+        .route("/api/trending/accounts", get(trending_accounts))
         .route("/api/trending/drilldown", get(trend_drilldown))
         .route("/api/trending/conversations", get(conversations))
         .route("/api/anomalies", get(anomalies))
@@ -687,6 +688,65 @@ async fn firehose(
 }
 async fn urls(State(s): State<AppState>) -> Json<Vec<(String, u64)>> {
     Json(s.analysis.top(false))
+}
+
+#[derive(Deserialize)]
+struct TrendingAccountsQuery {
+    metric: Option<String>,
+    window: Option<String>,
+    limit: Option<u64>,
+}
+#[derive(Serialize)]
+struct TrendingAccountsResponse {
+    metric: String,
+    window: String,
+    window_seconds: u64,
+    accounts: Vec<crate::storage::TrendingAccount>,
+}
+async fn trending_accounts(
+    State(s): State<AppState>,
+    Query(q): Query<TrendingAccountsQuery>,
+) -> Result<Json<TrendingAccountsResponse>, (StatusCode, String)> {
+    let metric = q.metric.unwrap_or_else(|| "followers".into());
+    if !matches!(
+        metric.as_str(),
+        "followers" | "reposts" | "likes" | "replies" | "posts"
+    ) {
+        return Err((StatusCode::BAD_REQUEST, "invalid metric".into()));
+    }
+    let window = q.window.unwrap_or_else(|| "24h".into());
+    let window_seconds = trending_account_window(&window).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "window must be 1h, 24h, or 7d".into(),
+        )
+    })?;
+    let limit = q.limit.unwrap_or(20);
+    if !(1..=100).contains(&limit) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "limit must be between 1 and 100".into(),
+        ));
+    }
+    let accounts = s
+        .storage
+        .trending_accounts(&metric, window_seconds, limit)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(TrendingAccountsResponse {
+        metric,
+        window,
+        window_seconds,
+        accounts,
+    }))
+}
+fn trending_account_window(value: &str) -> Option<u64> {
+    match value {
+        "1h" => Some(3600),
+        "24h" => Some(86400),
+        "7d" => Some(604800),
+        _ => None,
+    }
 }
 async fn domains(State(s): State<AppState>) -> Json<Vec<(String, u64)>> {
     Json(s.analysis.top(true))
@@ -2091,6 +2151,15 @@ mod tests {
         assert!(parse_trend_dimension("account", "did:plc:test").is_err());
         assert!(valid_event_kind("RePoSt"));
         assert!(!valid_event_kind("subscribe"));
+    }
+
+    #[test]
+    fn validates_trending_account_windows() {
+        assert_eq!(trending_account_window("1h"), Some(3_600));
+        assert_eq!(trending_account_window("24h"), Some(86_400));
+        assert_eq!(trending_account_window("7d"), Some(604_800));
+        assert_eq!(trending_account_window("30d"), None);
+        assert_eq!(trending_account_window("1h OR 1=1"), None);
     }
 
     #[test]

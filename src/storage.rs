@@ -41,6 +41,15 @@ pub struct AccountStoredStats {
     pub urls: Vec<String>,
 }
 #[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct TrendingAccount {
+    pub did: String,
+    pub count: u64,
+    pub previous_count: u64,
+    pub change: i64,
+    pub rate_per_hour: f64,
+    pub evidence: Vec<String>,
+}
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
 pub struct StoredRecord {
     pub at_uri: String,
     pub actor_did: String,
@@ -274,6 +283,60 @@ impl From<&NormalizedEvent> for EventRow {
     }
 }
 impl Storage {
+    pub async fn trending_accounts(
+        &self,
+        metric: &str,
+        window_seconds: u64,
+        limit: u64,
+    ) -> Result<Vec<TrendingAccount>> {
+        let (did, predicate, evidence) = match metric {
+            "followers" => (
+                "target_did",
+                "kind = 'follow' AND target_did != ''",
+                "at_uri",
+            ),
+            "reposts" => (
+                "target_did",
+                "kind = 'repost' AND target_did != ''",
+                "target",
+            ),
+            "likes" => ("target_did", "kind = 'like' AND target_did != ''", "target"),
+            "replies" => (
+                "target_did",
+                "kind = 'reply' AND target_did != ''",
+                "reply_parent",
+            ),
+            "posts" => ("actor_did", "kind = 'post'", "at_uri"),
+            _ => anyhow::bail!("invalid trending account metric"),
+        };
+        anyhow::ensure!(
+            matches!(window_seconds, 3600 | 86400 | 604800),
+            "invalid trending account window"
+        );
+        let query = format!(
+            "WITH now64(3) AS measured_at, measured_at - toIntervalSecond(?) AS current_start, current_start - toIntervalSecond(?) AS previous_start
+             SELECT {did} AS did,
+               uniqExactIf(event_id, timestamp >= current_start) AS count,
+               uniqExactIf(event_id, timestamp < current_start) AS previous_count,
+               toInt64(count) - toInt64(previous_count) AS change,
+               count / (? / 3600.0) AS rate_per_hour,
+               arraySlice(groupUniqArrayIf(20)({evidence}, timestamp >= current_start AND {evidence} != ''), 1, 10) AS evidence
+             FROM events PREWHERE timestamp >= previous_start
+             WHERE {predicate}
+             GROUP BY did HAVING count > 0
+             ORDER BY count DESC, did ASC LIMIT ?
+             SETTINGS max_execution_time=3, max_threads=4"
+        );
+        Ok(self
+            .client
+            .query(&query)
+            .bind(window_seconds)
+            .bind(window_seconds)
+            .bind(window_seconds)
+            .bind(limit.clamp(1, 100))
+            .fetch_all::<TrendingAccount>()
+            .await?)
+    }
     pub fn new(url: &str, database: &str, user: &str, password: &str) -> Self {
         Self {
             client: Client::default()
@@ -799,6 +862,18 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn trending_accounts_rejects_dynamic_sql_inputs_before_querying() {
+        let storage = Storage::new("http://127.0.0.1:1", "observatory", "default", "");
+        assert!(
+            storage
+                .trending_accounts("likes OR 1=1", 3600, 20)
+                .await
+                .is_err()
+        );
+        assert!(storage.trending_accounts("likes", 123, 20).await.is_err());
+    }
     use crate::model::EventKind;
     #[test]
     fn classifies_known_and_unknown_lexicon_families_without_guessing() {
