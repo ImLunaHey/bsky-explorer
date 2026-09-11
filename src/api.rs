@@ -385,31 +385,13 @@ async fn backfills(
 ) -> Json<serde_json::Value> {
     let limit = q.limit.unwrap_or(25).clamp(1, 100);
     let offset = q.offset.unwrap_or(0).min(10_000);
-    let all = s.backfills.list(10_000);
-    let mut filtered: Vec<_> = all
-        .iter()
-        .filter(|j| {
-            q.status.as_ref().is_none_or(|v| {
-                serde_json::to_value(&j.status)
-                    .ok()
-                    .and_then(|x| x.as_str().map(str::to_owned))
-                    .as_ref()
-                    == Some(v)
-            })
-        })
-        .filter(|j| {
-            q.job_type.as_ref().is_none_or(|v| {
-                serde_json::to_value(&j.job_type)
-                    .ok()
-                    .and_then(|x| x.as_str().map(str::to_owned))
-                    .as_ref()
-                    == Some(v)
-            })
-        })
-        .cloned()
-        .collect();
-    let total = filtered.len();
-    let jobs: Vec<_> = filtered.drain(offset.min(total)..).take(limit).collect();
+    let (jobs, total) = s
+        .backfills
+        .list_page(limit, offset, q.status.as_deref(), q.job_type.as_deref())
+        .unwrap_or_else(|error| {
+            tracing::error!(%error,"list backfills");
+            (vec![], 0)
+        });
     let has_more = offset + jobs.len() < total;
     Json(
         serde_json::json!({"jobs":jobs,"total":total,"offset":offset,"limit":limit,"has_more":has_more}),

@@ -58,7 +58,10 @@ and are inspectable at `GET /api/identity-queue?limit=25&offset=0`. Queue state 
 stored in an embedded SQLite database using WAL mode, so claims, summaries, and
 pagination are indexed and retained history is not loaded into application memory.
 On first startup, legacy per-job JSON files are imported transactionally and left
-untouched as a recovery copy; later startups are idempotent.
+in `legacy-json-migration-backup/` as a recovery copy; later startups are
+idempotent. Backfill jobs and repository/association cursor checkpoints use the
+same SQLite WAL control plane, including leases, dependencies, counters, retries,
+and errors. Active queue code never writes per-job JSON files.
 `IDENTITY_WORKER_CONCURRENCY` defaults to 1, `IDENTITY_REQUESTS_PER_SECOND`
 controls fixed-AppView pacing, and `IDENTITY_NEGATIVE_TTL_SECONDS` controls when
 a missing profile may be retried. Identity API misses return immediately and

@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::Mutex;
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs, net::IpAddr, path::PathBuf, sync::Arc};
+use std::{fs, net::IpAddr, path::PathBuf, sync::Arc};
 use xxhash_rust::xxh3::xxh3_64;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -62,31 +63,23 @@ fn default_crawl_scope() -> String {
 
 #[derive(Clone)]
 pub struct BackfillQueue {
-    root: PathBuf,
-    jobs: Arc<Mutex<HashMap<String, BackfillJob>>>,
+    db_path: PathBuf,
+    db: Arc<Mutex<Connection>>,
 }
 
 impl BackfillQueue {
     pub fn open(root: PathBuf) -> Result<Self> {
         fs::create_dir_all(&root)?;
-        let mut jobs = HashMap::new();
-        for entry in fs::read_dir(&root)? {
-            let path = entry?.path();
-            if path.extension().and_then(|x| x.to_str()) != Some("json") {
-                continue;
-            }
-            if let Ok(bytes) = fs::read(&path)
-                && let Ok(mut job) = serde_json::from_slice::<BackfillJob>(&bytes)
-            {
-                job.crawl_depth = u8::from(matches!(job.job_type, JobType::Associations));
-                job.max_depth = 1;
-                job.scope = default_crawl_scope();
-                jobs.insert(job.id.clone(), job);
-            }
-        }
+        let db_path = root.join("queue.sqlite3");
+        let mut db = Connection::open(&db_path)?;
+        db.pragma_update(None, "journal_mode", "WAL")?;
+        db.pragma_update(None, "synchronous", "NORMAL")?;
+        db.busy_timeout(std::time::Duration::from_secs(5))?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS backfill_jobs(id TEXT PRIMARY KEY,status TEXT NOT NULL,job_type TEXT NOT NULL,updated_at TEXT NOT NULL,next_attempt_at TEXT,lease_until TEXT,depends_on TEXT,job_json TEXT NOT NULL); CREATE INDEX IF NOT EXISTS backfill_claim ON backfill_jobs(status,next_attempt_at,lease_until,updated_at); CREATE INDEX IF NOT EXISTS backfill_dependency ON backfill_jobs(depends_on); CREATE TABLE IF NOT EXISTS backfill_checkpoints(job_id TEXT PRIMARY KEY,kind TEXT NOT NULL,payload TEXT NOT NULL,updated_at TEXT NOT NULL);")?;
+        import_legacy_backfills(&root, &mut db)?;
         Ok(Self {
-            root,
-            jobs: Arc::new(Mutex::new(jobs)),
+            db_path,
+            db: Arc::new(Mutex::new(db)),
         })
     }
     pub fn enqueue(
@@ -113,26 +106,11 @@ impl BackfillQueue {
             "bf-{:016x}",
             xxh3_64(format!("v1\0{scope}\0{identity}").as_bytes())
         );
-        let mut jobs = self.jobs.lock();
-        if let Some(job) = jobs.get(&id) {
-            return Ok(job.clone());
+        let db = self.db.lock();
+        if let Some(job) = get_job(&db, &id)? {
+            return Ok(job);
         }
-        let active = jobs
-            .values()
-            .filter(|job| {
-                matches!(
-                    job.status,
-                    JobStatus::Queued
-                        | JobStatus::Resolving
-                        | JobStatus::Running
-                        | JobStatus::Retrying
-                )
-            })
-            .count();
-        anyhow::ensure!(
-            jobs.len() < 10_000,
-            "backfill queue retention limit reached"
-        );
+        let active:i64=db.query_row("SELECT count(*) FROM backfill_jobs WHERE status IN ('queued','resolving','running','retrying')",[],|r|r.get(0))?;
         anyhow::ensure!(active < 100, "backfill queue is at its active-job limit");
         let now = Utc::now();
         let crawl_depth = u8::from(matches!(kind, JobType::Associations));
@@ -160,23 +138,52 @@ impl BackfillQueue {
             lease_token: None,
             lease_until: None,
         };
-        self.persist(&job)?;
-        jobs.insert(id, job.clone());
+        persist_job(&db, &job)?;
         Ok(job)
     }
     pub fn get(&self, id: &str) -> Option<BackfillJob> {
-        self.jobs.lock().get(id).cloned()
+        get_job(&self.db.lock(), id).unwrap_or_else(|e| {
+            tracing::error!(%e,"get backfill job");
+            None
+        })
     }
     pub fn list(&self, limit: usize) -> Vec<BackfillJob> {
-        let mut v: Vec<_> = self.jobs.lock().values().cloned().collect();
-        v.sort_by_key(|j| std::cmp::Reverse(j.updated_at));
-        v.truncate(limit.min(100));
-        v
+        let db = self.db.lock();
+        let result = (|| -> Result<Vec<_>> {
+            let mut q =
+                db.prepare("SELECT job_json FROM backfill_jobs ORDER BY updated_at DESC LIMIT ?1")?;
+            Ok(
+                q.query_map([limit.min(100) as i64], |r| r.get::<_, String>(0))?
+                    .filter_map(|v| v.ok().and_then(|s| serde_json::from_str(&s).ok()))
+                    .collect(),
+            )
+        })();
+        result.unwrap_or_else(|e| {
+            tracing::error!(%e,"list backfill jobs");
+            vec![]
+        })
+    }
+    pub fn list_page(
+        &self,
+        limit: usize,
+        offset: usize,
+        status: Option<&str>,
+        job_type: Option<&str>,
+    ) -> Result<(Vec<BackfillJob>, usize)> {
+        let db = self.db.lock();
+        let total:i64=db.query_row("SELECT count(*) FROM backfill_jobs WHERE (?1 IS NULL OR status=?1) AND (?2 IS NULL OR job_type=?2)",params![status,job_type],|r|r.get(0))?;
+        let mut q=db.prepare("SELECT job_json FROM backfill_jobs WHERE (?1 IS NULL OR status=?1) AND (?2 IS NULL OR job_type=?2) ORDER BY updated_at DESC LIMIT ?3 OFFSET ?4")?;
+        let jobs = q
+            .query_map(
+                params![status, job_type, limit.min(100) as i64, offset as i64],
+                |r| r.get::<_, String>(0),
+            )?
+            .map(|v| Ok(serde_json::from_str(&v?)?))
+            .collect::<Result<Vec<_>>>()?;
+        Ok((jobs, total as usize))
     }
     pub fn update(&self, job: BackfillJob) -> Result<()> {
-        self.persist(&job)?;
-        self.jobs.lock().insert(job.id.clone(), job);
-        Ok(())
+        persist_job(&self.db.lock(), &job)
     }
     pub fn cancel(&self, id: &str) -> Result<Option<BackfillJob>> {
         let Some(mut job) = self.get(id) else {
@@ -209,42 +216,33 @@ impl BackfillQueue {
     }
     pub fn claim(&self, lease_seconds: i64) -> Result<Option<BackfillJob>> {
         let now = Utc::now();
-        let mut jobs = self.jobs.lock();
-        let blocked: Vec<_> = jobs
-            .values()
-            .filter(|job| job.status == JobStatus::Queued)
-            .filter_map(|job| {
-                let dependency = job.depends_on_job_id.as_ref()?;
-                jobs.get(dependency)
-                    .is_some_and(|parent| {
-                        matches!(parent.status, JobStatus::DeadLetter | JobStatus::Cancelled)
-                    })
-                    .then(|| job.id.clone())
-            })
-            .collect();
+        let mut db = self.db.lock();
+        let tx = db.transaction()?;
+        let blocked: Vec<String> = {
+            let mut q=tx.prepare("SELECT c.id FROM backfill_jobs c JOIN backfill_jobs p ON p.id=c.depends_on WHERE c.status='queued' AND p.status IN ('dead_letter','cancelled')")?;
+            q.query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?
+        };
         for id in blocked {
-            let job = jobs.get_mut(&id).expect("blocked dependent exists");
-            job.status = JobStatus::DeadLetter;
-            job.last_error = Some("dependency did not complete".into());
-            job.updated_at = now;
-            self.persist(job)?;
+            if let Some(mut j) = get_job(&tx, &id)? {
+                j.status = JobStatus::DeadLetter;
+                j.last_error = Some("dependency did not complete".into());
+                j.updated_at = now;
+                persist_job(&tx, &j)?
+            }
         }
-        let candidate_id = jobs
-            .values()
+        let ids: Vec<String> = {
+            let mut q=tx.prepare("SELECT c.id FROM backfill_jobs c LEFT JOIN backfill_jobs p ON p.id=c.depends_on WHERE c.status IN ('queued','retrying','running') AND (c.next_attempt_at IS NULL OR c.next_attempt_at<=?1) AND (c.lease_until IS NULL OR c.lease_until<=?1) AND (c.depends_on IS NULL OR p.status='completed') ORDER BY c.updated_at LIMIT 1")?;
+            q.query_map([now.to_rfc3339()], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        let selected = ids
+            .into_iter()
+            .filter_map(|id| get_job(&tx, &id).ok().flatten())
             .find(|j| {
-                matches!(
-                    j.status,
-                    JobStatus::Queued | JobStatus::Retrying | JobStatus::Running
-                ) && j.next_attempt_at.is_none_or(|t| t <= now)
-                    && j.lease_until.is_none_or(|t| t <= now)
-                    && j.depends_on_job_id.as_ref().is_none_or(|id| {
-                        jobs.get(id)
-                            .is_some_and(|d| d.status == JobStatus::Completed)
-                    })
-            })
-            .map(|job| job.id.clone());
-        if let Some(id) = candidate_id {
-            let job = jobs.get_mut(&id).expect("selected queue job exists");
+                j.next_attempt_at.is_none_or(|t| t <= now) && j.lease_until.is_none_or(|t| t <= now)
+            });
+        if let Some(mut job) = selected {
             job.status = JobStatus::Running;
             job.updated_at = now;
             job.lease_token = Some(format!(
@@ -252,16 +250,17 @@ impl BackfillQueue {
                 xxh3_64(format!("{}{}", job.id, now).as_bytes())
             ));
             job.lease_until = Some(now + Duration::seconds(lease_seconds));
-            self.persist(job)?;
-            Ok(Some(job.clone()))
+            persist_job(&tx, &job)?;
+            tx.commit()?;
+            Ok(Some(job))
         } else {
+            tx.commit()?;
             Ok(None)
         }
     }
     fn renew_lease(&self, id: &str, token: &str, lease_seconds: i64) -> Result<()> {
         let checkpoint = self.checkpoint_progress(id);
-        let mut jobs = self.jobs.lock();
-        let job = jobs.get_mut(id).context("leased job disappeared")?;
+        let mut job = self.get(id).context("leased job disappeared")?;
         anyhow::ensure!(
             job.lease_token.as_deref() == Some(token),
             "backfill lease ownership changed"
@@ -277,13 +276,10 @@ impl BackfillQueue {
             job.collection = collection;
             job.cursor = cursor;
         }
-        self.persist(job)
+        self.update(job)
     }
     fn association_progress(&self, id: &str) -> Option<u64> {
-        let value: serde_json::Value = serde_json::from_slice(
-            &fs::read(self.root.join(format!("{id}-associations.json"))).ok()?,
-        )
-        .ok()?;
+        let value = self.checkpoint_value(id)?;
         Some(
             ["likes", "reposts", "quotes", "replies"]
                 .iter()
@@ -292,9 +288,9 @@ impl BackfillQueue {
         )
     }
     fn checkpoint_progress(&self, id: &str) -> Option<(u64, Option<String>, Option<String>)> {
-        let repository = self.root.join(format!("{id}-repository.json"));
-        if let Ok(bytes) = fs::read(repository) {
-            let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        if let Some(value) = self.checkpoint_value(id)
+            && value.get("records_written").is_some()
+        {
             return Some((
                 value
                     .get("records_written")
@@ -313,12 +309,108 @@ impl BackfillQueue {
         self.association_progress(id)
             .map(|records| (records, None, None))
     }
-    fn persist(&self, job: &BackfillJob) -> Result<()> {
-        let path = self.root.join(format!("{}.json", job.id));
-        let tmp = self.root.join(format!("{}.tmp", job.id));
-        fs::write(&tmp, serde_json::to_vec_pretty(job)?)?;
-        fs::rename(tmp, path).context("atomically persist backfill job")
+    fn checkpoint_value(&self, id: &str) -> Option<serde_json::Value> {
+        self.db
+            .lock()
+            .query_row(
+                "SELECT payload FROM backfill_checkpoints WHERE job_id=?1",
+                [id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str(&s).ok())
     }
+}
+
+fn status_name(s: &JobStatus) -> &'static str {
+    match s {
+        JobStatus::Queued => "queued",
+        JobStatus::Resolving => "resolving",
+        JobStatus::Running => "running",
+        JobStatus::Retrying => "retrying",
+        JobStatus::Completed => "completed",
+        JobStatus::DeadLetter => "dead_letter",
+        JobStatus::Cancelled => "cancelled",
+    }
+}
+fn kind_name(k: &JobType) -> &'static str {
+    match k {
+        JobType::Repository => "repository",
+        JobType::Associations => "associations",
+    }
+}
+fn persist_job(db: &Connection, j: &BackfillJob) -> Result<()> {
+    db.execute("INSERT INTO backfill_jobs(id,status,job_type,updated_at,next_attempt_at,lease_until,depends_on,job_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id) DO UPDATE SET status=excluded.status,job_type=excluded.job_type,updated_at=excluded.updated_at,next_attempt_at=excluded.next_attempt_at,lease_until=excluded.lease_until,depends_on=excluded.depends_on,job_json=excluded.job_json",params![j.id,status_name(&j.status),kind_name(&j.job_type),j.updated_at.to_rfc3339(),j.next_attempt_at.map(|v|v.to_rfc3339()),j.lease_until.map(|v|v.to_rfc3339()),j.depends_on_job_id,serde_json::to_string(j)?])?;
+    Ok(())
+}
+fn get_job(db: &Connection, id: &str) -> Result<Option<BackfillJob>> {
+    let raw: Option<String> = db
+        .query_row(
+            "SELECT job_json FROM backfill_jobs WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    raw.map(|s| serde_json::from_str(&s).map_err(Into::into))
+        .transpose()
+}
+fn import_legacy_backfills(root: &PathBuf, db: &mut Connection) -> Result<()> {
+    let tx = db.transaction()?;
+    let mut imported_paths = Vec::new();
+    if tx.query_row("SELECT count(*) FROM backfill_jobs", [], |r| {
+        r.get::<_, i64>(0)
+    })? == 0
+    {
+        for entry in fs::read_dir(root)? {
+            let path = entry?.path();
+            if path.extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(bytes) = fs::read(&path) else { continue };
+            if let Ok(mut j) = serde_json::from_slice::<BackfillJob>(&bytes) {
+                j.crawl_depth = u8::from(matches!(j.job_type, JobType::Associations));
+                j.max_depth = 1;
+                j.scope = default_crawl_scope();
+                persist_job(&tx, &j)?
+            } else if let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                let Some(name) = path.file_stem().and_then(|x| x.to_str()) else {
+                    continue;
+                };
+                let (id, kind) = if let Some(id) = name.strip_suffix("-associations") {
+                    (id, "associations")
+                } else if let Some(id) = name.strip_suffix("-repository") {
+                    (id, "repository")
+                } else {
+                    continue;
+                };
+                tx.execute(
+                    "INSERT OR IGNORE INTO backfill_checkpoints VALUES(?1,?2,?3,?4)",
+                    params![id, kind, payload.to_string(), Utc::now().to_rfc3339()],
+                )?;
+                imported_paths.push(path.clone());
+            }
+            if serde_json::from_slice::<BackfillJob>(&bytes).is_ok() {
+                imported_paths.push(path);
+            }
+        }
+    }
+    tx.commit()?;
+    if !imported_paths.is_empty() {
+        let backup = root.join("legacy-json-migration-backup");
+        fs::create_dir_all(&backup)?;
+        for path in imported_paths {
+            if path.exists() {
+                let target =
+                    backup.join(path.file_name().context("legacy queue filename missing")?);
+                if !target.exists() {
+                    fs::rename(path, target)?
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn retry_delay(headers: &reqwest::header::HeaderMap, now: DateTime<Utc>) -> Option<Duration> {
@@ -424,7 +516,6 @@ async fn execute_job(queue: &BackfillQueue, mut job: BackfillJob) -> Result<()> 
     let mut command = match job.job_type {
         JobType::Repository => {
             let pds = resolve_pds(&did).await?;
-            let checkpoint = queue.root.join(format!("{}-repository.json", job.id));
             let mut command = tokio::process::Command::new("/usr/local/bin/backfill_account");
             command.args([
                 "--repo",
@@ -434,18 +525,21 @@ async fn execute_job(queue: &BackfillQueue, mut job: BackfillJob) -> Result<()> 
                 "--pds",
                 &pds,
                 "--checkpoint",
-                checkpoint.to_str().context("invalid checkpoint path")?,
+                queue.db_path.to_str().context("invalid checkpoint path")?,
+                "--checkpoint-job-id",
+                &job.id,
             ]);
             command
         }
         JobType::Associations => {
-            let checkpoint = queue.root.join(format!("{}-associations.json", job.id));
             let mut command = tokio::process::Command::new("/usr/local/bin/backfill_associations");
             command.args([
                 "--did",
                 &did,
                 "--checkpoint",
-                checkpoint.to_str().context("invalid checkpoint path")?,
+                queue.db_path.to_str().context("invalid checkpoint path")?,
+                "--checkpoint-job-id",
+                &job.id,
             ]);
             command
         }
@@ -724,18 +818,61 @@ mod tests {
                 false,
             )
             .unwrap();
-        fs::write(
-            directory
-                .path()
-                .join(format!("{}-associations.json", job.id)),
-            br#"{"likes":10,"reposts":2,"quotes":3,"replies":4}"#,
-        )
-        .unwrap();
+        queue
+            .db
+            .lock()
+            .execute(
+                "INSERT INTO backfill_checkpoints VALUES(?1,'associations',?2,?3)",
+                params![
+                    job.id,
+                    r#"{"likes":10,"reposts":2,"quotes":3,"replies":4}"#,
+                    Utc::now().to_rfc3339()
+                ],
+            )
+            .unwrap();
         let claimed = queue.claim(120).unwrap().unwrap();
         queue
             .renew_lease(&claimed.id, claimed.lease_token.as_deref().unwrap(), 120)
             .unwrap();
         assert_eq!(queue.get(&job.id).unwrap().records_written, 19);
+    }
+
+    #[test]
+    fn legacy_jobs_and_checkpoints_are_imported_and_archived() {
+        let source = tempfile::tempdir().unwrap();
+        let seed = BackfillQueue::open(source.path().into()).unwrap();
+        let job = seed
+            .enqueue(
+                "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+                Some("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"),
+                JobType::Associations,
+                None,
+                false,
+            )
+            .unwrap();
+        drop(seed);
+        let target = tempfile::tempdir().unwrap();
+        fs::write(
+            target.path().join(format!("{}.json", job.id)),
+            serde_json::to_vec(&job).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            target.path().join(format!("{}-associations.json", job.id)),
+            br#"{"likes":4,"reposts":3,"quotes":2,"replies":1}"#,
+        )
+        .unwrap();
+        let queue = BackfillQueue::open(target.path().into()).unwrap();
+        assert!(queue.get(&job.id).is_some());
+        assert_eq!(queue.association_progress(&job.id), Some(10));
+        let backup = target.path().join("legacy-json-migration-backup");
+        assert!(backup.join(format!("{}.json", job.id)).exists());
+        assert!(
+            backup
+                .join(format!("{}-associations.json", job.id))
+                .exists()
+        );
+        assert!(!target.path().join(format!("{}.json", job.id)).exists());
     }
 
     #[test]

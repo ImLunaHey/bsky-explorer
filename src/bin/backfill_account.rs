@@ -5,6 +5,7 @@ use bsky_observatory::{
 use chrono::Utc;
 use clap::Parser;
 use reqwest::{Client, Url, redirect::Policy};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
@@ -22,6 +23,8 @@ struct Args {
     pds: String,
     #[arg(long)]
     checkpoint: Option<PathBuf>,
+    #[arg(long)]
+    checkpoint_job_id: Option<String>,
     #[arg(long, env = "CLICKHOUSE_URL", default_value = "http://localhost:8123")]
     clickhouse_url: String,
     #[arg(long, env = "CLICKHOUSE_DATABASE", default_value = "observatory")]
@@ -82,7 +85,8 @@ async fn main() -> Result<()> {
     .await?;
     anyhow::ensure!(description.did == args.did, "PDS returned a different DID");
 
-    let mut checkpoint = load_checkpoint(args.checkpoint.as_ref())?;
+    let mut checkpoint =
+        load_checkpoint(args.checkpoint.as_ref(), args.checkpoint_job_id.as_deref())?;
     let mut counts = BTreeMap::new();
     for (collection_index, collection) in description
         .collections
@@ -137,7 +141,11 @@ async fn main() -> Result<()> {
             checkpoint.collection = Some(collection.clone());
             checkpoint.cursor = cursor.clone();
             checkpoint.records_written += events.len() as u64;
-            save_checkpoint(args.checkpoint.as_ref(), &checkpoint)?;
+            save_checkpoint(
+                args.checkpoint.as_ref(),
+                args.checkpoint_job_id.as_deref(),
+                &checkpoint,
+            )?;
             if cursor.is_none() {
                 break;
             }
@@ -146,7 +154,11 @@ async fn main() -> Result<()> {
         checkpoint.collection_index = collection_index + 1;
         checkpoint.collection = None;
         checkpoint.cursor = None;
-        save_checkpoint(args.checkpoint.as_ref(), &checkpoint)?;
+        save_checkpoint(
+            args.checkpoint.as_ref(),
+            args.checkpoint_job_id.as_deref(),
+            &checkpoint,
+        )?;
     }
     println!("{}", serde_json::to_string_pretty(&counts)?);
     Ok(())
@@ -197,19 +209,32 @@ async fn get_json<T: DeserializeOwned>(
     );
     serde_json::from_slice(&bytes).context("decode PDS response")
 }
-fn load_checkpoint(path: Option<&PathBuf>) -> Result<RepoCheckpoint> {
-    match path.map(std::fs::read).transpose() {
-        Ok(Some(bytes)) => Ok(serde_json::from_slice(&bytes)?),
-        Ok(None) | Err(_) => Ok(RepoCheckpoint::default()),
-    }
+fn load_checkpoint(path: Option<&PathBuf>, job_id: Option<&str>) -> Result<RepoCheckpoint> {
+    let (Some(path), Some(job_id)) = (path, job_id) else {
+        return Ok(RepoCheckpoint::default());
+    };
+    let db = rusqlite::Connection::open(path)?;
+    let raw = db
+        .query_row(
+            "SELECT payload FROM backfill_checkpoints WHERE job_id=?1",
+            [job_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?;
+    raw.map(|s| serde_json::from_str(&s).map_err(Into::into))
+        .transpose()
+        .map(Option::unwrap_or_default)
 }
-fn save_checkpoint(path: Option<&PathBuf>, value: &RepoCheckpoint) -> Result<()> {
-    let Some(path) = path else { return Ok(()) };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
-    std::fs::rename(tmp, path)?;
+fn save_checkpoint(
+    path: Option<&PathBuf>,
+    job_id: Option<&str>,
+    value: &RepoCheckpoint,
+) -> Result<()> {
+    let (Some(path), Some(job_id)) = (path, job_id) else {
+        return Ok(());
+    };
+    let db = rusqlite::Connection::open(path)?;
+    db.busy_timeout(Duration::from_secs(5))?;
+    db.execute("INSERT INTO backfill_checkpoints(job_id,kind,payload,updated_at) VALUES(?1,'repository',?2,?3) ON CONFLICT(job_id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",rusqlite::params![job_id,serde_json::to_string(value)?,Utc::now().to_rfc3339()])?;
     Ok(())
 }

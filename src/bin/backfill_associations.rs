@@ -8,6 +8,7 @@ use bsky_observatory::{
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use reqwest::{Client, StatusCode, redirect::Policy};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{path::PathBuf, time::Duration};
@@ -24,6 +25,8 @@ struct Args {
     did: String,
     #[arg(long)]
     checkpoint: PathBuf,
+    #[arg(long)]
+    checkpoint_job_id: String,
     #[arg(long, default_value_t = 4)]
     requests_per_second: u32,
     #[arg(long, env = "CLICKHOUSE_URL", default_value = "http://localhost:8123")]
@@ -117,7 +120,7 @@ async fn main() -> Result<()> {
     );
     storage.ping().await?;
     let posts = storage.account_post_uris(&args.did).await?;
-    let mut checkpoint = load_checkpoint(&args.checkpoint)?;
+    let mut checkpoint = load_checkpoint(&args.checkpoint, &args.checkpoint_job_id)?;
     anyhow::ensure!(
         checkpoint.next_post <= posts.len(),
         "checkpoint exceeds current post list"
@@ -147,7 +150,7 @@ async fn main() -> Result<()> {
         }
         checkpoint.requests += 4.max(checkpoint.requests.saturating_sub(before));
         checkpoint.next_post = index + 1;
-        save_checkpoint(&args.checkpoint, &checkpoint)?;
+        save_checkpoint(&args.checkpoint, &args.checkpoint_job_id, &checkpoint)?;
         if checkpoint.posts_completed % 100 == 0 {
             let rate = checkpoint.posts_completed as f64 / started.elapsed().as_secs_f64();
             let remaining = posts.len().saturating_sub(checkpoint.next_post);
@@ -395,20 +398,23 @@ fn ensure_subject(value: &Value, uri: &str) -> Result<()> {
     );
     Ok(())
 }
-fn load_checkpoint(path: &PathBuf) -> Result<Checkpoint> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Checkpoint::default()),
-        Err(e) => Err(e.into()),
-    }
+fn load_checkpoint(path: &PathBuf, job_id: &str) -> Result<Checkpoint> {
+    let db = rusqlite::Connection::open(path)?;
+    let raw = db
+        .query_row(
+            "SELECT payload FROM backfill_checkpoints WHERE job_id=?1",
+            [job_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?;
+    raw.map(|s| serde_json::from_str(&s).map_err(Into::into))
+        .transpose()
+        .map(Option::unwrap_or_default)
 }
-fn save_checkpoint(path: &PathBuf, value: &Checkpoint) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let temporary = path.with_extension("tmp");
-    std::fs::write(&temporary, serde_json::to_vec_pretty(value)?)?;
-    std::fs::rename(temporary, path)?;
+fn save_checkpoint(path: &PathBuf, job_id: &str, value: &Checkpoint) -> Result<()> {
+    let db = rusqlite::Connection::open(path)?;
+    db.busy_timeout(Duration::from_secs(5))?;
+    db.execute("INSERT INTO backfill_checkpoints(job_id,kind,payload,updated_at) VALUES(?1,'associations',?2,?3) ON CONFLICT(job_id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",rusqlite::params![job_id,serde_json::to_string(value)?,Utc::now().to_rfc3339()])?;
     Ok(())
 }
 

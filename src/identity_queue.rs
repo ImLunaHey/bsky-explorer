@@ -222,6 +222,7 @@ fn upsert(db: &Connection, j: &IdentityJob) -> Result<()> {
 fn import_json(root: &PathBuf, db: &mut Connection) -> Result<()> {
     let tx = db.transaction()?;
     let already: i64 = tx.query_row("SELECT count(*) FROM identity_jobs", [], |r| r.get(0))?;
+    let mut imported_paths = Vec::new();
     if already == 0 {
         let mut imported = 0;
         for entry in fs::read_dir(root)? {
@@ -231,7 +232,8 @@ fn import_json(root: &PathBuf, db: &mut Connection) -> Result<()> {
                 && let Ok(j) = serde_json::from_slice::<IdentityJob>(&bytes)
             {
                 upsert(&tx, &j)?;
-                imported += 1
+                imported += 1;
+                imported_paths.push(path);
             }
         }
         tracing::info!(
@@ -239,7 +241,21 @@ fn import_json(root: &PathBuf, db: &mut Connection) -> Result<()> {
             "imported legacy identity queue jobs into SQLite; JSON retained"
         );
     }
-    tx.commit().context("commit identity queue JSON import")
+    tx.commit().context("commit identity queue JSON import")?;
+    if !imported_paths.is_empty() {
+        let backup = root.join("legacy-json-migration-backup");
+        fs::create_dir_all(&backup)?;
+        for path in imported_paths {
+            let target = backup.join(
+                path.file_name()
+                    .context("legacy identity filename missing")?,
+            );
+            if !target.exists() {
+                fs::rename(path, target)?
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -336,7 +352,11 @@ mod tests {
         .unwrap();
         let q = IdentityQueue::open(d.path().into(), 100, Duration::seconds(1)).unwrap();
         assert_eq!(q.summary().resolved, 1);
-        assert!(d.path().join("id-old.json").exists());
+        assert!(
+            d.path()
+                .join("legacy-json-migration-backup/id-old.json")
+                .exists()
+        );
         drop(q);
         let q = IdentityQueue::open(d.path().into(), 100, Duration::seconds(1)).unwrap();
         assert_eq!(q.summary().total, 1)
