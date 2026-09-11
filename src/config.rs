@@ -72,6 +72,30 @@ pub struct Config {
     pub hot_detail_max_events: usize,
     #[arg(
         long,
+        env = "COMMUNITY_WINDOWS_SECONDS",
+        value_delimiter = ',',
+        default_value = "3600,86400,604800"
+    )]
+    pub community_windows_seconds: Vec<u64>,
+    #[arg(
+        long,
+        env = "COMMUNITY_EVENT_TYPES",
+        value_delimiter = ',',
+        default_value = "like,repost,follow,reply,quote"
+    )]
+    pub community_event_types: Vec<String>,
+    #[arg(long, env = "COMMUNITY_MIN_EDGE_WEIGHT", default_value_t = 2.0)]
+    pub community_min_edge_weight: f64,
+    #[arg(long, env = "COMMUNITY_MAX_NODES", default_value_t = 50_000)]
+    pub community_max_nodes: usize,
+    #[arg(long, env = "COMMUNITY_MAX_EDGES", default_value_t = 250_000)]
+    pub community_max_edges: usize,
+    #[arg(long, env = "COMMUNITY_MAX_INPUT_ROWS", default_value_t = 2_000_000)]
+    pub community_max_input_rows: u64,
+    #[arg(long, env = "COMMUNITY_INTERVAL_SECONDS", default_value_t = 900)]
+    pub community_interval_seconds: u64,
+    #[arg(
+        long,
         env = "IDENTITY_PROFILE_ENDPOINT",
         default_value = "https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile"
     )]

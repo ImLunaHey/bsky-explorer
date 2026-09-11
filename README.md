@@ -59,6 +59,13 @@ configured rate windows through 24 hours. Full normalized events remain in
 ClickHouse and raw payloads remain in the compressed archive. Prometheus exposes
 the current queue size as `observatory_hot_detail_events`.
 
+Weighted account-community snapshots are built from retained interactions outside
+the request path. `COMMUNITY_WINDOWS_SECONDS`, `COMMUNITY_EVENT_TYPES`, and
+`COMMUNITY_MIN_EDGE_WEIGHT` select the graph inputs. Input rows, nodes, and edges
+have independent hard bounds; `COMMUNITY_INTERVAL_SECONDS` controls refreshes.
+The deterministic label-propagation result, memberships, internal graph edges,
+and cross-community bridges are persisted in ClickHouse for historical comparison.
+
 Identity enrichment is asynchronous. Durable jobs live on the storage array at
 `DATA_DIR/identity-queue` (or `IDENTITY_QUEUE_DIR`), use leased restart recovery,
 and are inspectable at `GET /api/identity-queue?limit=25&offset=0`. Queue state is

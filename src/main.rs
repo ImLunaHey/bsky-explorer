@@ -9,6 +9,7 @@ use bsky_observatory::{
     storage::Storage,
 };
 use clap::Parser;
+use std::collections::BTreeSet;
 use tracing_subscriber::EnvFilter;
 // The ingest/parser pipeline can saturate a core while catching up from a
 // cursor. Keep independent scheduler capacity for HTTP/SSE and ClickHouse I/O.
@@ -25,6 +26,33 @@ async fn main() -> Result<()> {
         &cfg.clickhouse_user,
         &cfg.clickhouse_password,
     );
+    storage.ensure_community_schema().await?;
+    let community_configs = cfg
+        .community_windows_seconds
+        .iter()
+        .copied()
+        .filter(|window| *window > 0)
+        .map(
+            |window_seconds| bsky_observatory::community::CommunityConfig {
+                window_seconds,
+                event_types: cfg
+                    .community_event_types
+                    .iter()
+                    .cloned()
+                    .collect::<BTreeSet<_>>(),
+                min_edge_weight: cfg.community_min_edge_weight,
+                max_nodes: cfg.community_max_nodes,
+                max_edges: cfg.community_max_edges,
+                ..Default::default()
+            },
+        )
+        .collect();
+    tokio::spawn(bsky_observatory::community::run_periodically(
+        storage.clone(),
+        community_configs,
+        cfg.community_max_input_rows,
+        std::time::Duration::from_secs(cfg.community_interval_seconds),
+    ));
     let analysis = Analyzer::with_windows(
         cfg.coordination_window_seconds,
         cfg.min_cluster_accounts,
