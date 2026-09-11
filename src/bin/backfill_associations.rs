@@ -51,10 +51,44 @@ struct Checkpoint {
     requests: u64,
     errors: u64,
 }
+const GET_POSTS_MAX_URIS: usize = 25;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EngagementPlan {
+    likes: bool,
+    reposts: bool,
+    quotes: bool,
+    replies: bool,
+}
+impl EngagementPlan {
+    fn from_post_view(post: &Value) -> Self {
+        let positive = |key: &str| post.get(key).and_then(Value::as_u64).unwrap_or(0) > 0;
+        Self {
+            likes: positive("likeCount"),
+            reposts: positive("repostCount"),
+            quotes: positive("quoteCount"),
+            replies: positive("replyCount"),
+        }
+    }
+    #[cfg(test)]
+    fn endpoint_count(self) -> u64 {
+        u64::from(self.likes)
+            + u64::from(self.reposts)
+            + u64::from(self.quotes)
+            + u64::from(self.replies)
+    }
+}
+
+#[cfg(test)]
+fn estimated_min_requests(posts: usize, plans: &[EngagementPlan]) -> u64 {
+    posts.div_ceil(GET_POSTS_MAX_URIS) as u64
+        + plans.iter().map(|plan| plan.endpoint_count()).sum::<u64>()
+}
 
 struct Fetcher {
     client: Client,
     pace: tokio::time::Interval,
+    requests: u64,
 }
 
 impl Fetcher {
@@ -67,6 +101,7 @@ impl Fetcher {
         let mut delay = Duration::from_secs(1);
         for attempt in 0..5 {
             self.pace.tick().await;
+            self.requests += 1;
             let response = self.client.get(&endpoint).query(query).send().await;
             match response {
                 Ok(response) if response.status().is_success() => {
@@ -140,20 +175,52 @@ async fn main() -> Result<()> {
             .user_agent("bsky-observatory-association-backfill/0.1")
             .build()?,
         pace,
+        requests: checkpoint.requests,
     };
     let started = std::time::Instant::now();
-    for (index, uri) in posts.iter().enumerate().skip(checkpoint.next_post) {
-        let before = checkpoint.requests;
-        match collect_post(&mut fetcher, uri, &storage, &mut checkpoint).await {
-            Ok(()) => checkpoint.posts_completed += 1,
+    while checkpoint.next_post < posts.len() {
+        let start = checkpoint.next_post;
+        let end = (start + GET_POSTS_MAX_URIS).min(posts.len());
+        let batch = &posts[start..end];
+        let query: Vec<_> = batch.iter().map(|uri| ("uris", uri.as_str())).collect();
+        let hydrated: Value = match fetcher.json("app.bsky.feed.getPosts", &query).await {
+            Ok(value) => value,
             Err(error) => {
-                checkpoint.errors += 1;
-                eprintln!("post={} error={error:#}", uri);
+                checkpoint.requests = fetcher.requests;
+                save_checkpoint(&args.checkpoint, &args.checkpoint_job_id, &checkpoint)?;
+                return Err(error).context(format!("hydrate posts {start}..{end}"));
             }
+        };
+        let views = hydrated["posts"].as_array().cloned().unwrap_or_default();
+        for (index, uri) in posts.iter().enumerate().take(end).skip(start) {
+            let view = views
+                .iter()
+                .find(|post| post.get("uri").and_then(Value::as_str) == Some(uri));
+            match view {
+                Some(view) => match collect_post(
+                    &mut fetcher,
+                    uri,
+                    &storage,
+                    &mut checkpoint,
+                    EngagementPlan::from_post_view(view),
+                )
+                .await
+                {
+                    Ok(()) => checkpoint.posts_completed += 1,
+                    Err(error) => {
+                        checkpoint.errors += 1;
+                        eprintln!("post={} error={error:#}", uri);
+                    }
+                },
+                None => {
+                    checkpoint.errors += 1;
+                    eprintln!("post={} missing from getPosts response", uri);
+                }
+            }
+            checkpoint.requests = fetcher.requests;
+            checkpoint.next_post = index + 1;
+            save_checkpoint(&args.checkpoint, &args.checkpoint_job_id, &checkpoint)?;
         }
-        checkpoint.requests += 4.max(checkpoint.requests.saturating_sub(before));
-        checkpoint.next_post = index + 1;
-        save_checkpoint(&args.checkpoint, &args.checkpoint_job_id, &checkpoint)?;
         if checkpoint.posts_completed % 100 == 0 {
             let rate = checkpoint.posts_completed as f64 / started.elapsed().as_secs_f64();
             let remaining = posts.len().saturating_sub(checkpoint.next_post);
@@ -176,21 +243,30 @@ async fn collect_post(
     uri: &str,
     storage: &Storage,
     totals: &mut Checkpoint,
+    plan: EngagementPlan,
 ) -> Result<()> {
     let mut events = Vec::new();
-    if let Err(error) = collect_likes(fetcher, uri, &mut events, totals).await {
+    if plan.likes
+        && let Err(error) = collect_likes(fetcher, uri, &mut events, totals).await
+    {
         totals.errors += 1;
         eprintln!("post={uri} endpoint=likes error={error:#}");
     }
-    if let Err(error) = collect_reposts(fetcher, uri, &mut events, totals).await {
+    if plan.reposts
+        && let Err(error) = collect_reposts(fetcher, uri, &mut events, totals).await
+    {
         totals.errors += 1;
         eprintln!("post={uri} endpoint=reposts error={error:#}");
     }
-    if let Err(error) = collect_quotes(fetcher, uri, &mut events, totals).await {
+    if plan.quotes
+        && let Err(error) = collect_quotes(fetcher, uri, &mut events, totals).await
+    {
         totals.errors += 1;
         eprintln!("post={uri} endpoint=quotes error={error:#}");
     }
-    if let Err(error) = collect_replies(fetcher, uri, &mut events, totals).await {
+    if plan.replies
+        && let Err(error) = collect_replies(fetcher, uri, &mut events, totals).await
+    {
         totals.errors += 1;
         eprintln!("post={uri} endpoint=thread error={error:#}");
     }
@@ -434,6 +510,30 @@ mod tests {
             deterministic_id("like", "did:a", "at://p", None),
             deterministic_id("repost", "did:a", "at://p", None)
         );
+    }
+
+    #[test]
+    fn post_view_counts_gate_only_required_endpoints() {
+        let empty = EngagementPlan::from_post_view(&serde_json::json!({
+            "likeCount":0,"repostCount":0,"quoteCount":0,"replyCount":0
+        }));
+        assert_eq!(empty.endpoint_count(), 0);
+        let mixed = EngagementPlan::from_post_view(&serde_json::json!({
+            "likeCount":2,"repostCount":0,"quoteCount":1,"replyCount":0
+        }));
+        assert_eq!(mixed.endpoint_count(), 2);
+        assert!(mixed.likes && mixed.quotes);
+        assert!(!mixed.reposts && !mixed.replies);
+    }
+
+    #[test]
+    fn zero_engagement_million_post_estimate_is_one_request_per_batch() {
+        let posts = 6_100_000;
+        let optimized = estimated_min_requests(posts, &[]);
+        let previous = posts as u64 * 4;
+        assert_eq!(optimized, 244_000);
+        assert_eq!(previous, 24_400_000);
+        assert_eq!(previous / optimized, 100);
     }
     #[test]
     fn association_has_no_blob_or_record_payload() {
