@@ -265,6 +265,13 @@ struct EventRow {
     normalized_text_hash: u64,
     simhash: u64,
 }
+#[derive(Row, Serialize)]
+struct IdentityInsertRow {
+    did: String,
+    handle: String,
+    observed_at: i64,
+    source: String,
+}
 impl From<&NormalizedEvent> for EventRow {
     fn from(e: &NormalizedEvent) -> Self {
         Self {
@@ -405,16 +412,28 @@ impl Storage {
             .context("decode persisted detection evidence")
     }
     pub async fn insert_identity(&self, identity: &IdentityRecord) -> Result<()> {
+        self.insert_identities(std::slice::from_ref(identity)).await
+    }
+    pub async fn insert_identities(&self, identities: &[IdentityRecord]) -> Result<()> {
+        if identities.is_empty() {
+            return Ok(());
+        }
         for table in ["identity_history", "identities"] {
-            self.client
-                .query(&format!("INSERT INTO {table} (did, handle, observed_at, source) VALUES (?, ?, fromUnixTimestamp64Milli(?), ?)"))
-                .bind(&identity.did)
-                .bind(identity.handle.as_deref().unwrap_or(""))
-                .bind(identity.observed_at.timestamp_millis())
-                .bind(&identity.source)
-                .execute()
+            let mut insert = self.client.insert(table)?;
+            for identity in identities {
+                insert
+                    .write(&IdentityInsertRow {
+                        did: identity.did.clone(),
+                        handle: identity.handle.clone().unwrap_or_default(),
+                        observed_at: identity.observed_at.timestamp_millis(),
+                        source: identity.source.clone(),
+                    })
+                    .await?;
+            }
+            insert
+                .end()
                 .await
-                .with_context(|| format!("insert identity into {table}"))?;
+                .with_context(|| format!("insert identity batch into {table}"))?;
         }
         Ok(())
     }

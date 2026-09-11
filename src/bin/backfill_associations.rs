@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use bsky_observatory::{
-    backfill::retry_delay,
+    backfill::{retry_delay, valid_backfill_query},
+    identity::IdentityRecord,
     model::{EventKind, NormalizedEvent},
     normalize::normalize_appview_post,
     storage::Storage,
@@ -11,7 +12,7 @@ use reqwest::{Client, StatusCode, redirect::Policy};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use std::{path::PathBuf, time::Duration};
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 use tokio::time::{MissedTickBehavior, interval};
 use xxhash_rust::xxh3::xxh3_64;
 
@@ -89,6 +90,41 @@ struct Fetcher {
     client: Client,
     pace: tokio::time::Interval,
     requests: u64,
+}
+#[derive(Default)]
+struct IdentityHarvester {
+    pending: HashMap<String, IdentityRecord>,
+}
+impl IdentityHarvester {
+    fn observe(&mut self, profile: &Value, expected_did: Option<&str>) -> bool {
+        let Some(identity) = identity_from_profile(profile, expected_did) else {
+            return false;
+        };
+        self.pending.insert(identity.did.clone(), identity);
+        true
+    }
+    async fn flush(&mut self, storage: &Storage) -> Result<()> {
+        let identities: Vec<_> = self.pending.drain().map(|(_, identity)| identity).collect();
+        storage.insert_identities(&identities).await
+    }
+}
+fn identity_from_profile(profile: &Value, expected_did: Option<&str>) -> Option<IdentityRecord> {
+    let did = profile.get("did")?.as_str()?;
+    let handle = profile.get("handle")?.as_str()?.to_ascii_lowercase();
+    if expected_did.is_some_and(|expected| expected != did)
+        || !valid_backfill_query(did)
+        || !valid_backfill_query(&handle)
+        || handle.starts_with("did:")
+        || handle == "handle.invalid"
+    {
+        return None;
+    }
+    Some(IdentityRecord {
+        did: did.into(),
+        handle: Some(handle),
+        observed_at: Utc::now(),
+        source: "association_backfill_appview".into(),
+    })
 }
 
 impl Fetcher {
@@ -178,6 +214,7 @@ async fn main() -> Result<()> {
         requests: checkpoint.requests,
     };
     let started = std::time::Instant::now();
+    let mut identities = IdentityHarvester::default();
     while checkpoint.next_post < posts.len() {
         let start = checkpoint.next_post;
         let end = (start + GET_POSTS_MAX_URIS).min(posts.len());
@@ -192,6 +229,16 @@ async fn main() -> Result<()> {
             }
         };
         let views = hydrated["posts"].as_array().cloned().unwrap_or_default();
+        for view in &views {
+            let expected = view
+                .get("uri")
+                .and_then(Value::as_str)
+                .and_then(|uri| uri.strip_prefix("at://"))
+                .and_then(|rest| rest.split('/').next());
+            if let Some(author) = view.get("author") {
+                identities.observe(author, expected);
+            }
+        }
         for (index, uri) in posts.iter().enumerate().take(end).skip(start) {
             let view = views
                 .iter()
@@ -203,6 +250,7 @@ async fn main() -> Result<()> {
                     &storage,
                     &mut checkpoint,
                     EngagementPlan::from_post_view(view),
+                    &mut identities,
                 )
                 .await
                 {
@@ -221,6 +269,7 @@ async fn main() -> Result<()> {
             checkpoint.next_post = index + 1;
             save_checkpoint(&args.checkpoint, &args.checkpoint_job_id, &checkpoint)?;
         }
+        identities.flush(&storage).await?;
         if checkpoint.posts_completed % 100 == 0 {
             let rate = checkpoint.posts_completed as f64 / started.elapsed().as_secs_f64();
             let remaining = posts.len().saturating_sub(checkpoint.next_post);
@@ -244,28 +293,29 @@ async fn collect_post(
     storage: &Storage,
     totals: &mut Checkpoint,
     plan: EngagementPlan,
+    identities: &mut IdentityHarvester,
 ) -> Result<()> {
     let mut events = Vec::new();
     if plan.likes
-        && let Err(error) = collect_likes(fetcher, uri, &mut events, totals).await
+        && let Err(error) = collect_likes(fetcher, uri, &mut events, totals, identities).await
     {
         totals.errors += 1;
         eprintln!("post={uri} endpoint=likes error={error:#}");
     }
     if plan.reposts
-        && let Err(error) = collect_reposts(fetcher, uri, &mut events, totals).await
+        && let Err(error) = collect_reposts(fetcher, uri, &mut events, totals, identities).await
     {
         totals.errors += 1;
         eprintln!("post={uri} endpoint=reposts error={error:#}");
     }
     if plan.quotes
-        && let Err(error) = collect_quotes(fetcher, uri, &mut events, totals).await
+        && let Err(error) = collect_quotes(fetcher, uri, &mut events, totals, identities).await
     {
         totals.errors += 1;
         eprintln!("post={uri} endpoint=quotes error={error:#}");
     }
     if plan.replies
-        && let Err(error) = collect_replies(fetcher, uri, &mut events, totals).await
+        && let Err(error) = collect_replies(fetcher, uri, &mut events, totals, identities).await
     {
         totals.errors += 1;
         eprintln!("post={uri} endpoint=thread error={error:#}");
@@ -281,6 +331,7 @@ async fn collect_likes(
     uri: &str,
     out: &mut Vec<NormalizedEvent>,
     totals: &mut Checkpoint,
+    identities: &mut IdentityHarvester,
 ) -> Result<()> {
     let mut cursor = None;
     loop {
@@ -291,6 +342,9 @@ async fn collect_likes(
         let page: Value = fetcher.json("app.bsky.feed.getLikes", &query).await?;
         ensure_subject(&page, uri)?;
         for like in page["likes"].as_array().into_iter().flatten() {
+            if let Some(actor) = like.get("actor") {
+                identities.observe(actor, None);
+            }
             let actor = like
                 .pointer("/actor/did")
                 .and_then(Value::as_str)
@@ -316,6 +370,7 @@ async fn collect_reposts(
     uri: &str,
     out: &mut Vec<NormalizedEvent>,
     totals: &mut Checkpoint,
+    identities: &mut IdentityHarvester,
 ) -> Result<()> {
     let mut cursor = None;
     loop {
@@ -326,6 +381,7 @@ async fn collect_reposts(
         let page: Value = fetcher.json("app.bsky.feed.getRepostedBy", &query).await?;
         ensure_subject(&page, uri)?;
         for actor in page["repostedBy"].as_array().into_iter().flatten() {
+            identities.observe(actor, None);
             let did = actor
                 .get("did")
                 .and_then(Value::as_str)
@@ -350,6 +406,7 @@ async fn collect_quotes(
     uri: &str,
     out: &mut Vec<NormalizedEvent>,
     totals: &mut Checkpoint,
+    identities: &mut IdentityHarvester,
 ) -> Result<()> {
     let mut cursor = None;
     loop {
@@ -360,6 +417,14 @@ async fn collect_quotes(
         let page: Value = fetcher.json("app.bsky.feed.getQuotes", &query).await?;
         ensure_subject(&page, uri)?;
         for post in page["posts"].as_array().into_iter().flatten() {
+            let expected = post
+                .get("uri")
+                .and_then(Value::as_str)
+                .and_then(|uri| uri.strip_prefix("at://"))
+                .and_then(|rest| rest.split('/').next());
+            if let Some(author) = post.get("author") {
+                identities.observe(author, expected);
+            }
             let mut event = normalize_appview_post(post, Utc::now())?;
             apply_record_time(&mut event, post);
             event.kind = EventKind::Quote;
@@ -387,6 +452,7 @@ async fn collect_replies(
     uri: &str,
     out: &mut Vec<NormalizedEvent>,
     totals: &mut Checkpoint,
+    identities: &mut IdentityHarvester,
 ) -> Result<()> {
     let page: Value = fetcher
         .json(
@@ -395,12 +461,31 @@ async fn collect_replies(
         )
         .await?;
     let thread = &page["thread"];
+    if let Some(author) = thread.pointer("/post/author") {
+        identities.observe(
+            author,
+            Some(
+                uri.trim_start_matches("at://")
+                    .split('/')
+                    .next()
+                    .unwrap_or_default(),
+            ),
+        );
+    }
     anyhow::ensure!(
         thread.pointer("/post/uri").and_then(Value::as_str) == Some(uri),
         "thread subject mismatch"
     );
     for reply in thread["replies"].as_array().into_iter().flatten() {
         if let Some(post) = reply.get("post") {
+            let expected = post
+                .get("uri")
+                .and_then(Value::as_str)
+                .and_then(|value| value.strip_prefix("at://"))
+                .and_then(|rest| rest.split('/').next());
+            if let Some(author) = post.get("author") {
+                identities.observe(author, expected);
+            }
             let mut event = normalize_appview_post(post, Utc::now())?;
             apply_record_time(&mut event, post);
             event.kind = EventKind::Reply;
@@ -524,6 +609,58 @@ mod tests {
         assert_eq!(mixed.endpoint_count(), 2);
         assert!(mixed.likes && mixed.quotes);
         assert!(!mixed.reposts && !mixed.replies);
+    }
+
+    #[test]
+    fn harvests_known_appview_profile_shapes_without_media() {
+        let dids = [
+            "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+            "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+            "did:plc:cccccccccccccccccccccccc",
+            "did:plc:dddddddddddddddddddddddd",
+        ];
+        let response = serde_json::json!({
+            "posts":[{"uri":format!("at://{}/app.bsky.feed.post/a",dids[0]),"author":{"did":dids[0],"handle":"Author.Example.com","avatar":"https://blob.invalid/a"}}],
+            "likes":[{"actor":{"did":dids[1],"handle":"liker.example.com","banner":"https://blob.invalid/b"}}],
+            "repostedBy":[{"did":dids[2],"handle":"reposter.example.com","avatar":"https://blob.invalid/c"}],
+            "thread":{"replies":[{"post":{"uri":format!("at://{}/app.bsky.feed.post/r",dids[3]),"author":{"did":dids[3],"handle":"reply.example.com"}}}]}
+        });
+        let mut harvested = IdentityHarvester::default();
+        let post = &response["posts"][0];
+        assert!(harvested.observe(&post["author"], Some(dids[0])));
+        assert!(harvested.observe(&response["likes"][0]["actor"], None));
+        assert!(harvested.observe(&response["repostedBy"][0], None));
+        let reply = &response["thread"]["replies"][0]["post"];
+        assert!(harvested.observe(&reply["author"], Some(dids[3])));
+        assert_eq!(harvested.pending.len(), 4);
+        assert_eq!(
+            harvested.pending[dids[0]].handle.as_deref(),
+            Some("author.example.com")
+        );
+        let encoded = serde_json::to_string(&harvested.pending).unwrap();
+        assert!(!encoded.contains("blob.invalid"));
+        assert!(!encoded.contains("avatar"));
+        assert!(!encoded.contains("banner"));
+    }
+
+    #[test]
+    fn rejects_invalid_or_mismatched_embedded_profiles() {
+        let expected = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa";
+        let mut harvested = IdentityHarvester::default();
+        assert!(!harvested.observe(&serde_json::json!({"did":"did:plc:bbbbbbbbbbbbbbbbbbbbbbbb","handle":"other.example.com"}),Some(expected)));
+        assert!(!harvested.observe(
+            &serde_json::json!({"did":expected,"handle":"handle.invalid"}),
+            Some(expected)
+        ));
+        assert!(!harvested.observe(
+            &serde_json::json!({"did":"did:web:example.com","handle":"example.com"}),
+            None
+        ));
+        assert!(!harvested.observe(
+            &serde_json::json!({"did":expected,"handle":"bad handle.example"}),
+            None
+        ));
+        assert!(harvested.pending.is_empty());
     }
 
     #[test]
