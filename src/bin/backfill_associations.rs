@@ -28,6 +28,10 @@ struct Args {
     checkpoint: PathBuf,
     #[arg(long)]
     checkpoint_job_id: String,
+    #[arg(long, default_value = "likes,reposts,quotes,replies")]
+    relations: String,
+    #[arg(long, default_value_t = u64::MAX)]
+    max_requests: u64,
     #[arg(long, default_value_t = 4)]
     requests_per_second: u32,
     #[arg(long, env = "CLICKHOUSE_URL", default_value = "http://localhost:8123")]
@@ -194,6 +198,10 @@ async fn main() -> Result<()> {
     storage.ping().await?;
     let posts = storage.account_post_uris(&args.did).await?;
     let mut checkpoint = load_checkpoint(&args.checkpoint, &args.checkpoint_job_id)?;
+    let enabled = args
+        .relations
+        .split(',')
+        .collect::<std::collections::HashSet<_>>();
     anyhow::ensure!(
         checkpoint.next_post <= posts.len(),
         "checkpoint exceeds current post list"
@@ -216,7 +224,7 @@ async fn main() -> Result<()> {
     };
     let started = std::time::Instant::now();
     let mut identities = IdentityHarvester::default();
-    while checkpoint.next_post < posts.len() {
+    while checkpoint.next_post < posts.len() && fetcher.requests < args.max_requests {
         let start = checkpoint.next_post;
         let end = (start + GET_POSTS_MAX_URIS).min(posts.len());
         let batch = &posts[start..end];
@@ -250,7 +258,14 @@ async fn main() -> Result<()> {
                     uri,
                     &storage,
                     &mut checkpoint,
-                    EngagementPlan::from_post_view(view),
+                    {
+                        let mut plan = EngagementPlan::from_post_view(view);
+                        plan.likes &= enabled.contains("likes");
+                        plan.reposts &= enabled.contains("reposts");
+                        plan.quotes &= enabled.contains("quotes");
+                        plan.replies &= enabled.contains("replies");
+                        plan
+                    },
                     &mut identities,
                 )
                 .await

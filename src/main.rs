@@ -47,7 +47,10 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| cfg.data_dir.join("backfill-queue"));
     let backfills = bsky_observatory::backfill::BackfillQueue::open(backfill_dir)?;
     for _ in 0..cfg.backfill_worker_concurrency.clamp(1, 4) {
-        tokio::spawn(bsky_observatory::backfill::run_worker(backfills.clone()));
+        tokio::spawn(bsky_observatory::backfill::run_worker(
+            backfills.clone(),
+            storage.clone(),
+        ));
     }
     let identity_queue = bsky_observatory::identity_queue::IdentityQueue::open(
         cfg.identity_queue_dir

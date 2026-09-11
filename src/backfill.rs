@@ -1,3 +1,4 @@
+use crate::storage::Storage;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::Mutex;
@@ -204,7 +205,6 @@ impl BackfillQueue {
         let active:i64=db.query_row("SELECT count(*) FROM backfill_jobs WHERE status IN ('queued','resolving','running','retrying')",[],|r|r.get(0))?;
         anyhow::ensure!(active < 100, "backfill queue is at its active-job limit");
         let now = Utc::now();
-        let crawl_depth = crawl_depth.max(u8::from(matches!(kind, JobType::Associations)));
         let job = BackfillJob {
             id: id.clone(),
             query: query.into(),
@@ -430,6 +430,67 @@ impl BackfillQueue {
         )?;
         tx.commit()?;
         Ok(count)
+    }
+    fn crawl_config(&self, id: Option<&str>) -> Result<Option<CrawlRequest>> {
+        id.map(|id| get_crawl(&self.db.lock(), id))
+            .transpose()
+            .map(Option::flatten)
+    }
+    fn enqueue_participants(
+        &self,
+        parent: &BackfillJob,
+        participants: &[String],
+        crawl: &CrawlRequest,
+    ) -> Result<usize> {
+        if parent.crawl_depth >= crawl.max_depth {
+            return Ok(0);
+        }
+        let db = self.db.lock();
+        let jobs: i64 = db.query_row(
+            "SELECT count(*) FROM backfill_jobs WHERE crawl_id=?1",
+            [&crawl.id],
+            |r| r.get(0),
+        )?;
+        let accounts: i64 = db.query_row(
+            "SELECT count(*) FROM backfill_jobs WHERE crawl_id=?1 AND job_type='repository'",
+            [&crawl.id],
+            |r| r.get(0),
+        )?;
+        let records:i64=db.query_row("SELECT coalesce(sum(json_extract(job_json,'$.records_written')),0) FROM backfill_jobs WHERE crawl_id=?1",[&crawl.id],|r|r.get(0))?;
+        let requests:i64=db.query_row("SELECT coalesce(sum(json_extract(payload,'$.requests')),0) FROM backfill_checkpoints WHERE job_id IN (SELECT id FROM backfill_jobs WHERE crawl_id=?1)",[&crawl.id],|r|r.get(0))?;
+        drop(db);
+        if records as u64 >= crawl.limits.max_records
+            || requests as u64 >= crawl.limits.max_requests
+        {
+            return Ok(0);
+        }
+        let capacity = (crawl.limits.max_accounts.saturating_sub(accounts as u64))
+            .min(crawl.limits.max_jobs.saturating_sub(jobs as u64)) as usize;
+        let mut added = 0;
+        for did in participants.iter().take(capacity) {
+            let id = format!(
+                "bf-{:016x}",
+                xxh3_64(
+                    format!("v2\0{}\0repository\0{}", crawl.id, did.to_ascii_lowercase())
+                        .as_bytes()
+                )
+            );
+            if self.get(&id).is_none() {
+                self.enqueue_with_lineage(
+                    did,
+                    Some(did),
+                    JobType::Repository,
+                    None,
+                    true,
+                    Some(crawl.id.clone()),
+                    Some(parent.id.clone()),
+                    parent.crawl_depth + 1,
+                    crawl.max_depth,
+                )?;
+                added += 1
+            }
+        }
+        Ok(added)
     }
     pub fn get(&self, id: &str) -> Option<BackfillJob> {
         get_job(&self.db.lock(), id).unwrap_or_else(|e| {
@@ -882,11 +943,11 @@ pub fn valid_backfill_query(query: &str) -> bool {
     })
 }
 
-pub async fn run_worker(queue: BackfillQueue) {
+pub async fn run_worker(queue: BackfillQueue, storage: Storage) {
     loop {
         match queue.claim(120) {
             Ok(Some(job)) => {
-                if let Err(error) = execute_job(&queue, job.clone()).await {
+                if let Err(error) = execute_job(&queue, &storage, job.clone()).await {
                     let mut failed = job;
                     failed.retry_count += 1;
                     failed.last_error = Some(error.to_string().chars().take(1000).collect());
@@ -915,7 +976,7 @@ pub async fn run_worker(queue: BackfillQueue) {
     }
 }
 
-async fn execute_job(queue: &BackfillQueue, mut job: BackfillJob) -> Result<()> {
+async fn execute_job(queue: &BackfillQueue, storage: &Storage, mut job: BackfillJob) -> Result<()> {
     let did = match job.did.clone() {
         Some(did) => did,
         None => resolve_query(&job.query).await?,
@@ -951,6 +1012,22 @@ async fn execute_job(queue: &BackfillQueue, mut job: BackfillJob) -> Result<()> 
                 "--checkpoint-job-id",
                 &job.id,
             ]);
+            if let Some(crawl) = queue.crawl_config(job.crawl_id.as_deref())? {
+                let used = queue
+                    .checkpoint(&job.id)
+                    .and_then(|v| {
+                        v.payload
+                            .get("requests")
+                            .and_then(serde_json::Value::as_u64)
+                    })
+                    .unwrap_or(0);
+                command.args([
+                    "--relations",
+                    &crawl.relations.join(","),
+                    "--max-requests",
+                    &crawl.limits.max_requests.saturating_sub(used).to_string(),
+                ]);
+            }
             command
         }
     };
@@ -980,6 +1057,14 @@ async fn execute_job(queue: &BackfillQueue, mut job: BackfillJob) -> Result<()> 
     job.lease_token = None;
     job.lease_until = None;
     queue.update(job.clone())?;
+    if job.job_type == JobType::Associations
+        && let Some(crawl) = queue.crawl_config(job.crawl_id.as_deref())?
+    {
+        let participants = storage
+            .association_participants(&did, &crawl.relations, crawl.limits.max_accounts)
+            .await?;
+        queue.enqueue_participants(&job, &participants, &crawl)?;
+    }
     if job.job_type == JobType::Repository
         && job.include_associations
         && job.crawl_depth < job.max_depth
@@ -992,7 +1077,7 @@ async fn execute_job(queue: &BackfillQueue, mut job: BackfillJob) -> Result<()> 
             false,
             job.crawl_id.clone(),
             Some(job.id),
-            job.crawl_depth + 1,
+            job.crawl_depth,
             job.max_depth,
         )?;
     }
@@ -1375,6 +1460,90 @@ mod tests {
         let (crawl2, jobs) = q.crawl(&crawl.id).unwrap().unwrap();
         assert_eq!(crawl2.status, CrawlStatus::Paused);
         assert_eq!(jobs.len(), 1);
+    }
+    #[test]
+    fn fanout_consumes_depth_only_for_participant_repositories_and_honours_limits() {
+        let d = tempfile::tempdir().unwrap();
+        let q = BackfillQueue::open(d.path().into()).unwrap();
+        let limits = CrawlLimits {
+            max_accounts: 2,
+            max_jobs: 4,
+            max_records: 100,
+            max_requests: 100,
+        };
+        let (crawl, root) = q
+            .create_crawl(
+                "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+                Some("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"),
+                1,
+                vec!["posts".into(), "likes".into()],
+                limits,
+            )
+            .unwrap();
+        let association = q
+            .enqueue_with_lineage(
+                &root.query,
+                root.did.as_deref(),
+                JobType::Associations,
+                Some(root.id.clone()),
+                false,
+                Some(crawl.id.clone()),
+                Some(root.id),
+                0,
+                1,
+            )
+            .unwrap();
+        assert_eq!(association.crawl_depth, 0);
+        assert_eq!(
+            q.enqueue_participants(
+                &association,
+                &[
+                    "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+                    "did:plc:cccccccccccccccccccccccc".into()
+                ],
+                &crawl
+            )
+            .unwrap(),
+            1
+        );
+        let (_, jobs) = q.crawl(&crawl.id).unwrap().unwrap();
+        let participant = jobs
+            .iter()
+            .find(|j| j.job_type == JobType::Repository && j.crawl_depth == 1)
+            .unwrap();
+        assert_eq!(
+            participant.parent_job_id.as_deref(),
+            Some(association.id.as_str())
+        );
+        assert_eq!(
+            q.enqueue_participants(
+                participant,
+                &["did:plc:dddddddddddddddddddddddd".into()],
+                &crawl
+            )
+            .unwrap(),
+            0
+        );
+    }
+    #[test]
+    fn depth_zero_crawl_cannot_schedule_associations_or_fanout() {
+        let d = tempfile::tempdir().unwrap();
+        let q = BackfillQueue::open(d.path().into()).unwrap();
+        let (crawl, root) = q
+            .create_crawl(
+                "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+                Some("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"),
+                0,
+                vec!["posts".into(), "likes".into()],
+                CrawlLimits::default(),
+            )
+            .unwrap();
+        assert!(!(root.include_associations && root.crawl_depth < crawl.max_depth));
+        assert_eq!(
+            q.enqueue_participants(&root, &["did:plc:bbbbbbbbbbbbbbbbbbbbbbbb".into()], &crawl)
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

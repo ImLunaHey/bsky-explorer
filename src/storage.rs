@@ -520,6 +520,45 @@ impl Storage {
             .fetch_one::<u64>()
             .await?)
     }
+    pub async fn association_participants(
+        &self,
+        did: &str,
+        kinds: &[String],
+        limit: u64,
+    ) -> Result<Vec<String>> {
+        if kinds.is_empty() {
+            return Ok(vec![]);
+        }
+        let allowed = kinds
+            .iter()
+            .filter_map(|v| match v.as_str() {
+                "likes" => Some("like"),
+                "reposts" => Some("repost"),
+                "quotes" => Some("quote"),
+                "replies" => Some("reply"),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if allowed.is_empty() {
+            return Ok(vec![]);
+        }
+        let quoted = allowed
+            .iter()
+            .map(|v| format!("'{v}'"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT DISTINCT actor_did FROM events WHERE operation='association_backfill' AND startsWith(target, ?) AND kind IN ({quoted}) AND actor_did != ? LIMIT ?"
+        );
+        Ok(self
+            .client
+            .query(&sql)
+            .bind(format!("at://{did}/"))
+            .bind(did)
+            .bind(limit.min(10_000))
+            .fetch_all::<String>()
+            .await?)
+    }
     pub async fn backfill_events(
         &self,
         did: &str,
