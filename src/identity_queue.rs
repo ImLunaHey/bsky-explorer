@@ -93,6 +93,7 @@ impl IdentityQueue {
         ensure_column(&db, "identity_jobs", "handle", "TEXT")?;
         db.execute_batch("CREATE INDEX IF NOT EXISTS identity_jobs_status_updated ON identity_jobs(status,updated_at DESC); CREATE INDEX IF NOT EXISTS identity_jobs_did ON identity_jobs(did); CREATE INDEX IF NOT EXISTS identity_jobs_handle ON identity_jobs(handle);")?;
         import_json(&root, &mut db)?;
+        recover_expired(&mut db, Utc::now())?;
         Ok(Self {
             db: Arc::new(Mutex::new(db)),
             capacity: capacity.max(100),
@@ -230,6 +231,7 @@ impl IdentityQueue {
         let now = Utc::now();
         let mut db = self.db.lock();
         let tx = db.transaction()?;
+        recover_expired_tx(&tx, now)?;
         let id:Option<String>=tx.query_row("SELECT id FROM identity_jobs WHERE status IN ('queued','retrying') AND (next_attempt_at IS NULL OR next_attempt_at<=?1) AND (lease_until IS NULL OR lease_until<=?1) ORDER BY created_at LIMIT 1",[stamp(now)],|r|r.get(0)).optional()?;
         let Some(id) = id else {
             tx.commit()?;
@@ -334,6 +336,34 @@ fn ensure_column(db: &Connection, table: &str, column: &str, kind: &str) -> Resu
         db.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?
     }
     Ok(())
+}
+fn recover_expired(db: &mut Connection, now: DateTime<Utc>) -> Result<usize> {
+    let tx = db.transaction()?;
+    let count = recover_expired_tx(&tx, now)?;
+    tx.commit()?;
+    Ok(count)
+}
+fn recover_expired_tx(db: &Connection, now: DateTime<Utc>) -> Result<usize> {
+    let ids: Vec<String> = {
+        let mut q = db.prepare("SELECT id FROM identity_jobs WHERE status='running' AND (lease_until IS NULL OR lease_until<=?1)")?;
+        q.query_map([stamp(now)], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    let count = ids.len();
+    for id in ids {
+        if let Some(mut job) = get_id(db, &id)? {
+            job.status = IdentityJobStatus::Queued;
+            job.updated_at = now;
+            job.next_attempt_at = None;
+            job.lease_token = None;
+            job.lease_until = None;
+            upsert(db, &job)?;
+        }
+    }
+    if count > 0 {
+        tracing::warn!(count, "requeued identity jobs with expired leases");
+    }
+    Ok(count)
 }
 fn import_json(root: &PathBuf, db: &mut Connection) -> Result<()> {
     let tx = db.transaction()?;
@@ -763,5 +793,26 @@ mod tests {
         assert_eq!(page.analytics.success_rate, 1.0);
         assert!(page.jobs[0].started_at.is_some());
         assert!(page.jobs[0].completed_at.is_some());
+    }
+    #[test]
+    fn expired_running_lease_is_requeued_on_restart() {
+        let d = tempdir().unwrap();
+        let q = IdentityQueue::open(d.path().into(), 100, Duration::seconds(1)).unwrap();
+        q.enqueue("did:plc:expired").unwrap();
+        let mut running = q.claim().unwrap().unwrap();
+        assert_eq!(q.summary().running, 1);
+        running.lease_until = Some(Utc::now() - Duration::seconds(1));
+        upsert(&q.db.lock(), &running).unwrap();
+        let attempts = running.attempts;
+        drop(q);
+        let q = IdentityQueue::open(d.path().into(), 100, Duration::seconds(1)).unwrap();
+        let summary = q.summary();
+        assert_eq!(summary.running, 0);
+        assert_eq!(summary.queued, 1);
+        let recovered = q.get(&running.id).unwrap().unwrap();
+        assert_eq!(recovered.attempts, attempts);
+        assert!(recovered.lease_until.is_none());
+        assert!(recovered.lease_token.is_none());
+        assert_eq!(q.claim().unwrap().unwrap().did, "did:plc:expired");
     }
 }
