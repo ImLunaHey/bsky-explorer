@@ -9,6 +9,7 @@ FROM rust:1.90-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock* ./
 COPY src ./src
+COPY migrations ./migrations
 RUN cargo build --release --bins
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates wget && rm -rf /var/lib/apt/lists/*
