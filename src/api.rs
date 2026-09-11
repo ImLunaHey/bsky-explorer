@@ -1662,6 +1662,8 @@ async fn identities(
 #[derive(Deserialize)]
 struct IdentityQueueQuery {
     limit: Option<usize>,
+    #[serde(default)]
+    offset: usize,
 }
 #[derive(Serialize)]
 struct IdentityQueueResponse {
@@ -1674,7 +1676,7 @@ async fn identity_queue(
 ) -> Json<IdentityQueueResponse> {
     Json(IdentityQueueResponse {
         summary: s.identity_queue.summary(),
-        jobs: s.identity_queue.list(q.limit.unwrap_or(25)),
+        jobs: s.identity_queue.list(q.limit.unwrap_or(25), q.offset),
     })
 }
 

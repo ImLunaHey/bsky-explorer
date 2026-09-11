@@ -54,7 +54,11 @@ Jetstream identity events update a bounded in-memory DID/handle cache immediatel
 
 Identity enrichment is asynchronous. Durable jobs live on the storage array at
 `DATA_DIR/identity-queue` (or `IDENTITY_QUEUE_DIR`), use leased restart recovery,
-and are inspectable at `GET /api/identity-queue?limit=25`.
+and are inspectable at `GET /api/identity-queue?limit=25&offset=0`. Queue state is
+stored in an embedded SQLite database using WAL mode, so claims, summaries, and
+pagination are indexed and retained history is not loaded into application memory.
+On first startup, legacy per-job JSON files are imported transactionally and left
+untouched as a recovery copy; later startups are idempotent.
 `IDENTITY_WORKER_CONCURRENCY` defaults to 1, `IDENTITY_REQUESTS_PER_SECOND`
 controls fixed-AppView pacing, and `IDENTITY_NEGATIVE_TTL_SECONDS` controls when
 a missing profile may be retried. Identity API misses return immediately and

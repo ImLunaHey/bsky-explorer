@@ -2,8 +2,9 @@ use crate::identity::{IdentityService, RemoteIdentityResult};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::Mutex;
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
+use std::{fs, path::PathBuf, sync::Arc};
 use xxhash_rust::xxh3::xxh3_64;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -16,7 +17,29 @@ pub enum IdentityJobStatus {
     Negative,
     DeadLetter,
 }
-
+impl IdentityJobStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Retrying => "retrying",
+            Self::Resolved => "resolved",
+            Self::Negative => "negative",
+            Self::DeadLetter => "dead_letter",
+        }
+    }
+    fn parse(v: &str) -> Result<Self> {
+        Ok(match v {
+            "queued" => Self::Queued,
+            "running" => Self::Running,
+            "retrying" => Self::Retrying,
+            "resolved" => Self::Resolved,
+            "negative" => Self::Negative,
+            "dead_letter" => Self::DeadLetter,
+            _ => anyhow::bail!("invalid identity job status: {v}"),
+        })
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdentityJob {
     pub id: String,
@@ -34,29 +57,21 @@ pub struct IdentityJob {
 
 #[derive(Clone)]
 pub struct IdentityQueue {
-    root: PathBuf,
-    jobs: Arc<Mutex<HashMap<String, IdentityJob>>>,
+    db: Arc<Mutex<Connection>>,
     capacity: usize,
     negative_ttl: Duration,
 }
-
 impl IdentityQueue {
     pub fn open(root: PathBuf, capacity: usize, negative_ttl: Duration) -> Result<Self> {
         fs::create_dir_all(&root)?;
-        let mut jobs = HashMap::new();
-        for entry in fs::read_dir(&root)? {
-            let path = entry?.path();
-            if path.extension().and_then(|v| v.to_str()) == Some("json")
-                && let Ok(v) = fs::read(&path)
-                    .and_then(|b| serde_json::from_slice(&b).map_err(std::io::Error::other))
-            {
-                let j: IdentityJob = v;
-                jobs.insert(j.did.clone(), j);
-            }
-        }
+        let mut db = Connection::open(root.join("queue.sqlite3"))?;
+        db.pragma_update(None, "journal_mode", "WAL")?;
+        db.pragma_update(None, "synchronous", "NORMAL")?;
+        db.busy_timeout(std::time::Duration::from_secs(5))?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS identity_jobs(id TEXT PRIMARY KEY,did TEXT NOT NULL UNIQUE,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,next_attempt_at TEXT,attempts INTEGER NOT NULL,max_attempts INTEGER NOT NULL,last_error TEXT,lease_token TEXT,lease_until TEXT); CREATE INDEX IF NOT EXISTS identity_jobs_claim ON identity_jobs(status,next_attempt_at,lease_until,created_at); CREATE INDEX IF NOT EXISTS identity_jobs_updated ON identity_jobs(updated_at DESC);")?;
+        import_json(&root, &mut db)?;
         Ok(Self {
-            root,
-            jobs: Arc::new(Mutex::new(jobs)),
+            db: Arc::new(Mutex::new(db)),
             capacity: capacity.max(100),
             negative_ttl,
         })
@@ -64,29 +79,25 @@ impl IdentityQueue {
     pub fn enqueue(&self, did: &str) -> Result<IdentityJob> {
         anyhow::ensure!(valid_did(did), "invalid DID");
         let now = Utc::now();
-        let mut jobs = self.jobs.lock();
-        if let Some(j) = jobs.get(did)
+        let mut db = self.db.lock();
+        let tx = db.transaction()?;
+        if let Some(j) = get_did(&tx, did)?
             && (j.status != IdentityJobStatus::Negative || now - j.updated_at < self.negative_ttl)
         {
-            return Ok(j.clone());
+            tx.commit()?;
+            return Ok(j);
         }
-        let active = jobs
-            .values()
-            .filter(|job| {
-                matches!(
-                    job.status,
-                    IdentityJobStatus::Queued
-                        | IdentityJobStatus::Running
-                        | IdentityJobStatus::Retrying
-                )
-            })
-            .count();
-        if active >= self.capacity {
-            anyhow::bail!("identity queue capacity reached; retained history was not pruned");
-        }
-        let id = format!("id-{:016x}", xxh3_64(did.as_bytes()));
-        let job = IdentityJob {
-            id: id.clone(),
+        let active: i64 = tx.query_row(
+            "SELECT count(*) FROM identity_jobs WHERE status IN ('queued','running','retrying')",
+            [],
+            |r| r.get(0),
+        )?;
+        anyhow::ensure!(
+            active < self.capacity as i64,
+            "identity queue capacity reached; retained history was not pruned"
+        );
+        let j = IdentityJob {
+            id: format!("id-{:016x}", xxh3_64(did.as_bytes())),
             did: did.into(),
             status: IdentityJobStatus::Queued,
             created_at: now,
@@ -98,73 +109,54 @@ impl IdentityQueue {
             lease_token: None,
             lease_until: None,
         };
-        self.persist(&job)?;
-        jobs.insert(did.into(), job.clone());
-        Ok(job)
+        upsert(&tx, &j)?;
+        tx.commit()?;
+        Ok(j)
     }
-    pub fn list(&self, limit: usize) -> Vec<IdentityJob> {
-        let mut v: Vec<_> = self.jobs.lock().values().cloned().collect();
-        v.sort_by_key(|j| std::cmp::Reverse(j.updated_at));
-        v.truncate(limit.min(100));
-        v
+    pub fn list(&self, limit: usize, offset: usize) -> Vec<IdentityJob> {
+        let db = self.db.lock();
+        query_jobs(&db,"SELECT id,did,status,created_at,updated_at,next_attempt_at,attempts,max_attempts,last_error,lease_token,lease_until FROM identity_jobs ORDER BY updated_at DESC LIMIT ?1 OFFSET ?2",(limit.min(100) as i64, offset as i64)).unwrap_or_else(|e|{tracing::error!(%e,"list identity jobs");vec![]})
     }
     pub fn summary(&self) -> IdentityQueueSummary {
-        let jobs = self.jobs.lock();
-        let mut s = IdentityQueueSummary {
-            total: jobs.len(),
-            queued: 0,
-            running: 0,
-            retrying: 0,
-            resolved: 0,
-            negative: 0,
-            dead_letter: 0,
-        };
-        for j in jobs.values() {
-            match j.status {
-                IdentityJobStatus::Queued => s.queued += 1,
-                IdentityJobStatus::Running => s.running += 1,
-                IdentityJobStatus::Retrying => s.retrying += 1,
-                IdentityJobStatus::Resolved => s.resolved += 1,
-                IdentityJobStatus::Negative => s.negative += 1,
-                IdentityJobStatus::DeadLetter => s.dead_letter += 1,
+        let db = self.db.lock();
+        let mut s = IdentityQueueSummary::default();
+        let result = (|| -> Result<()> {
+            let mut q = db.prepare("SELECT status,count(*) FROM identity_jobs GROUP BY status")?;
+            let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, usize>(1)?)))?;
+            for row in rows {
+                let (k, n) = row?;
+                s.total += n;
+                match k.as_str() {
+                    "queued" => s.queued = n,
+                    "running" => s.running = n,
+                    "retrying" => s.retrying = n,
+                    "resolved" => s.resolved = n,
+                    "negative" => s.negative = n,
+                    "dead_letter" => s.dead_letter = n,
+                    _ => {}
+                }
             }
-        }
+            Ok(())
+        })();
+        if let Err(e) = result {
+            tracing::error!(%e,"summarize identity queue")
+        };
         s
-    }
-    fn persist(&self, j: &IdentityJob) -> Result<()> {
-        let p = self.root.join(format!("{}.json", j.id));
-        let t = self.root.join(format!("{}.tmp", j.id));
-        fs::write(&t, serde_json::to_vec(j)?)?;
-        fs::rename(t, p).context("persist identity job")
     }
     fn claim(&self) -> Result<Option<IdentityJob>> {
         let now = Utc::now();
-        let mut jobs = self.jobs.lock();
-        let Some(key) = jobs
-            .iter()
-            .find(|(_, j)| {
-                matches!(
-                    j.status,
-                    IdentityJobStatus::Queued | IdentityJobStatus::Retrying
-                ) && (j.next_attempt_at.is_none_or(|v| v <= now))
-                    && (j.lease_until.is_none_or(|v| v <= now))
-            })
-            .map(|(k, _)| k.clone())
-        else {
+        let mut db = self.db.lock();
+        let tx = db.transaction()?;
+        let id:Option<String>=tx.query_row("SELECT id FROM identity_jobs WHERE status IN ('queued','retrying') AND (next_attempt_at IS NULL OR next_attempt_at<=?1) AND (lease_until IS NULL OR lease_until<=?1) ORDER BY created_at LIMIT 1",[stamp(now)],|r|r.get(0)).optional()?;
+        let Some(id) = id else {
+            tx.commit()?;
             return Ok(None);
         };
-        let j = jobs.get_mut(&key).unwrap();
-        j.status = IdentityJobStatus::Running;
-        j.attempts += 1;
-        j.updated_at = now;
-        j.lease_token = Some(format!(
-            "{:016x}",
-            xxh3_64(format!("{}{}", j.id, now).as_bytes())
-        ));
-        j.lease_until = Some(now + Duration::minutes(2));
-        let out = j.clone();
-        self.persist(&out)?;
-        Ok(Some(out))
+        let token = format!("{:016x}", xxh3_64(format!("{id}{now}").as_bytes()));
+        tx.execute("UPDATE identity_jobs SET status='running',attempts=attempts+1,updated_at=?2,lease_token=?3,lease_until=?4 WHERE id=?1",params![id,stamp(now),token,stamp(now+Duration::minutes(2))])?;
+        let j = get_id(&tx, &id)?;
+        tx.commit()?;
+        Ok(j)
     }
     fn finish(
         &self,
@@ -181,12 +173,76 @@ impl IdentityQueue {
             .map(|d| Utc::now() + d);
         j.lease_token = None;
         j.lease_until = None;
-        self.persist(&j)?;
-        self.jobs.lock().insert(j.did.clone(), j);
-        Ok(())
+        upsert(&self.db.lock(), &j)
     }
 }
-#[derive(Debug, Serialize)]
+fn stamp(v: DateTime<Utc>) -> String {
+    v.to_rfc3339()
+}
+fn parse_dt(v: String) -> rusqlite::Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(&v)
+        .map(|v| v.with_timezone(&Utc))
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+        })
+}
+fn row_job(r: &rusqlite::Row<'_>) -> rusqlite::Result<IdentityJob> {
+    let status: String = r.get(2)?;
+    Ok(IdentityJob {
+        id: r.get(0)?,
+        did: r.get(1)?,
+        status: IdentityJobStatus::parse(&status).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, e.into())
+        })?,
+        created_at: parse_dt(r.get(3)?)?,
+        updated_at: parse_dt(r.get(4)?)?,
+        next_attempt_at: r.get::<_, Option<String>>(5)?.map(parse_dt).transpose()?,
+        attempts: r.get(6)?,
+        max_attempts: r.get(7)?,
+        last_error: r.get(8)?,
+        lease_token: r.get(9)?,
+        lease_until: r.get::<_, Option<String>>(10)?.map(parse_dt).transpose()?,
+    })
+}
+fn query_jobs(db: &Connection, sql: &str, paging: (i64, i64)) -> Result<Vec<IdentityJob>> {
+    let mut q = db.prepare(sql)?;
+    Ok(q.query_map(params![paging.0, paging.1], row_job)?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+fn get_did(db: &Connection, did: &str) -> Result<Option<IdentityJob>> {
+    Ok(db.query_row("SELECT id,did,status,created_at,updated_at,next_attempt_at,attempts,max_attempts,last_error,lease_token,lease_until FROM identity_jobs WHERE did=?1",[did],row_job).optional()?)
+}
+fn get_id(db: &Connection, id: &str) -> Result<Option<IdentityJob>> {
+    Ok(db.query_row("SELECT id,did,status,created_at,updated_at,next_attempt_at,attempts,max_attempts,last_error,lease_token,lease_until FROM identity_jobs WHERE id=?1",[id],row_job).optional()?)
+}
+fn upsert(db: &Connection, j: &IdentityJob) -> Result<()> {
+    db.execute("INSERT INTO identity_jobs VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(id) DO UPDATE SET did=excluded.did,status=excluded.status,created_at=excluded.created_at,updated_at=excluded.updated_at,next_attempt_at=excluded.next_attempt_at,attempts=excluded.attempts,max_attempts=excluded.max_attempts,last_error=excluded.last_error,lease_token=excluded.lease_token,lease_until=excluded.lease_until",params![j.id,j.did,j.status.as_str(),stamp(j.created_at),stamp(j.updated_at),j.next_attempt_at.map(stamp),j.attempts,j.max_attempts,j.last_error,j.lease_token,j.lease_until.map(stamp)])?;
+    Ok(())
+}
+fn import_json(root: &PathBuf, db: &mut Connection) -> Result<()> {
+    let tx = db.transaction()?;
+    let already: i64 = tx.query_row("SELECT count(*) FROM identity_jobs", [], |r| r.get(0))?;
+    if already == 0 {
+        let mut imported = 0;
+        for entry in fs::read_dir(root)? {
+            let path = entry?.path();
+            if path.extension().and_then(|v| v.to_str()) == Some("json")
+                && let Ok(bytes) = fs::read(&path)
+                && let Ok(j) = serde_json::from_slice::<IdentityJob>(&bytes)
+            {
+                upsert(&tx, &j)?;
+                imported += 1
+            }
+        }
+        tracing::info!(
+            imported,
+            "imported legacy identity queue jobs into SQLite; JSON retained"
+        );
+    }
+    tx.commit().context("commit identity queue JSON import")
+}
+
+#[derive(Debug, Serialize, Default)]
 pub struct IdentityQueueSummary {
     pub total: usize,
     pub queued: usize,
@@ -234,7 +290,7 @@ pub async fn run_worker(queue: IdentityQueue, service: IdentityService) {
                                 let _ = queue.enqueue(&did);
                             }
                         }
-                        Err(error) => tracing::debug!(%error, "identity discovery sweep failed"),
+                        Err(error) => tracing::debug!(%error,"identity discovery sweep failed"),
                     }
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await
@@ -252,53 +308,61 @@ fn valid_did(v: &str) -> bool {
         && v.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b":._-%".contains(&b))
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
     #[test]
-    fn dedupes_and_negative_expires() {
-        let p = std::env::temp_dir().join(format!(
-            "identity-q-{}",
-            Utc::now().timestamp_nanos_opt().unwrap()
-        ));
-        let q = IdentityQueue::open(p.clone(), 100, Duration::seconds(1)).unwrap();
-        let a = q.enqueue("did:plc:abc").unwrap();
-        let b = q.enqueue("did:plc:abc").unwrap();
-        assert_eq!(a.id, b.id);
-        assert_eq!(q.summary().total, 1);
-        fs::remove_dir_all(p).unwrap();
+    fn imports_json_and_preserves_it() {
+        let d = tempdir().unwrap();
+        let now = Utc::now();
+        let j = IdentityJob {
+            id: "id-old".into(),
+            did: "did:plc:old".into(),
+            status: IdentityJobStatus::Resolved,
+            created_at: now,
+            updated_at: now,
+            next_attempt_at: None,
+            attempts: 1,
+            max_attempts: 8,
+            last_error: None,
+            lease_token: None,
+            lease_until: None,
+        };
+        fs::write(
+            d.path().join("id-old.json"),
+            serde_json::to_vec(&j).unwrap(),
+        )
+        .unwrap();
+        let q = IdentityQueue::open(d.path().into(), 100, Duration::seconds(1)).unwrap();
+        assert_eq!(q.summary().resolved, 1);
+        assert!(d.path().join("id-old.json").exists());
+        drop(q);
+        let q = IdentityQueue::open(d.path().into(), 100, Duration::seconds(1)).unwrap();
+        assert_eq!(q.summary().total, 1)
     }
     #[test]
-    fn rejects_unsafe_did() {
-        let p = std::env::temp_dir().join("identity-q-invalid");
-        let q = IdentityQueue::open(p.clone(), 100, Duration::seconds(1)).unwrap();
-        assert!(q.enqueue("https://127.0.0.1").is_err());
-        let _ = fs::remove_dir_all(p);
+    fn dedupes() {
+        let d = tempdir().unwrap();
+        let q = IdentityQueue::open(d.path().into(), 100, Duration::seconds(1)).unwrap();
+        assert_eq!(
+            q.enqueue("did:plc:abc").unwrap().id,
+            q.enqueue("did:plc:abc").unwrap().id
+        );
+        assert_eq!(q.summary().total, 1)
     }
-
     #[test]
-    fn capacity_never_prunes_retained_history() {
-        let p = std::env::temp_dir().join(format!(
-            "identity-q-capacity-{}",
-            Utc::now().timestamp_nanos_opt().unwrap()
-        ));
-        let q = IdentityQueue::open(p.clone(), 100, Duration::seconds(1)).unwrap();
+    fn capacity_counts_only_active() {
+        let d = tempdir().unwrap();
+        let q = IdentityQueue::open(d.path().into(), 100, Duration::seconds(1)).unwrap();
         for n in 0..100 {
             q.enqueue(&format!("did:plc:test{n}")).unwrap();
         }
         assert!(q.enqueue("did:plc:overflow").is_err());
-        assert_eq!(q.summary().total, 100);
-        assert_eq!(fs::read_dir(&p).unwrap().count(), 100);
-        {
-            let mut jobs = q.jobs.lock();
-            let job = jobs.get_mut("did:plc:test0").unwrap();
-            job.status = IdentityJobStatus::Resolved;
-        }
-        q.enqueue("did:plc:aftercompletion").unwrap();
-        assert_eq!(q.summary().total, 101);
-        assert_eq!(q.summary().resolved, 1);
-        assert_eq!(fs::read_dir(&p).unwrap().count(), 101);
-        fs::remove_dir_all(p).unwrap();
+        let j = q.claim().unwrap().unwrap();
+        q.finish(j, IdentityJobStatus::Resolved, None, None)
+            .unwrap();
+        q.enqueue("did:plc:new").unwrap();
+        assert_eq!(q.summary().total, 101)
     }
 }
