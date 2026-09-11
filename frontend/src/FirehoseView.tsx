@@ -17,8 +17,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
-  ExternalLink,
-  Image as ImageIcon,
   Pause,
   Play,
   Search,
@@ -76,6 +74,8 @@ function MediaPreview({ uri }: { uri: string }) {
     retry: 0,
   });
   const asset = media.data?.media[0];
+  if (!asset)
+    return <div ref={host} aria-hidden="true" className="w-px self-stretch" />;
   return (
     <div
       ref={host}
@@ -97,11 +97,7 @@ function MediaPreview({ uri }: { uri: string }) {
           referrerPolicy="no-referrer"
           className="h-full w-full object-cover"
         />
-      ) : (
-        <ImageIcon
-          className={`size-4 ${media.isLoading ? "animate-pulse text-orange-300" : "text-white/15"}`}
-        />
-      )}
+      ) : null}
     </div>
   );
 }
@@ -146,25 +142,20 @@ export function FirehoseView({
       paused || connection.data?.state === "connected" ? false : 3_000,
     refetchIntervalInBackground: true,
   });
-  useEffect(() => {
-    if (displayed === null && feed.data)
-      setDisplayed([...feed.data.events].reverse());
-  }, [displayed, feed.data]);
-  const shown = displayed || EMPTY_EVENTS;
-  const displayedIds = useMemo(
-    () => new Set(shown.map((event) => event.event_id)),
-    [shown],
+  const liveEvents = useMemo(
+    () => [...(feed.data?.events || EMPTY_EVENTS)].reverse(),
+    [feed.data?.events],
   );
-  const pending = useMemo(
-    () =>
-      [...(feed.data?.events || [])]
-        .reverse()
-        .filter((event) => !displayedIds.has(event.event_id)),
-    [feed.data?.events, displayedIds],
-  );
-  const acceptPending = () => {
-    setDisplayed((current) => [...pending, ...(current || [])].slice(0, 5_000));
-    setPagination((value) => ({ ...value, pageIndex: 0 }));
+  const shown = paused ? displayed || EMPTY_EVENTS : liveEvents;
+  const togglePaused = () => {
+    if (paused) {
+      setDisplayed(null);
+      setPagination((value) => ({ ...value, pageIndex: 0 }));
+      setPaused(false);
+    } else {
+      setDisplayed(liveEvents);
+      setPaused(true);
+    }
   };
   const roughPage = shown.slice(
     pagination.pageIndex * pagination.pageSize,
@@ -232,8 +223,8 @@ export function FirehoseView({
         cell: (info) => {
           const event = info.row.original,
             uri = recordUri(event);
-          return (
-            <div className="flex min-w-0 items-center gap-2">
+          const content = (
+            <div className="flex min-w-0 items-center gap-2 text-left">
               <div className="min-w-0 flex-1">
                 {event.text ? (
                   <p className="line-clamp-2 text-xs leading-relaxed text-white/80" title={event.text}>
@@ -258,22 +249,16 @@ export function FirehoseView({
               {uri && <MediaPreview uri={uri} />}
             </div>
           );
-        },
-      }),
-      columnHelper.display({
-        id: "actions",
-        header: "",
-        cell: (info) => {
-          const uri = recordUri(info.row.original);
           return uri ? (
             <button
               type="button"
               onClick={() => onRecord(uri)}
-              className="inline-flex items-center gap-1 whitespace-nowrap text-[11px] text-orange-300 hover:text-orange-200"
+              title="Open record detail"
+              className="block w-full rounded-md outline-none hover:bg-white/[.025] focus-visible:ring-1 focus-visible:ring-orange-400/70"
             >
-              Inspect <ExternalLink className="size-3" />
+              {content}
             </button>
-          ) : null;
+          ) : content;
         },
       }),
     ],
@@ -334,18 +319,10 @@ export function FirehoseView({
               {table.getFilteredRowModel().rows.length.toLocaleString()} events
               cached
             </span>
-            <button type="button" onClick={() => setPaused((value) => !value)} className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-2 font-medium text-white/70 hover:border-orange-400/40 hover:text-orange-300">
+            <button type="button" onClick={togglePaused} className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-2 font-medium text-white/70 hover:border-orange-400/40 hover:text-orange-300">
               {paused ? <Play className="size-3" /> : <Pause className="size-3" />}
               {paused ? "Resume" : "Pause"}
             </button>
-            {pending.length > 0 && !paused && (
-              <button
-                onClick={acceptPending}
-                className="rounded-lg bg-orange-400 px-3 py-2 font-semibold text-black hover:bg-orange-300"
-              >
-                Show {pending.length.toLocaleString()} new
-              </button>
-            )}
           </div>
         </div>
         <div className="flex flex-col gap-3 border-b border-white/10 bg-white/[.015] p-4 sm:flex-row">
@@ -391,9 +368,7 @@ export function FirehoseView({
                             ? "15rem"
                             : header.id === "kind"
                               ? "5rem"
-                              : header.id === "actions"
-                                ? "4.5rem"
-                                : undefined,
+                              : undefined,
                     }}
                     className="border-b border-white/10 px-4 py-3 text-left text-[10px] uppercase tracking-wider text-white/40"
                   >
@@ -422,13 +397,13 @@ export function FirehoseView({
             <tbody>
               {feed.isLoading && !displayed ? (
                 <tr>
-                  <td colSpan={5}>
+                  <td colSpan={4}>
                     <Empty text="Connecting to the live buffer…" />
                   </td>
                 </tr>
               ) : table.getRowModel().rows.length === 0 ? (
                 <tr>
-                  <td colSpan={5}>
+                  <td colSpan={4}>
                     <Empty
                       text={
                         shown.length
