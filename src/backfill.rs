@@ -76,8 +76,11 @@ impl BackfillQueue {
                 continue;
             }
             if let Ok(bytes) = fs::read(&path)
-                && let Ok(job) = serde_json::from_slice::<BackfillJob>(&bytes)
+                && let Ok(mut job) = serde_json::from_slice::<BackfillJob>(&bytes)
             {
+                job.crawl_depth = u8::from(matches!(job.job_type, JobType::Associations));
+                job.max_depth = 1;
+                job.scope = default_crawl_scope();
                 jobs.insert(job.id.clone(), job);
             }
         }
@@ -473,7 +476,10 @@ async fn execute_job(queue: &BackfillQueue, mut job: BackfillJob) -> Result<()> 
     job.lease_token = None;
     job.lease_until = None;
     queue.update(job.clone())?;
-    if job.job_type == JobType::Repository && job.include_associations {
+    if job.job_type == JobType::Repository
+        && job.include_associations
+        && job.crawl_depth < job.max_depth
+    {
         queue.enqueue(&did, Some(&did), JobType::Associations, Some(job.id), false)?;
     }
     Ok(())
