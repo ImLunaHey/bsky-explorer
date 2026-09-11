@@ -41,6 +41,7 @@ struct Args {
 }
 
 #[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
 struct Checkpoint {
     next_post: usize,
     posts_total: u64,
@@ -585,6 +586,19 @@ fn save_checkpoint(path: &PathBuf, job_id: &str, value: &Checkpoint) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_checkpoint_without_posts_total_still_resumes() {
+        let checkpoint: Checkpoint = serde_json::from_str(
+            r#"{"next_post":1410,"posts_completed":1410,"likes":11309,"reposts":665,"quotes":302,"replies":2209,"requests":5640,"errors":0}"#,
+        )
+        .unwrap();
+
+        assert_eq!(checkpoint.next_post, 1410);
+        assert_eq!(checkpoint.posts_total, 0);
+        assert_eq!(checkpoint.likes, 11309);
+    }
+
     #[test]
     fn ids_are_deterministic_and_type_specific() {
         assert_eq!(
