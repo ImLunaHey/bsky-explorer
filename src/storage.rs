@@ -949,7 +949,7 @@ impl Storage {
         let snapshot = if let Some(id) = snapshot_id {
             self.client.query("SELECT snapshot_id,status,window_seconds,toUnixTimestamp64Milli(generated_at) generated_at_ms,toUnixTimestamp64Milli(completed_at) completed_at_ms,community_count,node_count,edge_count,truncated_nodes,truncated_edges,parameters_json,error FROM community_snapshots FINAL WHERE snapshot_id=? AND status='completed' LIMIT 1").bind(id).fetch_optional::<CommunitySnapshotRow>().await?
         } else {
-            self.client.query("SELECT snapshot_id,status,window_seconds,toUnixTimestamp64Milli(generated_at) generated_at_ms,toUnixTimestamp64Milli(completed_at) completed_at_ms,community_count,node_count,edge_count,truncated_nodes,truncated_edges,parameters_json,error FROM community_snapshots FINAL WHERE status='completed' ORDER BY generated_at DESC LIMIT 1").fetch_optional::<CommunitySnapshotRow>().await?
+            self.client.query("SELECT s.snapshot_id,s.status,s.window_seconds,toUnixTimestamp64Milli(s.generated_at) generated_at_ms,toUnixTimestamp64Milli(s.completed_at) completed_at_ms,s.community_count,s.node_count,s.edge_count,s.truncated_nodes,s.truncated_edges,s.parameters_json,s.error FROM (SELECT * FROM community_snapshots FINAL) s INNER JOIN community_summaries c ON c.snapshot_id=s.snapshot_id WHERE s.status='completed' AND c.community_id=? ORDER BY s.generated_at DESC LIMIT 1").bind(community_id).fetch_optional::<CommunitySnapshotRow>().await?
         };
         let Some(snapshot) = snapshot else {
             return Ok(None);
