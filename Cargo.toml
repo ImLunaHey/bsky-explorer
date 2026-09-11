@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1"
 async-stream = "0.3"
 async-trait = "0.1"
+atrium-repo = "0.1.8"
 axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
@@ -18,7 +19,8 @@ parking_lot = "0.12"
 prometheus = "0.14"
 regex = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+ipld-core = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
