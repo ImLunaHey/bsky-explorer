@@ -82,7 +82,7 @@ pub struct Config {
     pub identity_requests_per_second: u32,
     #[arg(long, env = "IDENTITY_QUEUE_DIR")]
     pub identity_queue_dir: Option<PathBuf>,
-    #[arg(long, env = "IDENTITY_QUEUE_CAPACITY", default_value_t = 100_000)]
+    #[arg(long, env = "IDENTITY_QUEUE_CAPACITY", default_value_t = 1_000_000)]
     pub identity_queue_capacity: usize,
     #[arg(long, env = "IDENTITY_WORKER_CONCURRENCY", default_value_t = 1)]
     pub identity_worker_concurrency: usize,

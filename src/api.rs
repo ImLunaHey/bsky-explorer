@@ -901,8 +901,10 @@ async fn account(
         s.storage.account_cluster_ids(&did, 50),
     )
     .map_err(internal_error)?;
-    if current_identity.handle.is_none() {
-        s.identity_queue.enqueue(&did).map_err(internal_error)?;
+    if current_identity.handle.is_none()
+        && let Err(error) = s.identity_queue.enqueue(&did)
+    {
+        tracing::warn!(%error, %did, "account identity enrichment was not queued");
     }
     // Account pages must not contend with the ingest writer for the global hot
     // analyzer lock. ClickHouse is indexed for this lookup and remains responsive
@@ -1587,8 +1589,10 @@ async fn identities(
             .resolve_local(did)
             .await
             .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
-        if identity.handle.is_none() {
-            s.identity_queue.enqueue(did).map_err(internal_error)?;
+        if identity.handle.is_none()
+            && let Err(error) = s.identity_queue.enqueue(did)
+        {
+            tracing::warn!(%error, %did, "visible identity enrichment was not queued");
         }
         resolved.push(identity);
     }
