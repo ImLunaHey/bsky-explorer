@@ -65,6 +65,8 @@ pub fn router(s: AppState) -> Router {
         .route_service("/search", spa())
         .route_service("/backfills", spa())
         .route_service("/backfills/{id}", spa())
+        .route_service("/identities", spa())
+        .route_service("/identities/{id}", spa())
         .route_service("/accounts/{did}", spa())
         .route_service("/records/{uri}", spa())
         .route_service("/clusters/{cluster_id}", spa())
