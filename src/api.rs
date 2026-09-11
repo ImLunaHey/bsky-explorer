@@ -62,6 +62,7 @@ pub fn router(s: AppState) -> Router {
         .route_service("/firehose", spa())
         .route_service("/detections", spa())
         .route_service("/system", spa())
+        .route_service("/coverage", spa())
         .route_service("/search", spa())
         .route_service("/backfills", spa())
         .route_service("/backfills/{id}", spa())
@@ -112,6 +113,7 @@ pub fn router(s: AppState) -> Router {
         .route("/api/identity-queue", get(identity_queue))
         .route("/api/identity-queue/{id}", get(identity_queue_detail))
         .route("/api/storage", get(storage))
+        .route("/api/coverage", get(coverage))
         .route("/api/system", get(system))
         .route("/api/system/history", get(system_history))
         .fallback_service(frontend)
@@ -1977,6 +1979,38 @@ struct StorageStats {
 fn runway_days(remaining_bytes: u64, daily_growth: f64) -> Option<f64> {
     (daily_growth > 0.0 && daily_growth.is_finite()).then(|| remaining_bytes as f64 / daily_growth)
 }
+async fn coverage(
+    State(s): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    static CACHE: OnceLock<RwLock<Option<(Instant, serde_json::Value)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| RwLock::new(None));
+    if let Some((stored_at, value)) = &*cache.read().await
+        && stored_at.elapsed() < Duration::from_secs(60)
+    {
+        return Ok(Json(value.clone()));
+    }
+    let queue = s.backfills.repository_coverage().map_err(internal_error)?;
+    let (totals, collections, daily) = s.storage.coverage().await.map_err(internal_error)?;
+    let value = serde_json::json!({
+        "summary":{
+            "unique_observed_actors":totals.unique_observed_actors,
+            "identities_resolved":totals.identities_resolved,
+            "repository_accounts_completed":queue.completed,
+            "repository_jobs_queued":queue.queued,
+            "repository_jobs_running":queue.running,
+            "repository_jobs_partial":queue.partial,
+            "repository_jobs_failed":queue.failed,
+            "unique_records":totals.unique_records,
+            "total_bytes":totals.total_bytes,
+            "coverage_estimate":serde_json::Value::Null,
+            "coverage_denominator":serde_json::Value::Null,
+            "coverage_qualification":"Estimated distinct counts and retained-data coverage for this observatory; collection bytes are allocated proportionally. Total ATProto network size is not known."
+        },"collections":collections,"daily":daily
+    });
+    *cache.write().await = Some((Instant::now(), value.clone()));
+    Ok(Json(value))
+}
+
 async fn storage(State(s): State<AppState>) -> Json<StorageStats> {
     let raw = Archive::total_size(&s.archive_dir);
     let ch = s.storage.bytes().await.unwrap_or(0);

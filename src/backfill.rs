@@ -132,21 +132,37 @@ pub struct BackfillQueue {
 impl BackfillQueue {
     pub fn repository_coverage(&self) -> Result<RepositoryCoverageStats> {
         let db = self.db.lock();
-        let mut statement =
-            db.prepare("SELECT job_json FROM backfill_jobs WHERE job_type='repository'")?;
+        let mut statement = db.prepare("SELECT j.job_json,coalesce(c.payload,'') FROM backfill_jobs j LEFT JOIN backfill_checkpoints c ON c.job_id=j.id WHERE j.job_type='repository'")?;
         let jobs = statement
-            .query_map([], |row| row.get::<_, String>(0))?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
             .filter_map(|raw| {
-                raw.ok()
-                    .and_then(|raw| serde_json::from_str::<BackfillJob>(&raw).ok())
+                raw.ok().and_then(|(raw, checkpoint)| {
+                    serde_json::from_str::<BackfillJob>(&raw)
+                        .ok()
+                        .map(|job| (job, checkpoint))
+                })
             });
         let mut stats = RepositoryCoverageStats::default();
         let mut completed = std::collections::HashSet::new();
-        for job in jobs {
+        for (job, checkpoint) in jobs {
             match job.status {
                 JobStatus::Completed => {
-                    if let Some(did) = job.did {
-                        completed.insert(did);
+                    let car_complete = serde_json::from_str::<serde_json::Value>(&checkpoint)
+                        .ok()
+                        .and_then(|value| {
+                            value
+                                .get("car_complete")
+                                .and_then(serde_json::Value::as_bool)
+                        })
+                        .unwrap_or(false);
+                    if car_complete {
+                        if let Some(did) = job.did {
+                            completed.insert(did);
+                        }
+                    } else {
+                        stats.partial += 1;
                     }
                 }
                 JobStatus::Running => stats.running += 1,
@@ -1327,6 +1343,42 @@ mod tests {
     fn validates_ids() {
         assert!(valid_job_id("bf-0123456789abcdef"));
         assert!(!valid_job_id("../bad"));
+    }
+
+    #[test]
+    fn repository_coverage_classifies_durable_queue_states() {
+        let directory = tempfile::tempdir().unwrap();
+        let queue = BackfillQueue::open(directory.path().into()).unwrap();
+        for (index, status, records) in [
+            (0, JobStatus::Completed, 10),
+            (1, JobStatus::Running, 4),
+            (2, JobStatus::Paused, 2),
+            (3, JobStatus::Queued, 0),
+            (4, JobStatus::DeadLetter, 0),
+        ] {
+            let did = format!("did:plc:{:024}", index);
+            let mut job = queue
+                .enqueue(&did, Some(&did), JobType::Repository, None, false)
+                .unwrap();
+            job.status = status;
+            job.records_written = records;
+            let job_id = job.id.clone();
+            queue.update(job).unwrap();
+            if index == 0 {
+                queue.db.lock().execute("INSERT INTO backfill_checkpoints(job_id,kind,payload,updated_at) VALUES(?1,'repository','{\"car_complete\":true}',?2)",params![job_id,Utc::now().to_rfc3339()]).unwrap();
+            }
+        }
+        let stats = queue.repository_coverage().unwrap();
+        assert_eq!(
+            (
+                stats.completed,
+                stats.running,
+                stats.partial,
+                stats.queued,
+                stats.failed
+            ),
+            (1, 1, 1, 1, 1)
+        );
     }
     #[test]
     fn validates_only_plc_dids_and_dns_style_handles_for_queueing() {
