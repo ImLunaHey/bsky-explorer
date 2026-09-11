@@ -477,7 +477,7 @@ impl BackfillQueue {
         };
         crawl.updated_at = Utc::now();
         persist_crawl(&tx, &crawl)?;
-        if matches!(action, "pause" | "cancel") {
+        if matches!(action, "pause" | "resume" | "cancel") {
             let ids: Vec<String> = {
                 let mut q=tx.prepare("SELECT id FROM backfill_jobs WHERE crawl_id=?1 AND status IN ('queued','paused','retrying','running')")?;
                 q.query_map([id], |r| r.get(0))?
@@ -485,12 +485,17 @@ impl BackfillQueue {
             };
             for job_id in &ids {
                 if let Some(mut j) = get_job(&tx, job_id)? {
-                    if j.status == JobStatus::Running {
+                    if action == "resume" && j.status == JobStatus::Paused {
+                        j.status = JobStatus::Queued;
+                        j.desired_action = None;
+                    } else if j.status == JobStatus::Running {
                         j.desired_action = Some(action.into())
                     } else if action == "cancel" {
                         j.status = JobStatus::Cancelled
-                    } else {
+                    } else if action == "pause" {
                         j.status = JobStatus::Paused
+                    } else {
+                        continue;
                     }
                     j.updated_at = Utc::now();
                     persist_job(&tx, &j)?
@@ -1731,6 +1736,13 @@ mod tests {
         .unwrap();
         assert_eq!(q.get(&running.id).unwrap().status, JobStatus::Paused);
         assert!(q.claim(120).unwrap().is_none());
+        assert_eq!(q.control_crawl(&crawl.id, "resume").unwrap(), 1);
+        assert_eq!(q.get(&running.id).unwrap().status, JobStatus::Queued);
+        assert_eq!(
+            q.crawl(&crawl.id).unwrap().unwrap().0.status,
+            CrawlStatus::Running
+        );
+        assert!(q.claim(120).unwrap().is_some());
     }
 
     #[test]
