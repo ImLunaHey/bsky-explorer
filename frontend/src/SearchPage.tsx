@@ -185,6 +185,32 @@ function BackfillState({
     );
   const repository = job.job_type === "repository";
   const waitingForDependency = job.depends_on_job_id && job.status === "queued";
+  const heading =
+    job.status === "queued"
+      ? "Account backfill queued"
+      : job.status === "retrying"
+        ? "Account backfill rate limited"
+        : job.status === "paused"
+          ? "Account backfill paused"
+          : job.status === "completed"
+            ? "Account backfill completed"
+            : job.status === "resolving"
+              ? "Fetching account identity"
+              : repository
+                ? "Fetching public account records"
+                : "Fetching public account associations";
+  const statusCopy =
+    job.status === "queued"
+      ? waitingForDependency
+        ? "Waiting for the account repository fetch to finish before this job can start."
+        : "Waiting for available backfill worker capacity."
+      : job.status === "retrying"
+        ? "The upstream service rate limited this job. It will resume automatically."
+        : job.status === "paused"
+          ? "This job is paused and will not make progress until it is resumed."
+          : job.status === "completed"
+            ? "The public records collected by this job are now available to search."
+            : "This job is fetching public data now.";
   return (
     <section className="rounded-xl border border-orange-500/30 bg-orange-500/[.06] p-5">
       <div className="flex flex-wrap items-start gap-4">
@@ -196,9 +222,7 @@ function BackfillState({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="font-medium">
-              {repository
-                ? "Fetching public account records"
-                : "Fetching public account associations"}
+              {heading}
             </h2>
             <span className="rounded-md border border-orange-500/20 px-2 py-0.5 text-[10px] uppercase tracking-wide text-orange-300">
               {label}
@@ -220,17 +244,18 @@ function BackfillState({
             </div>
           )}
           <p className="mt-3 text-xs leading-5 text-dim">
-            {waitingForDependency
-              ? "Waiting for the account repository fetch to finish. "
-              : ""}
-            This job runs durably in the background. You can leave this page;
-            collected public data remains available to later searches.
+            {statusCopy} This job runs durably in the background, so you can
+            leave this page safely.
           </p>
           <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-xs">
-            <span>
-              <b className="font-mono text-white">{job.records_written}</b>{" "}
-              records written
-            </span>
+            {job.status === "queued" && job.records_written === 0 ? (
+              <span>No records written yet</span>
+            ) : (
+              <span>
+                <b className="font-mono text-white">{job.records_written}</b>{" "}
+                records written
+              </span>
+            )}
             {job.retry_count > 0 && <span>{job.retry_count} retries</span>}
             {waiting && (
               <span className="inline-flex items-center gap-1 text-orange-200">
