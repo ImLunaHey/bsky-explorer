@@ -1,5 +1,8 @@
 use anyhow::{Context, Result};
-use atrium_repo::{Repository, blockstore::CarStore};
+use atrium_repo::{
+    Repository,
+    blockstore::{AsyncBlockStoreRead, CarStore},
+};
 use bsky_observatory::{
     backfill::retry_delay, normalize::normalize_repository_record, storage::Storage,
 };
@@ -13,6 +16,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
+    net::IpAddr,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -76,8 +80,9 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     anyhow::ensure!(args.did.starts_with("did:"), "--did must be a DID");
     let pds = Url::parse(&args.pds).context("invalid --pds URL")?;
-    anyhow::ensure!(pds.scheme() == "https", "--pds must use HTTPS");
+    let (pds_host, pds_addresses) = validate_pds(&pds).await?;
     let client = Client::builder()
+        .resolve_to_addrs(&pds_host, &pds_addresses)
         .connect_timeout(Duration::from_secs(3))
         .timeout(Duration::from_secs(600))
         .redirect(Policy::none())
@@ -220,6 +225,17 @@ async fn download_car(client: &Client, pds: &Url, repo: &str, path: &Path) -> Re
         .send()
         .await?
         .error_for_status()?;
+    if let Some(content_type) = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+    {
+        anyhow::ensure!(
+            content_type.starts_with("application/vnd.ipld.car")
+                || content_type.starts_with("application/octet-stream"),
+            "PDS getRepo returned unexpected content type"
+        );
+    }
     if let Some(length) = response.content_length() {
         anyhow::ensure!(length <= MAX_CAR_BYTES, "repository CAR exceeds size limit")
     }
@@ -250,8 +266,20 @@ async fn process_car(
     job_id: Option<&str>,
 ) -> Result<()> {
     let file = tokio::fs::File::open(path).await?;
-    let car = CarStore::open(file).await.context("index repository CAR")?;
-    let root = car.roots().next().context("CAR has no repository root")?;
+    let mut car = CarStore::open(file).await.context("index repository CAR")?;
+    let roots = car.roots().collect::<Vec<_>>();
+    anyhow::ensure!(
+        roots.len() == 1,
+        "repository CAR must have exactly one root"
+    );
+    let root = roots[0];
+    let commit: Ipld = serde_ipld_dagcbor::from_slice(&car.read_block(root).await?)
+        .context("decode repository commit")?;
+    let commit_did = ipld_commit_did(&commit);
+    anyhow::ensure!(
+        commit_did == Some(did),
+        "repository CAR commit DID mismatch"
+    );
     let mut repo = Repository::open(car, root)
         .await
         .context("open repository CAR")?;
@@ -306,6 +334,78 @@ async fn process_car(
     checkpoint.collection = None;
     checkpoint.cursor = None;
     Ok(())
+}
+
+fn validate_pds_shape(url: &Url) -> Result<&str> {
+    anyhow::ensure!(
+        url.scheme() == "https" && url.username().is_empty() && url.password().is_none(),
+        "unsafe PDS URL"
+    );
+    anyhow::ensure!(
+        url.port_or_known_default() == Some(443),
+        "PDS must use HTTPS port 443"
+    );
+    anyhow::ensure!(
+        url.path() == "/" && (url.query().is_none()) && url.fragment().is_none(),
+        "PDS endpoint must be an origin URL"
+    );
+    let host = url.host_str().context("PDS URL has no host")?;
+    anyhow::ensure!(
+        matches!(url.host(), Some(url::Host::Domain(_)))
+            && host != "localhost"
+            && !host.ends_with(".local"),
+        "unsafe PDS host"
+    );
+    Ok(host)
+}
+async fn validate_pds(url: &Url) -> Result<(String, Vec<std::net::SocketAddr>)> {
+    let host = validate_pds_shape(url)?;
+    let addresses = tokio::net::lookup_host((host, 443))
+        .await?
+        .collect::<Vec<_>>();
+    anyhow::ensure!(!addresses.is_empty(), "PDS hostname did not resolve");
+    for address in &addresses {
+        anyhow::ensure!(
+            public_ip(address.ip()),
+            "PDS resolves to a private or reserved address"
+        );
+    }
+    Ok((host.to_owned(), addresses))
+}
+fn public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_documentation()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.octets()[0] == 0
+                || ip.octets()[0] >= 240)
+        }
+        IpAddr::V6(ip) => {
+            !(ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local()
+                || ip.is_multicast()
+                || (ip.segments()[0] == 0x2001 && ip.segments()[1] == 0x0db8)
+                || ip
+                    .to_ipv4_mapped()
+                    .is_some_and(|mapped| !public_ip(IpAddr::V4(mapped))))
+        }
+    }
+}
+fn ipld_commit_did(value: &Ipld) -> Option<&str> {
+    match value {
+        Ipld::Map(fields) => fields.get("did").and_then(|value| match value {
+            Ipld::String(value) => Some(value.as_str()),
+            _ => None,
+        }),
+        _ => None,
+    }
 }
 
 fn ipld_json(value: Ipld) -> Option<Value> {
@@ -428,5 +528,37 @@ mod tests {
         .unwrap();
         assert_eq!(checkpoint.car_record_index, 0);
         assert!(!checkpoint.car_complete);
+    }
+    #[test]
+    fn rejects_unsafe_pds_origins() {
+        assert!(validate_pds_shape(&Url::parse("https://pds.example.com").unwrap()).is_ok());
+        for value in [
+            "http://pds.example.com",
+            "https://127.0.0.1",
+            "https://localhost",
+            "https://pds.example.com:8443",
+            "https://pds.example.com/untrusted",
+            "https://user@pds.example.com",
+        ] {
+            assert!(
+                validate_pds_shape(&Url::parse(value).unwrap()).is_err(),
+                "accepted {value}"
+            );
+        }
+        assert!(!public_ip("127.0.0.1".parse().unwrap()));
+        assert!(!public_ip("fd00::1".parse().unwrap()));
+        assert!(public_ip("1.1.1.1".parse().unwrap()));
+    }
+    #[test]
+    fn extracts_commit_did_for_car_subject_validation() {
+        let commit = Ipld::Map(BTreeMap::from([(
+            "did".into(),
+            Ipld::String("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa".into()),
+        )]));
+        assert_eq!(
+            ipld_commit_did(&commit),
+            Some("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(ipld_commit_did(&Ipld::Null), None);
     }
 }

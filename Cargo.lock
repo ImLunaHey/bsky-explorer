@@ -390,6 +390,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "serde",
+ "serde_ipld_dagcbor",
  "serde_json",
  "tempfile",
  "tokio",
