@@ -59,6 +59,8 @@ pub struct BackfillJob {
     pub crawl_id: Option<String>,
     #[serde(default)]
     pub parent_job_id: Option<String>,
+    #[serde(default)]
+    pub desired_action: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -106,6 +108,14 @@ pub struct BackfillCheckpoint {
     pub payload: serde_json::Value,
     pub updated_at: DateTime<Utc>,
 }
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct RepositoryCoverageStats {
+    pub completed: u64,
+    pub queued: u64,
+    pub running: u64,
+    pub partial: u64,
+    pub failed: u64,
+}
 fn default_max_crawl_depth() -> u8 {
     1
 }
@@ -120,6 +130,35 @@ pub struct BackfillQueue {
 }
 
 impl BackfillQueue {
+    pub fn repository_coverage(&self) -> Result<RepositoryCoverageStats> {
+        let db = self.db.lock();
+        let mut statement =
+            db.prepare("SELECT job_json FROM backfill_jobs WHERE job_type='repository'")?;
+        let jobs = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(|raw| {
+                raw.ok()
+                    .and_then(|raw| serde_json::from_str::<BackfillJob>(&raw).ok())
+            });
+        let mut stats = RepositoryCoverageStats::default();
+        let mut completed = std::collections::HashSet::new();
+        for job in jobs {
+            match job.status {
+                JobStatus::Completed => {
+                    if let Some(did) = job.did {
+                        completed.insert(did);
+                    }
+                }
+                JobStatus::Running => stats.running += 1,
+                JobStatus::Paused => stats.partial += 1,
+                JobStatus::Retrying if job.records_written > 0 => stats.partial += 1,
+                JobStatus::Queued | JobStatus::Resolving | JobStatus::Retrying => stats.queued += 1,
+                JobStatus::DeadLetter | JobStatus::Cancelled => stats.failed += 1,
+            }
+        }
+        stats.completed = completed.len() as u64;
+        Ok(stats)
+    }
     pub fn open(root: PathBuf) -> Result<Self> {
         fs::create_dir_all(&root)?;
         let db_path = root.join("queue.sqlite3");
@@ -230,6 +269,7 @@ impl BackfillQueue {
             lease_until: None,
             crawl_id,
             parent_job_id: parent_job_id.or(dependency),
+            desired_action: None,
         };
         persist_job(&db, &job)?;
         Ok(job)
@@ -344,15 +384,21 @@ impl BackfillQueue {
             crawl.status = status;
             crawl.updated_at = now;
             persist_crawl(&tx, &crawl)?;
-            if action == "cancel" {
+            if matches!(action, "pause" | "cancel") {
                 let ids: Vec<String> = {
-                    let mut q=tx.prepare("SELECT id FROM backfill_jobs WHERE crawl_id=?1 AND status IN ('queued','paused','retrying')")?;
+                    let mut q=tx.prepare("SELECT id FROM backfill_jobs WHERE crawl_id=?1 AND status IN ('queued','paused','retrying','running')")?;
                     q.query_map([crawl_id], |r| r.get(0))?
                         .collect::<rusqlite::Result<_>>()?
                 };
                 for id in ids {
                     if let Some(mut j) = get_job(&tx, &id)? {
-                        j.status = JobStatus::Cancelled;
+                        if j.status == JobStatus::Running {
+                            j.desired_action = Some(action.into())
+                        } else if action == "cancel" {
+                            j.status = JobStatus::Cancelled
+                        } else {
+                            j.status = JobStatus::Paused
+                        }
                         j.updated_at = now;
                         persist_job(&tx, &j)?
                     }
@@ -371,14 +417,20 @@ impl BackfillQueue {
         let mut changed = 0;
         for id in ids {
             if let Some(mut job) = get_job(&tx, &id)? {
-                if job.status == JobStatus::Running && job.lease_until.is_some_and(|v| v > now) {
-                    anyhow::bail!("leased running jobs cannot be controlled until lease expiry")
-                };
                 match action {
+                    "pause" if job.status == JobStatus::Running => {
+                        job.desired_action = Some("pause".into())
+                    }
+                    "cancel" if job.status == JobStatus::Running => {
+                        job.desired_action = Some("cancel".into())
+                    }
                     "pause" if matches!(job.status, JobStatus::Queued | JobStatus::Retrying) => {
                         job.status = JobStatus::Paused
                     }
-                    "resume" if job.status == JobStatus::Paused => job.status = JobStatus::Queued,
+                    "resume" if job.status == JobStatus::Paused => {
+                        job.status = JobStatus::Queued;
+                        job.desired_action = None
+                    }
                     "cancel"
                         if !matches!(job.status, JobStatus::Completed | JobStatus::Cancelled) =>
                     {
@@ -409,15 +461,21 @@ impl BackfillQueue {
         };
         crawl.updated_at = Utc::now();
         persist_crawl(&tx, &crawl)?;
-        if action == "cancel" {
+        if matches!(action, "pause" | "cancel") {
             let ids: Vec<String> = {
-                let mut q=tx.prepare("SELECT id FROM backfill_jobs WHERE crawl_id=?1 AND status IN ('queued','paused','retrying')")?;
+                let mut q=tx.prepare("SELECT id FROM backfill_jobs WHERE crawl_id=?1 AND status IN ('queued','paused','retrying','running')")?;
                 q.query_map([id], |r| r.get(0))?
                     .collect::<rusqlite::Result<_>>()?
             };
             for job_id in &ids {
                 if let Some(mut j) = get_job(&tx, job_id)? {
-                    j.status = JobStatus::Cancelled;
+                    if j.status == JobStatus::Running {
+                        j.desired_action = Some(action.into())
+                    } else if action == "cancel" {
+                        j.status = JobStatus::Cancelled
+                    } else {
+                        j.status = JobStatus::Paused
+                    }
                     j.updated_at = Utc::now();
                     persist_job(&tx, &j)?
                 }
@@ -618,7 +676,7 @@ impl BackfillQueue {
             Ok(None)
         }
     }
-    fn renew_lease(&self, id: &str, token: &str, lease_seconds: i64) -> Result<()> {
+    fn renew_lease(&self, id: &str, token: &str, lease_seconds: i64) -> Result<Option<String>> {
         let checkpoint = self.checkpoint_progress(id);
         let mut job = self.get(id).context("leased job disappeared")?;
         anyhow::ensure!(
@@ -636,6 +694,30 @@ impl BackfillQueue {
             job.collection = collection;
             job.cursor = cursor;
         }
+        let desired = job.desired_action.clone();
+        self.update(job)?;
+        Ok(desired)
+    }
+    fn finish_control(&self, id: &str, token: &str, action: &str) -> Result<()> {
+        let mut job = self.get(id).context("controlled job disappeared")?;
+        anyhow::ensure!(
+            job.lease_token.as_deref() == Some(token),
+            "backfill lease ownership changed"
+        );
+        if let Some((records, collection, cursor)) = self.checkpoint_progress(id) {
+            job.records_written = records;
+            job.collection = collection;
+            job.cursor = cursor
+        }
+        job.status = if action == "pause" {
+            JobStatus::Paused
+        } else {
+            JobStatus::Cancelled
+        };
+        job.desired_action = None;
+        job.lease_token = None;
+        job.lease_until = None;
+        job.updated_at = Utc::now();
         self.update(job)
     }
     fn association_progress(&self, id: &str) -> Option<u64> {
@@ -814,7 +896,12 @@ fn recover_expired_backfills_tx(db: &Connection, now: DateTime<Utc>) -> Result<u
     let count = ids.len();
     for id in ids {
         if let Some(mut job) = get_job(db, &id)? {
-            job.status = JobStatus::Queued;
+            job.status = match job.desired_action.as_deref() {
+                Some("pause") => JobStatus::Paused,
+                Some("cancel") => JobStatus::Cancelled,
+                _ => JobStatus::Queued,
+            };
+            job.desired_action = None;
             job.updated_at = now;
             job.next_attempt_at = None;
             job.lease_token = None;
@@ -1043,7 +1130,7 @@ async fn execute_job(queue: &BackfillQueue, storage: &Storage, mut job: Backfill
     let status = loop {
         tokio::select! {
             status=child.wait()=>break status?,
-            _=heartbeat.tick()=>queue.renew_lease(&job.id,&token,120)?,
+            _=heartbeat.tick()=>if let Some(action)=queue.renew_lease(&job.id,&token,120)?{child.kill().await?;let _=child.wait().await;queue.finish_control(&job.id,&token,&action)?;return Ok(())},
         }
     };
     anyhow::ensure!(status.success(), "backfill subprocess failed: {status}");
@@ -1415,6 +1502,7 @@ mod tests {
             lease_until: Some(now - Duration::minutes(5)),
             crawl_id: None,
             parent_job_id: None,
+            desired_action: None,
         };
         db.execute(
             "INSERT INTO backfill_jobs VALUES(?1,'running','repository',?2,NULL,?3)",
@@ -1453,7 +1541,20 @@ mod tests {
         assert_eq!(q.get(&root.id).unwrap().status, JobStatus::Paused);
         assert_eq!(q.control(&root.id, "resume", "job").unwrap(), 1);
         let running = q.claim(120).unwrap().unwrap();
-        assert!(q.control(&running.id, "cancel", "job").is_err());
+        assert_eq!(q.control(&running.id, "cancel", "job").unwrap(), 1);
+        assert_eq!(
+            q.renew_lease(&running.id, running.lease_token.as_deref().unwrap(), 120)
+                .unwrap()
+                .as_deref(),
+            Some("cancel")
+        );
+        q.finish_control(
+            &running.id,
+            running.lease_token.as_deref().unwrap(),
+            "cancel",
+        )
+        .unwrap();
+        assert_eq!(q.get(&running.id).unwrap().status, JobStatus::Cancelled);
         assert_eq!(q.control_crawl(&crawl.id, "pause").unwrap(), 1);
         drop(q);
         let q = BackfillQueue::open(d.path().into()).unwrap();
@@ -1544,6 +1645,40 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+    #[test]
+    fn crawl_pause_requests_cooperative_stop_for_active_job() {
+        let d = tempfile::tempdir().unwrap();
+        let q = BackfillQueue::open(d.path().into()).unwrap();
+        let (crawl, _) = q
+            .create_crawl(
+                "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+                Some("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"),
+                1,
+                vec!["posts".into()],
+                CrawlLimits::default(),
+            )
+            .unwrap();
+        let running = q.claim(120).unwrap().unwrap();
+        assert_eq!(q.control_crawl(&crawl.id, "pause").unwrap(), 1);
+        assert_eq!(
+            q.get(&running.id).unwrap().desired_action.as_deref(),
+            Some("pause")
+        );
+        assert_eq!(
+            q.renew_lease(&running.id, running.lease_token.as_deref().unwrap(), 120)
+                .unwrap()
+                .as_deref(),
+            Some("pause")
+        );
+        q.finish_control(
+            &running.id,
+            running.lease_token.as_deref().unwrap(),
+            "pause",
+        )
+        .unwrap();
+        assert_eq!(q.get(&running.id).unwrap().status, JobStatus::Paused);
+        assert!(q.claim(120).unwrap().is_none());
     }
 
     #[test]
