@@ -327,8 +327,8 @@ impl Storage {
     pub async fn coverage(
         &self,
     ) -> Result<(CoverageTotals, Vec<CoverageCollection>, Vec<CoverageDay>)> {
-        let totals=self.client.query("SELECT uniq(actor_did) AS unique_observed_actors,(SELECT uniq(did) FROM identities FINAL WHERE handle!='') AS identities_resolved,uniqIf(at_uri,at_uri!='') AS unique_records,(SELECT coalesce(sum(bytes_on_disk),0) FROM system.parts WHERE active AND database=currentDatabase()) AS total_bytes FROM events").fetch_one::<CoverageTotals>();
-        let collections=self.client.clone().with_option("max_execution_time","5").with_option("max_threads","2").query("WITH (SELECT coalesce(sum(bytes_on_disk),0) FROM system.parts WHERE active AND database=currentDatabase() AND table='events') AS compressed_total,(SELECT coalesce(sum(data_uncompressed_bytes),0) FROM system.parts WHERE active AND database=currentDatabase() AND table='events') AS uncompressed_total,(SELECT count() FROM events) AS total_rows SELECT collection,arrayStringConcat(arraySlice(splitByChar('.',collection),1,2),'.') AS namespace,count() AS records,toUInt64(compressed_total*records/greatest(total_rows,1)) AS compressed_bytes,toUInt64(uncompressed_total*records/greatest(total_rows,1)) AS uncompressed_bytes,uniq(actor_did) AS unique_accounts FROM events GROUP BY collection ORDER BY records DESC LIMIT 500").fetch_all::<CoverageCollection>();
+        let totals=self.client.query("SELECT uniq(actor_did) AS unique_observed_actors,assumeNotNull((SELECT uniq(did) FROM identities FINAL WHERE handle!='')) AS identities_resolved,uniqIf(at_uri,at_uri!='') AS unique_records,assumeNotNull((SELECT coalesce(sum(bytes_on_disk),0) FROM system.parts WHERE active AND database=currentDatabase())) AS total_bytes FROM events").fetch_one::<CoverageTotals>();
+        let collections=self.client.clone().with_option("max_execution_time","5").with_option("max_threads","2").query("WITH (SELECT assumeNotNull(coalesce(sum(bytes_on_disk),0)) FROM system.parts WHERE active AND database=currentDatabase() AND table='events') AS compressed_total,(SELECT assumeNotNull(coalesce(sum(data_uncompressed_bytes),0)) FROM system.parts WHERE active AND database=currentDatabase() AND table='events') AS uncompressed_total,(SELECT count() FROM events) AS total_rows SELECT collection,arrayStringConcat(arraySlice(splitByChar('.',collection),1,2),'.') AS namespace,count() AS records,assumeNotNull(toUInt64(compressed_total*records/greatest(total_rows,1))) AS compressed_bytes,assumeNotNull(toUInt64(uncompressed_total*records/greatest(total_rows,1))) AS uncompressed_bytes,uniq(actor_did) AS unique_accounts FROM events GROUP BY collection ORDER BY records DESC LIMIT 500").fetch_all::<CoverageCollection>();
         let daily=self.client.clone().with_option("max_execution_time","5").with_option("max_threads","2").query("WITH first_seen AS (SELECT actor_did,min(toDate(timestamp)) AS first_date FROM events GROUP BY actor_did), daily_events AS (SELECT toDate(timestamp) AS day,uniqExact(actor_did) AS active_accounts,count() AS records FROM events WHERE timestamp>=today()-30 GROUP BY day), daily_new AS (SELECT first_date AS day,count() AS new_accounts FROM first_seen WHERE first_date>=today()-30 GROUP BY day) SELECT toString(e.day) AS date,e.active_accounts,coalesce(n.new_accounts,0) AS new_accounts,e.records FROM daily_events e LEFT JOIN daily_new n USING day ORDER BY e.day").fetch_all::<CoverageDay>();
         tokio::try_join!(totals, collections, daily).map_err(Into::into)
     }
@@ -1025,6 +1025,15 @@ mod tests {
                 .is_err()
         );
         assert!(storage.trending_accounts("likes", 123, 20).await.is_err());
+    }
+    #[tokio::test]
+    #[ignore = "requires a local ClickHouse observatory database"]
+    async fn coverage_rows_decode_from_clickhouse() {
+        let storage = Storage::new("http://127.0.0.1:8123", "observatory", "default", "");
+        let (totals, collections, daily) = storage.coverage().await.unwrap();
+        assert!(totals.unique_observed_actors > 0);
+        assert!(!collections.is_empty());
+        assert!(!daily.is_empty());
     }
     use crate::model::EventKind;
     #[test]
