@@ -37,7 +37,10 @@ export type SearchResult = {
   target:string|null;urls:string[];domains:string[];collection:string|null;operation:string|null;record_json:string|null
 }
 export type BackfillStatus = 'queued'|'resolving'|'running'|'retrying'|'completed'|'dead_letter'|'cancelled'
-export type BackfillJob = { id:string;query:string;did?:string|null;handle?:string|null;status:BackfillStatus;job_type:'repository'|'associations';depends_on_job_id:string|null;include_associations:boolean;scope?:string;crawl_depth?:number;max_depth?:number;created_at:string;updated_at:string;collection?:string|null;cursor?:string|null;records_written:number;retry_count:number;max_retries:number;last_error?:string|null;next_attempt_at?:string|null }
+export type BackfillProgress={kind:string;updated_at:string;collection_index?:number|null;current_collection?:string|null;cursor?:string|null;records_written:number;posts_processed?:number|null;posts_completed?:number|null;posts_total?:number|null;posts_remaining?:number|null;requests?:number|null;likes?:number|null;reposts?:number|null;quotes?:number|null;replies?:number|null;errors?:number|null;rate_per_second?:number|null;eta_seconds?:number|null}
+export type BackfillJob = { id:string;query:string;did?:string|null;handle?:string|null;status:BackfillStatus;job_type:'repository'|'associations';depends_on_job_id:string|null;include_associations:boolean;scope?:string;crawl_depth?:number;max_depth?:number;created_at:string;updated_at:string;collection?:string|null;cursor?:string|null;records_written:number;retry_count:number;max_retries:number;last_error?:string|null;next_attempt_at?:string|null;lease_token?:string|null;lease_until?:string|null;progress?:BackfillProgress|null }
+export type BackfillEvent={event_id:string;timestamp_ms:number;actor_did:string;kind:string;collection:string;operation:string;at_uri:string;target:string}
+export type BackfillEventsResponse={events:BackfillEvent[];total:number;offset:number}
 export type SearchResponse = { query:string;type:SearchKind;offset:number;limit:number;has_more:boolean;results:SearchResult[];backfill_job?:BackfillJob|null }
 export type BackfillJobsResponse = {jobs:BackfillJob[];total?:number;offset?:number;limit?:number;has_more?:boolean}
 export type IdentityQueueStatus = 'queued'|'running'|'retrying'|'resolved'|'negative'|'dead_letter'

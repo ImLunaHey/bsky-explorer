@@ -17,6 +17,7 @@ use axum::{
     },
     routing::{get, get_service, post},
 };
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -75,6 +76,7 @@ pub fn router(s: AppState) -> Router {
         .route("/api/search", get(search))
         .route("/api/backfills", get(backfills).post(enqueue_backfill))
         .route("/api/backfills/{id}/status", get(backfill_status))
+        .route("/api/backfills/{id}/events", get(backfill_events))
         .route("/api/backfills/{id}/cancel", post(backfill_cancel))
         .route("/api/backfills/{id}/retry", post(backfill_retry))
         .route("/api/firehose", get(firehose))
@@ -432,13 +434,139 @@ async fn enqueue_backfill(
         .map(Json)
         .map_err(internal_error)
 }
+#[derive(Serialize)]
+struct BackfillProgress {
+    kind: String,
+    updated_at: DateTime<Utc>,
+    collection_index: Option<u64>,
+    current_collection: Option<String>,
+    cursor: Option<String>,
+    records_written: u64,
+    posts_processed: Option<u64>,
+    posts_completed: Option<u64>,
+    posts_total: Option<u64>,
+    posts_remaining: Option<u64>,
+    requests: Option<u64>,
+    likes: Option<u64>,
+    reposts: Option<u64>,
+    quotes: Option<u64>,
+    replies: Option<u64>,
+    errors: Option<u64>,
+    rate_per_second: Option<f64>,
+    eta_seconds: Option<u64>,
+}
+#[derive(Serialize)]
+struct BackfillDetail {
+    #[serde(flatten)]
+    job: crate::backfill::BackfillJob,
+    progress: Option<BackfillProgress>,
+}
 async fn backfill_status(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
     if !crate::backfill::valid_job_id(&id) {
         return (StatusCode::BAD_REQUEST, "invalid job id").into_response();
     }
     match s.backfills.get(&id) {
-        Some(job) => Json(job).into_response(),
+        Some(job) => {
+            let checkpoint = s.backfills.checkpoint(&id);
+            let posts_total = if matches!(job.job_type, crate::backfill::JobType::Associations) {
+                if let Some(total) = checkpoint
+                    .as_ref()
+                    .and_then(|checkpoint| checkpoint.payload.get("posts_total"))
+                    .and_then(serde_json::Value::as_u64)
+                    .filter(|total| *total > 0)
+                {
+                    Some(total)
+                } else if let Some(did) = job.did.as_deref() {
+                    s.storage.account_post_count(did).await.ok()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let progress = checkpoint.map(|checkpoint| {
+                let value = &checkpoint.payload;
+                let get = |key: &str| value.get(key).and_then(serde_json::Value::as_u64);
+                let processed = get("next_post");
+                let elapsed = (checkpoint.updated_at - job.created_at)
+                    .num_milliseconds()
+                    .max(1) as f64
+                    / 1000.0;
+                let rate = processed
+                    .or_else(|| get("records_written"))
+                    .map(|n| n as f64 / elapsed)
+                    .filter(|n| *n > 0.0);
+                let remaining = posts_total
+                    .zip(processed)
+                    .map(|(total, done)| total.saturating_sub(done));
+                BackfillProgress {
+                    kind: checkpoint.kind,
+                    updated_at: checkpoint.updated_at,
+                    collection_index: get("collection_index"),
+                    current_collection: value
+                        .get("collection")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                    cursor: value
+                        .get("cursor")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                    records_written: get("records_written").unwrap_or(job.records_written),
+                    posts_processed: processed,
+                    posts_completed: get("posts_completed"),
+                    posts_total,
+                    posts_remaining: remaining,
+                    requests: get("requests"),
+                    likes: get("likes"),
+                    reposts: get("reposts"),
+                    quotes: get("quotes"),
+                    replies: get("replies"),
+                    errors: get("errors"),
+                    rate_per_second: rate,
+                    eta_seconds: remaining
+                        .zip(rate)
+                        .map(|(left, per_second)| (left as f64 / per_second).ceil() as u64),
+                }
+            });
+            Json(BackfillDetail { job, progress }).into_response()
+        }
         None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+#[derive(Deserialize)]
+struct BackfillEventsQuery {
+    limit: Option<u64>,
+    offset: Option<u64>,
+}
+async fn backfill_events(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<BackfillEventsQuery>,
+) -> impl IntoResponse {
+    if !crate::backfill::valid_job_id(&id) {
+        return (StatusCode::BAD_REQUEST, "invalid job id").into_response();
+    }
+    let Some(job) = s.backfills.get(&id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Some(did) = job.did.as_deref() else {
+        return (StatusCode::CONFLICT, "job DID is unresolved").into_response();
+    };
+    match s
+        .storage
+        .backfill_events(
+            did,
+            matches!(job.job_type, crate::backfill::JobType::Associations),
+            query.limit.unwrap_or(50),
+            query.offset.unwrap_or(0),
+        )
+        .await
+    {
+        Ok((events, total)) => Json(
+            serde_json::json!({"events":events,"total":total,"offset":query.offset.unwrap_or(0)}),
+        )
+        .into_response(),
+        Err(error) => internal_error(error).into_response(),
     }
 }
 async fn backfill_cancel(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {

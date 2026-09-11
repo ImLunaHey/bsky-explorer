@@ -82,6 +82,17 @@ pub struct StoredAccountEvent {
     pub target: String,
     pub text: String,
 }
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
+pub struct BackfillEvent {
+    pub event_id: String,
+    pub timestamp_ms: i64,
+    pub actor_did: String,
+    pub kind: String,
+    pub collection: String,
+    pub operation: String,
+    pub at_uri: String,
+    pub target: String,
+}
 #[derive(Debug, Clone, Default, Deserialize, Row, Serialize)]
 pub struct FollowWindowStats {
     pub seconds: u64,
@@ -481,6 +492,58 @@ impl Storage {
             "SELECT event_id, time_us, actor_did, kind, at_uri, target, text FROM events WHERE actor_did = ? ORDER BY time_us DESC LIMIT ?"
         ).bind(did).bind(limit.min(200))
         .fetch_all::<StoredAccountEvent>().await?)
+    }
+    pub async fn account_post_count(&self, did: &str) -> Result<u64> {
+        Ok(self
+            .client
+            .query("SELECT uniqExact(at_uri) FROM events WHERE actor_did = ? AND at_uri != '' AND kind IN ('post','reply','quote')")
+            .bind(did)
+            .fetch_one::<u64>()
+            .await?)
+    }
+    pub async fn backfill_events(
+        &self,
+        did: &str,
+        associations: bool,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<BackfillEvent>, u64)> {
+        let (operation, ownership) = if associations {
+            ("association_backfill", "startsWith(target, ?)")
+        } else {
+            ("pds_backfill", "actor_did = ?")
+        };
+        let owner = if associations {
+            format!("at://{did}/")
+        } else {
+            did.to_owned()
+        };
+        let client = self
+            .client
+            .clone()
+            .with_option("max_execution_time", "2")
+            .with_option("max_threads", "2")
+            .with_option("max_result_rows", limit.clamp(1, 100).to_string());
+        let predicate = format!("operation = ? AND {ownership}");
+        let count_sql = format!("SELECT count() FROM events WHERE {predicate}");
+        let rows_sql = format!(
+            "SELECT event_id,toUnixTimestamp64Milli(timestamp) AS timestamp_ms,actor_did,kind,collection,operation,at_uri,target FROM events WHERE {predicate} ORDER BY timestamp DESC,event_id DESC LIMIT ? OFFSET ?"
+        );
+        let total = client
+            .query(&count_sql)
+            .bind(operation)
+            .bind(&owner)
+            .fetch_one::<u64>()
+            .await?;
+        let rows = client
+            .query(&rows_sql)
+            .bind(operation)
+            .bind(&owner)
+            .bind(limit.clamp(1, 100))
+            .bind(offset.min(10_000))
+            .fetch_all::<BackfillEvent>()
+            .await?;
+        Ok((rows, total))
     }
     /// Returns bounded follow analytics from normalized events. Jetstream delete
     /// commits normally omit the deleted follow record, so target-less outbound

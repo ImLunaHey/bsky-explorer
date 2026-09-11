@@ -54,6 +54,13 @@ pub struct BackfillJob {
     pub lease_token: Option<String>,
     pub lease_until: Option<DateTime<Utc>>,
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BackfillCheckpoint {
+    pub kind: String,
+    pub payload: serde_json::Value,
+    pub updated_at: DateTime<Utc>,
+}
 fn default_max_crawl_depth() -> u8 {
     1
 }
@@ -321,6 +328,34 @@ impl BackfillQueue {
             .ok()
             .flatten()
             .and_then(|s| serde_json::from_str(&s).ok())
+    }
+
+    pub fn checkpoint(&self, id: &str) -> Option<BackfillCheckpoint> {
+        self.db
+            .lock()
+            .query_row(
+                "SELECT kind,payload,updated_at FROM backfill_checkpoints WHERE job_id=?1",
+                [id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .and_then(|(kind, payload, updated_at)| {
+                Some(BackfillCheckpoint {
+                    kind,
+                    payload: serde_json::from_str(&payload).ok()?,
+                    updated_at: DateTime::parse_from_rfc3339(&updated_at)
+                        .ok()?
+                        .with_timezone(&Utc),
+                })
+            })
     }
 }
 
@@ -835,6 +870,10 @@ mod tests {
             .renew_lease(&claimed.id, claimed.lease_token.as_deref().unwrap(), 120)
             .unwrap();
         assert_eq!(queue.get(&job.id).unwrap().records_written, 19);
+        let checkpoint = queue.checkpoint(&job.id).expect("checkpoint detail");
+        assert_eq!(checkpoint.kind, "associations");
+        assert_eq!(checkpoint.payload["likes"], 10);
+        assert!(checkpoint.updated_at <= Utc::now());
     }
 
     #[test]

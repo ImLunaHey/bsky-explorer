@@ -42,6 +42,7 @@ struct Args {
 #[derive(Default, Serialize, Deserialize)]
 struct Checkpoint {
     next_post: usize,
+    posts_total: u64,
     posts_completed: u64,
     likes: u64,
     reposts: u64,
@@ -125,6 +126,8 @@ async fn main() -> Result<()> {
         checkpoint.next_post <= posts.len(),
         "checkpoint exceeds current post list"
     );
+    checkpoint.posts_total = posts.len() as u64;
+    save_checkpoint(&args.checkpoint, &args.checkpoint_job_id, &checkpoint)?;
     let mut pace = interval(Duration::from_millis(
         1000 / u64::from(args.requests_per_second),
     ));

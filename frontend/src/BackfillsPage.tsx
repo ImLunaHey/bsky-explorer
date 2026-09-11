@@ -16,6 +16,8 @@ import { api } from "./api";
 import { useIdentityMap } from "./identities";
 import type {
   BackfillJob,
+  BackfillEvent,
+  BackfillEventsResponse,
   BackfillJobsResponse,
   BackfillStatus,
   IdentityQueueResponse,
@@ -46,6 +48,7 @@ const statusTone = (status: BackfillStatus) =>
       : "bg-red-400";
 
 const helper = createColumnHelper<BackfillJob>();
+const eventHelper=createColumnHelper<BackfillEvent>();
 const columns = [
   helper.display({ id: "expand", header: "", cell: () => null }),
   helper.accessor((job) => job.handle || job.did || job.query, {
@@ -353,34 +356,62 @@ function JobRow({
 }
 
 export function BackfillDetailPage({jobId}:{jobId:string}) {
+  const [eventOffset,setEventOffset]=useState(0);
+  const [eventSearch,setEventSearch]=useState("");
+  const [eventSorting,setEventSorting]=useState<SortingState>([{id:"timestamp_ms",desc:true}]);
   const job=useQuery({
     queryKey:["backfill",jobId],
     queryFn:()=>api<BackfillJob>(`/api/backfills/${encodeURIComponent(jobId)}/status`),
     staleTime:2_000,
     refetchInterval:query=>query.state.data&&active.has(query.state.data.status)?5_000:false,
   });
+  const did=job.data?.did;
+  const resolved=useIdentityMap(did?[did]:[]).get(did||"");
+  const imported=useQuery({
+    queryKey:["backfill-events",jobId,eventOffset],
+    queryFn:()=>api<BackfillEventsResponse>(`/api/backfills/${encodeURIComponent(jobId)}/events?limit=50&offset=${eventOffset}`),
+    enabled:Boolean(did),staleTime:5_000,
+    refetchInterval:()=>job.data&&active.has(job.data.status)?10_000:false,
+  });
+  const eventHandles=useIdentityMap((imported.data?.events||[]).map(event=>event.actor_did));
+  const eventColumns=useMemo(()=>[
+    eventHelper.accessor("timestamp_ms",{header:"Observed",cell:x=><time className="whitespace-nowrap text-dim">{new Date(x.getValue()).toLocaleString()}</time>}),
+    eventHelper.accessor("kind",{header:"Kind",cell:x=><span className="uppercase text-orange-300">{x.getValue()}</span>}),
+    eventHelper.accessor("actor_did",{header:"Actor",cell:x=>{const actor=x.getValue(),actorHandle=eventHandles.get(actor);return <Link to="/accounts/$did" params={{did:actor}} className="block max-w-56 text-orange-300" title={actor}><b className="block truncate">{actorHandle?`@${actorHandle}`:actor}</b>{actorHandle&&<span className="block truncate font-mono text-[9px] text-dim">{actor}</span>}</Link>}}),
+    eventHelper.accessor("collection",{header:"Collection",cell:x=><span className="block max-w-64 truncate" title={x.getValue()}>{x.getValue()}</span>}),
+    eventHelper.accessor(x=>x.at_uri||x.target,{id:"record",header:"Record / target",cell:x=>{const uri=x.getValue();return uri?<Link to="/records/$uri" params={{uri}} className="block max-w-80 truncate text-orange-300" title={uri}>{uri}</Link>:"—"}}),
+  ],[eventHandles]);
+  const eventData=useMemo(()=>{const needle=eventSearch.trim().toLowerCase();return (imported.data?.events||[]).filter(event=>!needle||`${event.actor_did} ${event.kind} ${event.collection} ${event.at_uri} ${event.target}`.toLowerCase().includes(needle))},[eventSearch,imported.data]);
+  const eventTable=useReactTable({data:eventData,columns:eventColumns,state:{sorting:eventSorting},onSortingChange:setEventSorting,getCoreRowModel:getCoreRowModel(),getSortedRowModel:getSortedRowModel()});
   if(job.isLoading)return <div className="panel grid min-h-64 place-items-center text-sm text-dim">Loading job status…</div>;
   if(job.isError||!job.data)return <div className="panel p-6 text-sm text-red-200">This backfill job could not be loaded.</div>;
   const value=job.data;
+  const handle=value.handle||resolved;
+  const progress=value.progress;
   return <section>
     <Link to="/backfills" className="inline-flex items-center gap-2 text-sm text-dim hover:text-orange-300"><ChevronLeft className="size-4"/>Backfill jobs</Link>
     <div className="mt-5 flex flex-wrap items-start justify-between gap-4">
-      <div><p className="eyebrow">Durable collection job</p><h1 className="mt-2 break-all text-2xl font-semibold">{value.handle?`@${value.handle}`:value.did||value.query}</h1><p className="mt-2 break-all font-mono text-xs text-dim">{value.id}</p></div>
+      <div><p className="eyebrow">Durable collection job</p><h1 className="mt-2 break-all text-2xl font-semibold">{handle?`@${handle}`:value.did||value.query}</h1>{value.did&&<p className="mt-1 break-all font-mono text-xs text-dim">{value.did}</p>}<p className="mt-2 break-all font-mono text-xs text-dim">{value.id}</p></div>
       <span className="inline-flex items-center gap-2 rounded-full border border-line px-3 py-2 text-xs uppercase"><i className={`size-2 rounded-full ${statusTone(value.status)}`}/>{value.status.replace("_"," ")}</span>
     </div>
     <div className="panel mt-6 p-6">
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
         <Detail label="Type" value={value.job_type}/><Detail label="Created" value={fmt(value.created_at)}/><Detail label="Updated" value={fmt(value.updated_at)}/><Detail label="Collection" value={value.collection||"All public records"}/>
-        <Detail label="Progress" value={`${value.records_written.toLocaleString()} records written`}/><Detail label="Cursor" value={value.cursor||"—"}/><Detail label="Attempts" value={`${value.retry_count+1} / ${value.max_retries+1}`}/><Detail label="Next attempt" value={value.next_attempt_at?fmt(value.next_attempt_at):"—"}/>
-        <Detail label="Dependency" value={value.depends_on_job_id||"None"}/><Detail label="Error" value={value.last_error||"None"}/>
+        <Detail label="Progress" value={`${(progress?.records_written??value.records_written).toLocaleString()} records written`}/><Detail label="Cursor" value={progress?.cursor||value.cursor||"—"}/><Detail label="Attempts" value={`${value.retry_count+1} / ${value.max_retries+1}`}/><Detail label="Next attempt" value={value.next_attempt_at?fmt(value.next_attempt_at):"—"}/>
+        <Detail label="Dependency" value={value.depends_on_job_id||"None"}/><Detail label="Scope / depth" value={`${value.scope||"—"} · ${value.crawl_depth??0}/${value.max_depth??1}`}/><Detail label="Lease until" value={value.lease_until?fmt(value.lease_until):"—"}/><Detail label="Error" value={value.last_error||"None"}/>
       </div>
+      {progress&&<><h2 className="eyebrow mb-4 mt-8">Live checkpoint · {fmt(progress.updated_at)}</h2><div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4"><Detail label="Current collection" value={progress.current_collection||"—"}/><Detail label="Collection index" value={progress.collection_index?.toLocaleString()||"—"}/><Detail label="Posts processed" value={progress.posts_total!=null?`${(progress.posts_processed||0).toLocaleString()} / ${progress.posts_total.toLocaleString()}`:(progress.posts_processed?.toLocaleString()||"—")}/><Detail label="Remaining" value={progress.posts_remaining?.toLocaleString()||"—"}/><Detail label="Successful posts" value={progress.posts_completed?.toLocaleString()||"—"}/><Detail label="Requests" value={progress.requests?.toLocaleString()||"—"}/><Detail label="Likes / reposts" value={`${(progress.likes||0).toLocaleString()} / ${(progress.reposts||0).toLocaleString()}`}/><Detail label="Quotes / replies" value={`${(progress.quotes||0).toLocaleString()} / ${(progress.replies||0).toLocaleString()}`}/><Detail label="Errors" value={progress.errors?.toLocaleString()||"0"}/><Detail label="Rate" value={progress.rate_per_second!=null?`${progress.rate_per_second.toFixed(2)} / sec`:"—"}/><Detail label="ETA" value={progress.eta_seconds!=null?friendlyDuration(progress.eta_seconds):"—"}/></div></>}
       <div className="mt-6 flex flex-wrap gap-3">
         {value.did&&<Link to="/accounts/$did" params={{did:value.did}} className="rounded-lg border border-orange-500/40 px-4 py-2 text-sm text-orange-300 hover:bg-orange-500/10">Open account</Link>}
         {value.depends_on_job_id&&<Link to="/backfills/$jobId" params={{jobId:value.depends_on_job_id}} className="rounded-lg border border-line px-4 py-2 text-sm text-white hover:border-orange-500/40">Open dependency</Link>}
       </div>
     </div>
+    <section className="panel mt-6 overflow-hidden"><div className="flex flex-wrap items-end justify-between gap-3 border-b border-line p-5"><div><h2 className="font-semibold">Imported records and interactions</h2><p className="mt-1 text-xs text-dim">Strictly matched to this job's DID and import source.</p></div><input value={eventSearch} onChange={event=>setEventSearch(event.target.value)} placeholder="Filter this page…" className="rounded-lg border border-line bg-black px-3 py-2 text-sm"/></div>
+      {imported.isLoading?<div className="grid min-h-40 place-items-center text-sm text-dim">Loading imported events…</div>:imported.isError?<div className="p-5 text-sm text-red-300">Imported events are temporarily unavailable.</div>:<><div className="scrollbar overflow-x-auto"><table className="w-full min-w-250 text-left text-xs"><thead className="border-b border-line text-dim">{eventTable.getHeaderGroups().map(group=><tr key={group.id}>{group.headers.map(header=><th key={header.id} className="px-4 py-3"><button className="flex items-center gap-1" onClick={header.column.getToggleSortingHandler()}>{flexRender(header.column.columnDef.header,header.getContext())}<ArrowDownUp className="size-3"/></button></th>)}</tr>)}</thead><tbody>{eventTable.getRowModel().rows.map(row=><tr key={row.original.event_id} className="border-b border-line/60">{row.getVisibleCells().map(cell=><td key={cell.id} className="px-4 py-3">{flexRender(cell.column.columnDef.cell,cell.getContext())}</td>)}</tr>)}</tbody></table></div><div className="flex items-center justify-between p-4 text-xs text-dim"><span>{(imported.data?.total||0).toLocaleString()} matched · {eventOffset+1}–{Math.min(eventOffset+50,imported.data?.total||0)}</span><div className="flex gap-2"><button disabled={!eventOffset} onClick={()=>setEventOffset(Math.max(0,eventOffset-50))} className="rounded border border-line px-3 py-1.5 disabled:opacity-30">Previous</button><button disabled={eventOffset+50>=(imported.data?.total||0)} onClick={()=>setEventOffset(eventOffset+50)} className="rounded border border-line px-3 py-1.5 disabled:opacity-30">Next</button></div></div></>}
+    </section>
   </section>;
 }
+function friendlyDuration(seconds:number){if(seconds<60)return `${Math.ceil(seconds)} sec`;if(seconds<3600)return `${Math.ceil(seconds/60)} min`;if(seconds<86400)return `${(seconds/3600).toFixed(1)} hr`;return `${(seconds/86400).toFixed(1)} days`}
 function Detail({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0">
