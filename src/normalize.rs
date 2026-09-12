@@ -90,8 +90,10 @@ fn media_metadata(record: &Value) -> (String, u8) {
         .and_then(Value::as_str)
         .unwrap_or_default();
     if kind.ends_with("recordWithMedia") {
-        let (_, count) = media_metadata(&serde_json::json!({"embed": embed.get("media")}));
-        return ("record_with_media".into(), count.max(1));
+        return embed.get("media").map_or_else(
+            || ("unknown".into(), 0),
+            |media| media_metadata(&serde_json::json!({"embed": media})),
+        );
     }
     if kind.ends_with("images") {
         let count = embed
@@ -425,6 +427,14 @@ mod tests {
         let retained = event.record_json.unwrap();
         assert!(retained.contains("app.bsky.embed.images"));
         assert!(!retained.contains("bafk-one"));
+    }
+    #[test]
+    fn record_with_media_reports_the_inner_media_shape() {
+        let images = serde_json::json!({"embed":{"$type":"app.bsky.embed.recordWithMedia","record":{"$type":"app.bsky.embed.record","record":{"uri":"at://did:plc:b/app.bsky.feed.post/y"}},"media":{"$type":"app.bsky.embed.images","images":[{"image":{"$type":"blob"}},{"image":{"$type":"blob"}}]}}});
+        assert_eq!(media_metadata(&images), ("images".into(), 2));
+
+        let video = serde_json::json!({"embed":{"$type":"app.bsky.embed.recordWithMedia","media":{"$type":"app.bsky.embed.video","video":{"$type":"blob"}}}});
+        assert_eq!(media_metadata(&video), ("video".into(), 1));
     }
     #[test]
     fn client_created_at_cannot_poison_live_event_time() {
