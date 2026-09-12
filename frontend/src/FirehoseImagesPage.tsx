@@ -95,15 +95,29 @@ export function FirehoseImagesPage({ onRecord }: { onRecord: (uri: string) => vo
   const candidates = useMemo(
     () => [...(feed.data?.events || EMPTY_EVENTS)].reverse().filter((event) => {
       if (!imageRecordUri(event)) return false;
-      return !event.media_kind || ["images", "record_with_media", "unknown"].includes(event.media_kind);
+      // Only probe records whose normalized embed metadata proves they contain
+      // images. Legacy rows and unknown embeds must not fan out to AppView.
+      return event.media_kind === "images" && (event.media_count ?? 0) > 0;
     }),
     [feed.data?.events],
   );
   const events = paused ? snapshot || EMPTY_EVENTS : candidates;
   const pageCount = Math.max(1, Math.ceil(events.length / PAGE_SIZE));
-  const visible = events.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-  const handles = useIdentityMap(visible.map((event) => event.actor_did));
-  const uris = useMemo(() => visible.map(imageRecordUri).filter((uri): uri is string => Boolean(uri)), [visible]);
+  const pageCandidates = events.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const uris = useMemo(() => pageCandidates.map(imageRecordUri).filter((uri): uri is string => Boolean(uri)), [pageCandidates]);
+  const [batchUris, setBatchUris] = useState<string[]>([]);
+  const lastBatchAt = useRef(0);
+  useEffect(() => {
+    // The head of the live grid may change several times per second. Coalesce
+    // those image-only changes so AppView sees at most one bounded batch every
+    // two seconds, while unrelated SSE frames do not touch this query at all.
+    const delay = Math.max(0, 2_000 - (Date.now() - lastBatchAt.current));
+    const timer = window.setTimeout(() => {
+      lastBatchAt.current = Date.now();
+      setBatchUris(uris);
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [uris]);
   useEffect(() => {
     setNearViewport(false);
     const node = gridHost.current;
@@ -118,22 +132,29 @@ export function FirehoseImagesPage({ onRecord }: { onRecord: (uri: string) => vo
     return () => observer.disconnect();
   }, [page]);
   const media = useQuery({
-    queryKey: ["record-media-batch", uris],
+    queryKey: ["record-media-batch", batchUris],
     queryFn: async () => {
       const response = await fetch("/api/records/media/batch", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ uris }),
+        body: JSON.stringify({ uris: batchUris }),
       });
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
       return response.json() as Promise<{ items: Array<{ uri: string; media: RecordMedia[]; found: boolean }>; source: string; ephemeral: true }>;
     },
-    enabled: nearViewport && uris.length > 0,
+    enabled: nearViewport && batchUris.length > 0,
     staleTime: 300_000,
     gcTime: 900_000,
     retry: 0,
+    placeholderData: (previous) => previous,
   });
   const mediaByUri = useMemo(() => new Map(media.data?.items.map((item) => [item.uri, item.media.find((asset) => asset.kind === "image")]) || []), [media.data?.items]);
+  const visible = useMemo(() => {
+    if (!media.data) return pageCandidates;
+    const byUri = new Map(events.map((event) => [event.at_uri, event]));
+    return media.data.items.map((item) => byUri.get(item.uri)).filter((event): event is FirehoseEvent => Boolean(event));
+  }, [events, media.data, pageCandidates]);
+  const handles = useIdentityMap(visible.map((event) => event.actor_did));
   const togglePaused = () => {
     if (paused) {
       setSnapshot(null);
@@ -168,7 +189,7 @@ export function FirehoseImagesPage({ onRecord }: { onRecord: (uri: string) => vo
           </button>
         </div>
         <div ref={gridHost} className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-          {visible.map((event) => <ImageCard key={event.event_id} event={event} handle={handles.get(event.actor_did)} image={mediaByUri.get(event.at_uri)} loaded={media.isFetched} onRecord={onRecord} />)}
+          {visible.map((event) => <ImageCard key={event.event_id} event={event} handle={handles.get(event.actor_did)} image={mediaByUri.get(event.at_uri)} loaded={Boolean(media.data?.items.some((item) => item.uri === event.at_uri))} onRecord={onRecord} />)}
         </div>
         {!feed.isLoading && visible.length === 0 && <div className="grid min-h-80 place-items-center text-sm text-white/45">Waiting for image-bearing posts…</div>}
         <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-white/10 pt-4 text-xs text-white/45">
