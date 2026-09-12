@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import {
   createColumnHelper,
   flexRender,
@@ -293,6 +294,10 @@ export function FirehoseView({
   const live = connection.data?.state === "connected";
   return (
     <div className="space-y-5">
+      <div className="flex w-fit rounded-lg border border-white/10 bg-white/[.02] p-1 text-xs">
+        <Link to="/firehose" className="rounded-md bg-orange-400 px-3 py-1.5 font-semibold text-black">Events</Link>
+        <Link to="/firehose/images" className="rounded-md px-3 py-1.5 text-white/55 hover:text-orange-300">Images</Link>
+      </div>
       <section className="panel overflow-hidden">
         <div className="flex flex-col gap-4 border-b border-white/10 p-5 lg:flex-row lg:items-center lg:justify-between">
           <div>

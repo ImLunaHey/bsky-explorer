@@ -29,6 +29,7 @@ import { tooltip } from "@tanstack/charts/tooltip";
 import { api } from "./api";
 import { RecordPage } from "./RecordDrawer";
 import { FirehoseView } from "./FirehoseView";
+import { FirehoseImagesPage } from "./FirehoseImagesPage";
 import { TrendPage } from "./TrendPage";
 import { CommandPalette } from "./CommandPalette";
 import { SearchPage } from "./SearchPage";
@@ -1379,7 +1380,7 @@ function SystemView({
 }
 
 export type AppRoute =
-  | { view: "network" | "firehose" | "anomalies" | "system" | "backfills" | "identities" | "coverage" | "communities" }
+  | { view: "network" | "firehose" | "firehose-images" | "anomalies" | "system" | "backfills" | "identities" | "coverage" | "communities" }
   | { view: "search"; query: string; searchType: SearchKind; offset: number }
   | { view: "backfill"; jobId: string }
   | { view: "identity"; jobId: string }
@@ -1512,7 +1513,7 @@ export default function App({ route }: { route: AppRoute }) {
               key={to}
               to={to}
               activeOptions={{ exact: true }}
-              className={`shrink-0 rounded-lg px-4 py-2 text-xs font-medium transition ${route.view === id ? "bg-mint text-ink" : "text-dim hover:text-white"}`}
+              className={`shrink-0 rounded-lg px-4 py-2 text-xs font-medium transition ${route.view === id || (id === "firehose" && route.view === "firehose-images") ? "bg-mint text-ink" : "text-dim hover:text-white"}`}
             >
               {label}
             </Link>
@@ -1737,6 +1738,7 @@ export default function App({ route }: { route: AppRoute }) {
         {route.view === "firehose" && (
           <FirehoseView onAccount={openAccount} onRecord={openRecord} />
         )}
+        {route.view === "firehose-images" && <FirehoseImagesPage onRecord={openRecord} />}
         {route.view === "search" && (
           <SearchPage
             initialQuery={route.query}

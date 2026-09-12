@@ -5,6 +5,7 @@ import { Search } from "lucide-react";
 const destinations = [
   { label: "Network overview", hint: "Live rates and trends", to: "/" },
   { label: "Firehose", hint: "Newest public ATProto events", to: "/firehose" },
+  { label: "Firehose images", hint: "Live public image posts", to: "/firehose/images" },
   { label: "Search", hint: "Find accounts, posts, and events", to: "/search" },
   { label: "Coverage", hint: "Retained platform mirror overview", to: "/coverage" },
   { label: "Communities", hint: "Interaction community network", to: "/communities" },
