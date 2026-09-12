@@ -1079,6 +1079,8 @@ mod tests {
             operation: "create".into(),
             at_uri: "u".into(),
             record_json: None,
+            media_kind: "none".into(),
+            media_count: 0,
             target: Some("at://target".into()),
             target_did: None,
             text: None,

@@ -45,6 +45,12 @@ pub struct NormalizedEvent {
     pub at_uri: String,
     /// Compact, bounded record JSON with ATProto blob values removed.
     pub record_json: Option<String>,
+    /// Cheap embed classification retained after the larger record JSON is
+    /// dropped from the rolling analyzer.
+    #[serde(default)]
+    pub media_kind: String,
+    #[serde(default)]
+    pub media_count: u8,
     pub target: Option<String>,
     pub target_did: Option<String>,
     pub text: Option<String>,

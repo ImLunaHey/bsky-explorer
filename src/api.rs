@@ -28,7 +28,7 @@ use std::{
     sync::OnceLock,
     time::{Duration, Instant},
 };
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 use tower_http::{
     compression::CompressionLayer,
     services::{ServeDir, ServeFile},
@@ -113,6 +113,7 @@ pub fn router(s: AppState) -> Router {
         .route("/api/accounts/{did}/lexicons", get(account_lexicons))
         .route("/api/records", get(record))
         .route("/api/records/media", get(record_media))
+        .route("/api/records/media/batch", post(record_media_batch))
         .route("/api/identities", get(identities))
         .route("/api/identity-queue", get(identity_queue))
         .route("/api/identity-queue/{id}", get(identity_queue_detail))
@@ -926,10 +927,15 @@ async fn live(
 }
 
 fn live_event(event: &crate::model::NormalizedEvent) -> Event {
+    let mut event = event.clone();
+    // The compact record remains replayable in ClickHouse/archive, but sending
+    // up to 64 KiB with every live frame is unnecessary and made reconnect
+    // frames inconsistent with genuinely live ones.
+    event.record_json = None;
     Event::default()
         .event("firehose")
         .id(event.time_us.to_string())
-        .json_data(event)
+        .json_data(&event)
         .expect("normalized event serialize")
 }
 
@@ -1513,15 +1519,8 @@ async fn fetch_appview_posts(
     if requested.len() != uris.len() {
         return Err((StatusCode::BAD_REQUEST, "duplicate post URI".into()));
     }
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(1))
-        .timeout(Duration::from_secs(3))
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent("bsky-observatory/0.1")
-        .build()
-        .map_err(|error| internal_error(error.into()))?;
     let query: Vec<(&str, &str)> = uris.iter().map(|uri| ("uris", uri.as_str())).collect();
-    let response = client
+    let response = media_client()
         .get("https://public.api.bsky.app/xrpc/app.bsky.feed.getPosts")
         .query(&query)
         .send()
@@ -1597,7 +1596,7 @@ fn is_at_uri(uri: &str) -> bool {
         && parts.next().is_none()
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct RecordMedia {
     kind: String,
     url: String,
@@ -1605,6 +1604,220 @@ struct RecordMedia {
     alt: String,
     width: Option<u64>,
     height: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RecordMediaBatchItem {
+    uri: String,
+    media: Vec<RecordMedia>,
+    found: bool,
+}
+
+#[derive(Deserialize)]
+struct RecordMediaBatchRequest {
+    uris: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct RecordMediaBatchResponse {
+    items: Vec<RecordMediaBatchItem>,
+    source: &'static str,
+    ephemeral: bool,
+}
+
+#[derive(Clone)]
+struct CachedRecordMedia {
+    fetched_at: Instant,
+    item: RecordMediaBatchItem,
+}
+
+static MEDIA_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+static MEDIA_CACHE: OnceLock<RwLock<HashMap<String, CachedRecordMedia>>> = OnceLock::new();
+static MEDIA_UPSTREAM_LIMIT: OnceLock<Semaphore> = OnceLock::new();
+const MEDIA_CACHE_TTL: Duration = Duration::from_secs(300);
+const MAX_MEDIA_BATCH_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
+fn media_client() -> &'static reqwest::Client {
+    MEDIA_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(1))
+            .timeout(Duration::from_secs(4))
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent("bsky-observatory/0.1")
+            .build()
+            .expect("static AppView client configuration is valid")
+    })
+}
+
+fn validated_media_uris(uris: Vec<String>) -> Result<Vec<String>, (StatusCode, String)> {
+    if uris.is_empty() || uris.len() > 25 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "uris must contain between 1 and 25 post URIs".into(),
+        ));
+    }
+    let mut seen = HashSet::with_capacity(uris.len());
+    let mut unique = Vec::with_capacity(uris.len());
+    for uri in uris {
+        if uri.len() > 512 || !is_bluesky_post_uri(&uri) {
+            return Err((StatusCode::BAD_REQUEST, "invalid Bluesky post URI".into()));
+        }
+        if seen.insert(uri.clone()) {
+            unique.push(uri);
+        }
+    }
+    Ok(unique)
+}
+
+async fn record_media_batch(
+    Json(body): Json<RecordMediaBatchRequest>,
+) -> Result<Json<RecordMediaBatchResponse>, (StatusCode, String)> {
+    let uris = validated_media_uris(body.uris)?;
+    let now = Instant::now();
+    let cache = MEDIA_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
+    let mut items = HashMap::with_capacity(uris.len());
+    {
+        let cached = cache.read().await;
+        for uri in &uris {
+            if let Some(entry) = cached
+                .get(uri)
+                .filter(|entry| now.duration_since(entry.fetched_at) < MEDIA_CACHE_TTL)
+            {
+                items.insert(uri.clone(), entry.item.clone());
+            }
+        }
+    }
+    let missing: Vec<_> = uris
+        .iter()
+        .filter(|uri| !items.contains_key(*uri))
+        .cloned()
+        .collect();
+    if !missing.is_empty() {
+        let _permit = MEDIA_UPSTREAM_LIMIT
+            .get_or_init(|| Semaphore::new(4))
+            .acquire()
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "media service unavailable".into(),
+                )
+            })?;
+        let response = media_client()
+            .get("https://public.api.bsky.app/xrpc/app.bsky.feed.getPosts")
+            .query(
+                &missing
+                    .iter()
+                    .map(|uri| ("uris", uri.as_str()))
+                    .collect::<Vec<_>>(),
+            )
+            .send()
+            .await
+            .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                "AppView rate limited media metadata".into(),
+            ));
+        }
+        let response = response
+            .error_for_status()
+            .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
+        if response
+            .content_length()
+            .is_some_and(|size| size > MAX_MEDIA_BATCH_RESPONSE_BYTES as u64)
+        {
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                "upstream metadata is too large".into(),
+            ));
+        }
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
+        if bytes.len() > MAX_MEDIA_BATCH_RESPONSE_BYTES {
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                "upstream metadata is too large".into(),
+            ));
+        }
+        let value: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
+        let posts = value
+            .get("posts")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    "AppView response has no posts".into(),
+                )
+            })?;
+        if posts.len() > missing.len() {
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                "AppView returned too many posts".into(),
+            ));
+        }
+        let mut returned = HashMap::with_capacity(posts.len());
+        for post in posts {
+            let uri = post
+                .get("uri")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| (StatusCode::BAD_GATEWAY, "AppView post has no URI".into()))?;
+            if !missing.iter().any(|expected| expected == uri) || returned.contains_key(uri) {
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    "AppView returned an unexpected post".into(),
+                ));
+            }
+            let media = post
+                .get("embed")
+                .map(extract_record_media)
+                .unwrap_or_default();
+            returned.insert(
+                uri.to_owned(),
+                RecordMediaBatchItem {
+                    uri: uri.to_owned(),
+                    media,
+                    found: true,
+                },
+            );
+        }
+        let mut cached = cache.write().await;
+        if cached.len() >= 10_000 {
+            cached.retain(|_, entry| now.duration_since(entry.fetched_at) < MEDIA_CACHE_TTL);
+            if cached.len() >= 10_000 {
+                cached.clear();
+            }
+        }
+        for uri in missing {
+            let item = returned
+                .get(&uri)
+                .cloned()
+                .unwrap_or_else(|| RecordMediaBatchItem {
+                    uri: uri.clone(),
+                    media: Vec::new(),
+                    found: false,
+                });
+            cached.insert(
+                uri.clone(),
+                CachedRecordMedia {
+                    fetched_at: now,
+                    item: item.clone(),
+                },
+            );
+            items.insert(uri, item);
+        }
+    }
+    Ok(Json(RecordMediaBatchResponse {
+        items: uris
+            .into_iter()
+            .filter_map(|uri| items.remove(&uri))
+            .collect(),
+        source: "public_appview",
+        ephemeral: true,
+    }))
 }
 
 #[derive(Serialize)]
@@ -1625,13 +1838,7 @@ async fn record_media(
             "uri must identify a Bluesky post".into(),
         ));
     }
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(4))
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent("bsky-observatory/0.1")
-        .build()
-        .map_err(|error| internal_error(error.into()))?;
-    let response = client
+    let response = media_client()
         .get("https://public.api.bsky.app/xrpc/app.bsky.feed.getPosts")
         .query(&[("uris", &query.uri)])
         .send()
@@ -2457,6 +2664,25 @@ mod tests {
             "at://did:plc:alice/app.bsky.feed.like/3kexample"
         ));
         assert!(!is_bluesky_post_uri("https://example.test/post"));
+    }
+
+    #[test]
+    fn media_batches_are_bounded_validated_and_deduplicated() {
+        let uri = "at://did:plc:alice/app.bsky.feed.post/3kexample".to_owned();
+        assert_eq!(
+            validated_media_uris(vec![uri.clone(), uri.clone()]).unwrap(),
+            vec![uri]
+        );
+        assert!(validated_media_uris(Vec::new()).is_err());
+        assert!(validated_media_uris(vec!["https://example.test/image".into()]).is_err());
+        assert!(
+            validated_media_uris(
+                (0..26)
+                    .map(|index| format!("at://did:plc:alice/app.bsky.feed.post/{index}"))
+                    .collect()
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS observatory.events
  event_id String, time_us Int64, timestamp DateTime64(3, 'UTC'), actor_did LowCardinality(String),
  kind LowCardinality(String), collection LowCardinality(String), rkey String,
  operation LowCardinality(String), at_uri String, record_json String CODEC(ZSTD(3)),
+ media_kind LowCardinality(String), media_count UInt8,
  target String, target_did LowCardinality(String), text String CODEC(ZSTD(3)),
  reply_parent String, reply_root String, quote_target String,
  urls Array(String), domains Array(LowCardinality(String)), languages Array(LowCardinality(String)),

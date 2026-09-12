@@ -350,6 +350,8 @@ struct EventRow {
     operation: String,
     at_uri: String,
     record_json: String,
+    media_kind: String,
+    media_count: u8,
     target: String,
     target_did: String,
     text: String,
@@ -447,6 +449,8 @@ impl From<&NormalizedEvent> for EventRow {
             operation: e.operation.clone(),
             at_uri: e.at_uri.clone(),
             record_json: e.record_json.clone().unwrap_or_default(),
+            media_kind: e.media_kind.clone(),
+            media_count: e.media_count,
             target: e.target.clone().unwrap_or_default(),
             target_did: e.target_did.clone().unwrap_or_default(),
             text: e.text.clone().unwrap_or_default(),
@@ -464,10 +468,14 @@ impl From<&NormalizedEvent> for EventRow {
 }
 impl Storage {
     pub async fn ensure_community_schema(&self) -> Result<()> {
-        for statement in include_str!("../migrations/006_communities.sql")
-            .split(';')
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
+        for statement in [
+            include_str!("../migrations/006_communities.sql"),
+            include_str!("../migrations/007_event_media.sql"),
+        ]
+        .join("\n")
+        .split(';')
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
         {
             self.client.query(statement).execute().await?
         }
@@ -1455,6 +1463,8 @@ mod tests {
             operation: "create".into(),
             at_uri: "u".into(),
             record_json: None,
+            media_kind: "none".into(),
+            media_count: 0,
             target: None,
             target_did: None,
             text: None,

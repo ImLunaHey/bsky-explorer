@@ -81,6 +81,39 @@ fn compact_record_json(record: &Value, operation: &str) -> Option<String> {
     Some(serde_json::json!({"$type": record_type, "$truncated": true}).to_string())
 }
 
+fn media_metadata(record: &Value) -> (String, u8) {
+    let Some(embed) = record.get("embed") else {
+        return ("none".into(), 0);
+    };
+    let kind = embed
+        .get("$type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if kind.ends_with("recordWithMedia") {
+        let (_, count) = media_metadata(&serde_json::json!({"embed": embed.get("media")}));
+        return ("record_with_media".into(), count.max(1));
+    }
+    if kind.ends_with("images") {
+        let count = embed
+            .get("images")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len)
+            .min(u8::MAX as usize) as u8;
+        return ("images".into(), count);
+    }
+    if kind.ends_with("video") {
+        return ("video".into(), 1);
+    }
+    if kind.ends_with("external") {
+        return ("external".into(), 1);
+    }
+    if kind.is_empty() {
+        ("none".into(), 0)
+    } else {
+        ("unknown".into(), 0)
+    }
+}
+
 pub fn normalize_text(s: &str) -> String {
     let lowered = s.to_lowercase();
     let url_re = Regex::new(r"https?://\S+").unwrap();
@@ -141,6 +174,11 @@ pub fn parse_jetstream(raw: &[u8]) -> Result<Option<NormalizedEvent>> {
     }
     let record = &commit["record"];
     let record_json = compact_record_json(record, operation);
+    let (media_kind, media_count) = if operation == "delete" {
+        ("none".into(), 0)
+    } else {
+        media_metadata(record)
+    };
     let at_uri = format!("at://{did}/{collection}/{rkey}");
     let mut kind = match collection.as_str() {
         "app.bsky.feed.post" => EventKind::Post,
@@ -241,6 +279,8 @@ pub fn parse_jetstream(raw: &[u8]) -> Result<Option<NormalizedEvent>> {
         operation: operation.to_owned(),
         at_uri,
         record_json,
+        media_kind,
+        media_count,
         target,
         target_did,
         text_hash: text.as_deref().map(|x| xxh3_64(x.as_bytes())),
@@ -371,6 +411,20 @@ mod tests {
         assert_eq!(e.domains, vec!["example.com"]);
         assert_eq!(e.languages, vec!["en"]);
         assert_eq!(e.timestamp.timestamp_micros(), 1_700_000_000_000_000);
+        assert_eq!(e.media_kind, "none");
+        assert_eq!(e.media_count, 0);
+    }
+    #[test]
+    fn retains_bounded_media_shape_without_blob_references() {
+        let raw = serde_json::json!({"did":"did:plc:a","time_us":1700000000000000_i64,"kind":"commit","commit":{"operation":"create","collection":"app.bsky.feed.post","rkey":"x","record":{"$type":"app.bsky.feed.post","text":"photos","embed":{"$type":"app.bsky.embed.images","images":[{"alt":"one","image":{"$type":"blob","ref":{"$link":"bafk-one"},"mimeType":"image/jpeg","size":12}},{"alt":"two","image":{"$type":"blob","ref":{"$link":"bafk-two"},"mimeType":"image/jpeg","size":13}}]}}}});
+        let event = parse_jetstream(raw.to_string().as_bytes())
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.media_kind, "images");
+        assert_eq!(event.media_count, 2);
+        let retained = event.record_json.unwrap();
+        assert!(retained.contains("app.bsky.embed.images"));
+        assert!(!retained.contains("bafk-one"));
     }
     #[test]
     fn client_created_at_cannot_poison_live_event_time() {

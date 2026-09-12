@@ -534,6 +534,8 @@ fn association(
         operation: "association_backfill".into(),
         at_uri: String::new(),
         record_json: None,
+        media_kind: "none".into(),
+        media_count: 0,
         target: Some(target.into()),
         target_did: target
             .strip_prefix("at://")
