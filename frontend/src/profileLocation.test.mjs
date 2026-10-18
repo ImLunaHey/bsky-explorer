@@ -13,6 +13,16 @@ test('profile URLs validate tabs, time ranges and reply filtering',()=>{
  assert.deepEqual(profileSearch({time:'7d',replies:'false'}),{time:'7d',replies:false})
  assert.deepEqual(profileSearch({time:'invalid',replies:'true'}),{time:undefined,replies:undefined})
  assert.deepEqual(['24h','7d','30d',undefined].map(profileDays),[1,7,30,1])
+ assert.equal(profileSearch({posts:'media'}).posts,'media')
+ assert.equal(profileSearch({posts:'invalid'}).posts,undefined)
+})
+const {eventAction,eventTarget}=load('./eventPresentation.ts')
+test('firehose translates actions and resolves target accounts without raw URI prose',()=>{
+ assert.equal(eventAction({kind:'follow',collection:''}),'Followed')
+ assert.equal(eventAction({kind:'reply',collection:''}),'Replied to a post')
+ assert.equal(eventTarget({target:'at://did:plc:target/app.bsky.feed.post/one'}),'did:plc:target')
+ assert.equal(eventTarget({target_did:'did:web:example.org',target:'at://did:plc:old/post/one'}),'did:web:example.org')
+ assert.equal(eventTarget({target:'https://example.com'}),undefined)
 })
 const {createMediaBatcher}=load('./postMedia.ts')
 test('attachment metadata batches cap at 25 and preserve individual post results',async()=>{

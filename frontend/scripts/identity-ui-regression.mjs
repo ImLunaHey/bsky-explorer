@@ -4,7 +4,8 @@ const browser = await chromium.launch({executablePath:process.env.CHROMIUM_PATH,
 try {
  const page=await browser.newPage(); const errors=[]; page.on('pageerror',e=>errors.push(e.message))
  let resolved=false,calls=0; const did='did:plc:testidentitycache'
- await page.addInitScript(()=>{ window.EventSource=class { timers=[]; addEventListener(type, callback){ if(type==='rates')this.timers.push(setInterval(()=>callback({data:JSON.stringify({windows:[],events_per_sec:Math.random(),posts_per_sec:1,likes_per_sec:1,follows_per_sec:1})}),250)) } close(){this.timers.forEach(clearInterval)} } })
+ await page.addInitScript(()=>{ window.EventSource=class { timers=[]; sequence=0; addEventListener(type, callback){ if(type==='rates')this.timers.push(setInterval(()=>callback({data:JSON.stringify({windows:[],events_per_sec:Math.random(),posts_per_sec:1,likes_per_sec:1,follows_per_sec:1})}),250));if(type==='firehose')this.timers.push(setInterval(()=>callback({data:JSON.stringify({event_id:`stream-${this.sequence++}`,time_us:Date.now()*1000,actor_did:'did:plc:testidentitycache',kind:'follow',collection:'app.bsky.graph.follow',timestamp:new Date().toISOString(),at_uri:'',urls:[],domains:[]})}),250)) } close(){this.timers.forEach(clearInterval)} } })
+ await page.route('**/api/accounts/*/profile',route=>route.fulfill({json:{did,handle:'cached-person.test',display_name:'Preview person',description:'Public profile preview',labels:[],followers_count:123,posts_count:45}}))
  await page.route('**/api/identities?*',async route=>{
    calls++; const dids=new URL(route.request().url()).searchParams.get('dids').split(',')
    await route.fulfill({json:dids.map(did=>({did,handle:resolved?'cached-person.test':null,source:resolved?'plc':'unresolved',observed_at:''}))})
@@ -22,6 +23,15 @@ try {
  await page.getByText('@cached-person.test',{exact:true}).first().waitFor({timeout:15000})
  assert.equal(await page.locator('tbody tr').count(),rows)
  assert.equal(await page.getByRole('button',{name:'Resume',exact:true}).count(),1)
+ await page.getByText(/new events waiting/).waitFor()
+ assert.match(await page.getByText(/new events waiting/).innerText(),/^[1-9]/)
+ await page.getByRole('button',{name:`Preview account ${did}`,exact:true}).first().click()
+ await page.getByRole('dialog',{name:'Account preview'}).waitFor()
+ await page.getByText('Preview person',{exact:true}).waitFor()
+ await page.keyboard.press('Escape')
+ assert.equal(await page.getByRole('dialog',{name:'Account preview'}).count(),0)
+ await page.getByLabel('Filter app',{exact:true}).selectOption('bsky')
+ assert.equal(new URL(page.url()).searchParams.get('app'),'bsky')
  const after=calls
  await page.getByRole('link',{name:'Images',exact:true}).click()
  await page.getByRole('link',{name:'Events',exact:true}).click()

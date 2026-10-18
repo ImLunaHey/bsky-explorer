@@ -40,7 +40,7 @@ export function IdentityName({ did, handle: supplied, compact = false, inline = 
   const status = query.isError ? 'Handle unavailable' : needsIdentityLookup(query.data) ? 'resolving…' : 'No handle available'
   return <span className={className} title={handle ? `@${handle} · ${did}` : did}>
     <span className={inline ? '' : compact ? `block truncate ${handle ? 'text-xs font-medium' : 'font-mono text-[10px] leading-tight text-dim'}` : 'block break-all font-medium'}>{handle ? `@${handle}` : did}</span>
-    {!inline && (handle
+    {!inline && (!compact || !handle) && (handle
       ? <span className={`block break-all font-mono text-white/35 ${compact ? 'text-[9px]' : 'text-[10px]'}`}>{did}</span>
       : <span className="block text-[9px] text-dim">{status}</span>)}
   </span>

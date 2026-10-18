@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from './api'
 import { IdentityLink } from './identities'
+import { CoverageNote } from './CoverageNote'
 
 type Bucket = { timestamp_ms: number; gained: number; lost: number; net: number; followed: number; unfollowed: number; unknown_unfollows: number; posts: number; replies: number; likes: number; reposts: number; other: number; likes_received: number; reposts_received: number; replies_received: number }
 type History = { start_ms: number; end_ms: number; bucket_ms: number; buckets: Bucket[]; note: string }
@@ -20,17 +21,20 @@ function BucketEvents({did,start,width,category}:{did:string;start:number;width:
   return <div className="mt-4 border-t border-line pt-4"><h4 className="text-sm font-medium">Events behind this point</h4><p className="mt-1 text-xs text-dim">Latest 50 matching retained events in this bucket.</p>{query.isPending && <ListSkeleton rows={3}/>}{query.isError && <p role="alert" className="py-4 text-xs text-dim">Events couldn’t load. <button onClick={()=>void query.refetch()} className="text-cyan">Retry</button></p>}<div className="mt-3 max-h-72 overflow-y-auto">{query.data?.map(e=><div key={e.event_id} className="flex gap-3 border-t border-line py-3 text-xs"><span className="w-14 shrink-0 capitalize text-cyan">{e.kind}</span><div className="min-w-0 flex-1"><IdentityLink did={e.actor_did} inline className="break-all" />{e.target_did && <><span className="text-dim"> → </span><IdentityLink did={e.target_did} inline className="break-all" /></>}<p className="mt-1 text-dim">{new Date(e.timestamp_ms).toLocaleString()}</p></div></div>)}</div>{query.isSuccess && !query.data.length && <p className="py-4 text-xs text-dim">No matching events retained in this bucket.</p>}</div>
 }
 
-function HistoryChart({did,category,title,description,data,series,hourly}:{did:string;category:string;title:string;description:string;data:Bucket[];series:Series[];hourly:boolean}) {
+function HistoryChart({did,category,title,description,data,series,hourly,previous}:{did:string;category:string;title:string;description:string;data:Bucket[];series:Series[];hourly:boolean;previous?:Bucket[]}) {
   const [selected,setSelected] = useState<number|null>(null)
   const maximum = Math.max(1,...data.flatMap(row=>series.map(s=>row[s.key])))
   const minimum = Math.min(0,...data.flatMap(row=>series.map(s=>row[s.key])))
   const y = (value:number) => 175-(value-minimum)/(maximum-minimum)*145
   const point = (index:number,value:number) => `${45+index*690/Math.max(1,data.length-1)},${y(value)}`
   const row = selected === null ? undefined : data[selected]
+  if(!data.length)return <section className="panel p-5"><h3>{title}</h3><p className="text-sm text-dim">No retained buckets available—not a measured zero.</p></section>
   return <section className="panel min-w-0 p-5">
     <h3 className="text-lg font-semibold">{title}</h3><p className="mt-1 text-xs leading-5 text-dim">{description}</p>
     <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-xs">{series.map(s=><span key={s.key} style={{color:s.color}}>{s.label} · {number.format(data.reduce((n,row)=>n+row[s.key],0))}</span>)}</div>
+    {previous&&<div className="mt-3 space-y-1 text-xs text-dim" aria-label="Previous period comparison">{series.map(s=>{const current=data.reduce((sum,b)=>sum+b[s.key],0),prior=previous.reduce((sum,b)=>sum+b[s.key],0),delta=current-prior;return <p key={s.key}>{s.label}: {number.format(prior)} previously · {delta>0?'+':''}{number.format(delta)} observed change{prior===0?(s.key==='net'?' (previous observed net was zero)':' (none retained for this metric)'):''}</p>})}</div>}
     <svg viewBox="0 0 760 210" role="img" aria-label={`${title}. ${series.map(s=>`${s.label}: ${data.reduce((n,r)=>n+r[s.key],0)}`).join('. ')}. Exact values in the table below.`} className="mt-3 w-full">
+      {data.map((row,i)=>series.every(s=>row[s.key]===0)&&<rect key={row.timestamp_ms} x={35+i*690/Math.max(1,data.length-1)} y="20" width="20" height="160" fill="#ffffff09"><title>No retained events; inactivity is not verified</title></rect>)}
       {[...new Set([minimum,0,Math.round((maximum+minimum)/2),maximum])].map(value=><g key={value}><line x1="45" x2="735" y1={y(value)} y2={y(value)} stroke="#303030" strokeDasharray="3 5"/><text x="38" y={y(value)+4} textAnchor="end" fill="#929292" fontSize="11">{number.format(value)}</text></g>)}
       {series.map(s=><polyline key={s.key} fill="none" stroke={s.color} strokeWidth="2.5" points={data.map((row,i)=>point(i,row[s.key])).join(' ')}/>)}
       {data.map((row,i)=><g key={row.timestamp_ms} role="button" tabIndex={0} aria-label={`${stamp(row.timestamp_ms,hourly)}: ${series.map(s=>`${s.label} ${row[s.key]}`).join(', ')}`} onClick={()=>setSelected(i)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setSelected(i)}}} className="cursor-pointer focus:outline-cyan">
@@ -47,9 +51,12 @@ function HistoryChart({did,category,title,description,data,series,hourly}:{did:s
 
 export function ProfileAnalytics({did,mode='overview',days,onDaysChange:setDays}:{did:string;mode?:'overview'|'audience'|'activity';days:number;onDaysChange:(days:number)=>void}) {
   const query=useQuery({queryKey:['profile-history',did,days],queryFn:()=>api<History>(`/api/accounts/${encodeURIComponent(did)}/history?days=${days}`),staleTime:60_000,retry:1})
+  const previous=useQuery({queryKey:['profile-history',did,days,'previous'],queryFn:()=>api<History>(`/api/accounts/${encodeURIComponent(did)}/history?days=${days}&previous=true`),staleTime:60_000,retry:1,enabled:query.isSuccess})
   const data=query.data
   const sum=(key:Metric)=>data?.buckets.reduce((n,row)=>n+row[key],0) || 0
   return <div className="space-y-5">
+    <CoverageNote>Observed changes over {days===1?'24 hours':`${days} days`}, compared with the same window shifted back {days===1?'24 hours':`${days} days`}. Collection gaps can affect both periods. Faint chart columns mark no retained events—not verified inactivity.</CoverageNote>
+    {previous.isError&&<p className="text-xs text-dim">Previous-period comparison is unavailable. <button className="text-cyan" onClick={()=>void previous.refetch()}>Retry comparison</button></p>}
     <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-xl font-semibold">{mode==='audience'?'Audience changes':mode==='activity'?'Activity & response':'The account at a glance'}</h2><p className="mt-1 text-sm text-dim">Observed activity, with hourly or daily detail.</p></div><div className="flex gap-1 rounded-lg border border-line p-1" aria-label="History period">{[[1,'24 hours'],[7,'7 days'],[30,'30 days']].map(([value,label])=><button key={value} aria-pressed={days===value} onClick={()=>setDays(Number(value))} className={`rounded-md px-3 py-2 text-xs ${days===value?'bg-cyan text-ink':'text-dim'}`}>{label}</button>)}</div></div>
     {query.isPending && <AnalyticsSkeleton/>}
     {query.isError && <div role="alert" className="panel p-6 text-dim">History couldn’t load. Other profile sections are still available. <button className="text-cyan" onClick={()=>void query.refetch()}>Try again</button></div>}
@@ -57,10 +64,10 @@ export function ProfileAnalytics({did,mode='overview',days,onDaysChange:setDays}
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">{(mode==='activity' ? [['Posts & replies',sum('posts')+sum('replies')],['Likes received',sum('likes_received')],['Reposts received',sum('reposts_received')],['Replies received',sum('replies_received')]] : [['Follows gained',sum('gained')],['Known losses',sum('lost')],['Observed net',sum('gained')-sum('lost')],['Posts & replies',sum('posts')+sum('replies')]]).map(([label,value])=><div className="panel p-4" key={label}><p className="text-xs text-dim">{label}</p><p className="mt-2 text-3xl font-semibold tabular-nums">{number.format(Number(value))}</p></div>)}</div>
       <p className="text-xs leading-6 text-dim">{data.note}</p>
       <div className="grid items-start gap-5 xl:grid-cols-2">
-        {mode!=='activity' && <HistoryChart did={did} category="audience" key={`audience-${days}`} title="Followers gained & lost" description="Incoming follows and target-resolved unfollows—not total followers." data={data.buckets} series={audience} hourly={days===1}/>}
-        {mode!=='audience' && <HistoryChart did={did} category="activity" key={`activity-${days}`} title="What they’re doing" description="Public actions made by this account. Follow changes are shown separately." data={data.buckets} series={activity} hourly={days===1}/>}
-        {mode==='audience' && <HistoryChart did={did} category="following" key={`following-${days}`} title="Who they’re following" description={`Outgoing follow changes. ${sum('unknown_unfollows')} removals have an unknown target.`} data={data.buckets} series={following} hourly={days===1}/>}
-        {mode==='activity' && <HistoryChart did={did} category="response" key={`engagement-${days}`} title="Response to their work" description="Incoming interactions with a known target account; excludes self-interactions." data={data.buckets} series={engagement} hourly={days===1}/>}
+        {mode!=='activity' && <HistoryChart did={did} category="audience" key={`audience-${days}`} title="Followers gained & lost" description="Incoming follows and target-resolved unfollows—not total followers." data={data.buckets} previous={previous.data?.buckets} series={audience} hourly={days===1}/>}
+        {mode!=='audience' && <HistoryChart did={did} category="activity" key={`activity-${days}`} title="What they’re doing" description="Public actions made by this account. Follow changes are shown separately." data={data.buckets} previous={previous.data?.buckets} series={activity} hourly={days===1}/>}
+        {mode==='audience' && <HistoryChart did={did} category="following" key={`following-${days}`} title="Who they’re following" description={`Outgoing follow changes. ${sum('unknown_unfollows')} removals have an unknown target.`} data={data.buckets} previous={previous.data?.buckets} series={following} hourly={days===1}/>}
+        {mode==='activity' && <HistoryChart did={did} category="response" key={`engagement-${days}`} title="Response to their work" description="Incoming interactions with a known target account; excludes self-interactions." data={data.buckets} previous={previous.data?.buckets} series={engagement} hourly={days===1}/>}
       </div>
       <p className="text-xs text-dim">Through {new Date(data.end_ms).toLocaleString()} · {days===1?'Hourly':'Daily'} buckets · Counts are events, not unique people. <a href="/coverage" className="text-cyan">About coverage →</a></p>
     </>}

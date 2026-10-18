@@ -21,6 +21,7 @@ export function LiveUpdates() {
   const knownEventIds = useRef(new Set<string>())
   const lastCachedEventId = useRef<string | undefined>(undefined)
   const firehosePaused = useRef(false)
+  const dropped = useRef(0)
 
   useEffect(() => {
     let closed = false
@@ -34,7 +35,12 @@ export function LiveUpdates() {
       // Keep accepting a bounded SSE buffer while presentation is paused, but
       // do not mutate TanStack's feed cache (and therefore the table) until the
       // operator resumes it.
-      if (firehosePaused.current) return
+      if (firehosePaused.current) {
+        queryClient.setQueryData(['firehose-buffer'],{count:pendingEvents.current.length,dropped:dropped.current})
+        return
+      }
+      queryClient.setQueryData(['firehose-buffer'],{count:0,dropped:0})
+      dropped.current=0
       const incoming = pendingEvents.current.splice(0)
       if (!incoming.length) return
       queryClient.setQueryData<FirehoseFeed>(['firehose-feed'], current => {
@@ -101,6 +107,7 @@ export function LiveUpdates() {
         const incoming = JSON.parse(event.data) as FirehoseEvent
         pendingEvents.current.push(incoming)
         if (pendingEvents.current.length > MAX_PENDING_EVENTS) {
+          if(firehosePaused.current)dropped.current+=pendingEvents.current.length-MAX_PENDING_EVENTS
           pendingEvents.current.splice(0, pendingEvents.current.length - MAX_PENDING_EVENTS)
         }
       } catch { /* Ignore an invalid frame; EventSource remains connected. */ }

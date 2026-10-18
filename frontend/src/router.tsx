@@ -15,7 +15,7 @@ const storyRoute=createRoute({getParentRoute:()=>rootRoute,path:'/stories/$uri',
 const musicDetailRoute=createRoute({getParentRoute:()=>rootRoute,path:'/music/$id',component:MusicDetailRoute})
 const advancedRoute=createRoute({getParentRoute:()=>rootRoute,path:'/advanced',component:()=> <App route={{view:'advanced'}}/>})
 const adminRoute=createRoute({getParentRoute:()=>rootRoute,path:'/admin',component:()=> <App route={{view:'admin'}}/>})
-const firehoseRoute=createRoute({getParentRoute:()=>rootRoute,path:'/firehose',component:()=> <App route={{view:'firehose'}}/>})
+const firehoseRoute=createRoute({getParentRoute:()=>rootRoute,path:'/firehose',validateSearch:(search:Record<string,unknown>):{q?:string;kind?:string;account?:string;app?:string;collection?:string}=>({q:typeof search.q==='string'?search.q:undefined,kind:typeof search.kind==='string'?search.kind:undefined,account:typeof search.account==='string'?search.account:undefined,app:typeof search.app==='string'?search.app:undefined,collection:typeof search.collection==='string'?search.collection:undefined}),component:()=> <App route={{view:'firehose'}}/>})
 const firehoseImagesRoute=createRoute({getParentRoute:()=>rootRoute,path:'/firehose/images',component:()=> <App route={{view:'firehose-images'}}/>})
 const detectionsRoute=createRoute({getParentRoute:()=>rootRoute,path:'/detections',component:()=> <App route={{view:'anomalies'}}/>})
 const systemRoute=createRoute({getParentRoute:()=>rootRoute,path:'/system',component:()=> <App route={{view:'system'}}/>})
