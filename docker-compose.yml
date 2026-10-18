@@ -83,8 +83,29 @@ services:
       <<: *app-environment
       SERVICE_ROLE: api
       INGESTER_URL: http://ingester:3000
+      IDENTITY_SERVICE_URL: http://identity:3000
     volumes:
       - ${ARCHIVE_ROOT:-${STORAGE_ROOT:-/mnt/storage/bsky-observatory}/archive}:/data/archive
+    expose:
+      - "3000"
+  identity:
+    image: ${IDENTITY_IMAGE:-bsky-explorer-identity:local}
+    build:
+      context: .
+      target: runtime
+    entrypoint: ["identity_service"]
+    restart: unless-stopped
+    mem_limit: 1024m
+    cpus: 1.0
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      <<: *app-environment
+      SERVICE_ROLE: identity
+      IDENTITY_REQUESTS_PER_SECOND: ${IDENTITY_REQUESTS_PER_SECOND:-2}
+    volumes:
+      - ${ARCHIVE_ROOT:-${STORAGE_ROOT:-/mnt/storage/bsky-observatory}/archive}/identity-queue:/data/archive/identity-queue
     expose:
       - "3000"
   enrichment:

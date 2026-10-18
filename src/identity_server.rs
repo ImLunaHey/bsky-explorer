@@ -83,6 +83,23 @@ pub async fn run(cfg: Config) -> Result<()> {
         identities.clone(),
         queue.clone(),
     ));
+    let outbox_storage = storage.clone();
+    let outbox_queue = queue.clone();
+    tokio::spawn(async move {
+        loop {
+            let result = async {
+                let records = outbox_queue.outbox()?;
+                outbox_storage.insert_identities(&records).await?;
+                outbox_queue.acknowledge_outbox(&records)?;
+                Ok::<_, anyhow::Error>(())
+            }
+            .await;
+            if let Err(error) = result {
+                tracing::warn!(%error,"identity publication will retry from durable outbox");
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    });
     tokio::spawn(async move {
         // Import existing mappings first, including explicit invalidations. The
         // API still works during import through one bounded ClickHouse batch.

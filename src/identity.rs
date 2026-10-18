@@ -505,7 +505,7 @@ impl IdentityService {
         let mut identities = Vec::new();
         for identity in found.values_mut() {
             let accepted = if let Some(db) = &self.inner.persistent {
-                db.store_identity(identity)?
+                db.store_remote_identity(identity)?
             } else {
                 identity.clone()
             };
@@ -515,8 +515,158 @@ impl IdentityService {
             *identity = accepted;
             self.put_cache(identity.clone(), self.inner.ttl);
         }
-        self.inner.storage.insert_identities(&identities).await?;
+        if self.inner.persistent.is_none() {
+            self.inner.storage.insert_identities(&identities).await?;
+        }
+        // A missing Bluesky profile is not a missing AT Protocol identity.
+        // Native fallback is only enabled for our fixed production upstream,
+        // never for test/mocked endpoints.
+        if self.inner.profile_endpoint
+            == "https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile"
+        {
+            for did in dids
+                .iter()
+                .filter(|did| !found.contains_key(*did))
+                .cloned()
+                .collect::<Vec<_>>()
+            {
+                let local = self.resolve_local(&did).await?;
+                if local.source != "unresolved" {
+                    found.insert(did, local);
+                    continue;
+                }
+                match self.resolve_native(&did).await? {
+                    RemoteIdentityResult::Resolved(record) => {
+                        let accepted = if let Some(db) = &self.inner.persistent {
+                            db.store_remote_identity(&record)?
+                        } else {
+                            self.inner.storage.insert_identity(&record).await?;
+                            record
+                        };
+                        self.put_cache(accepted.clone(), self.inner.ttl);
+                        found.insert(did, accepted);
+                    }
+                    RemoteIdentityResult::Negative => {}
+                    RemoteIdentityResult::RetryAfter(delay, error) => {
+                        return Ok(RemoteIdentityBatchResult::RetryAfter(delay, error));
+                    }
+                }
+            }
+        }
         Ok(RemoteIdentityBatchResult::Resolved(found))
+    }
+
+    async fn native_json(&self, client: &reqwest::Client, url: &str) -> Result<NativeDocument> {
+        let mut last = self.inner.last_request.lock().await;
+        if let Some(previous) = *last {
+            tokio::time::sleep(
+                self.inner
+                    .minimum_request_interval
+                    .saturating_sub(previous.elapsed()),
+            )
+            .await;
+        }
+        *last = Some(Instant::now());
+        drop(last);
+        let mut response = client.get(url).send().await?;
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || response.status().is_server_error()
+        {
+            let delay = crate::backfill::retry_delay(response.headers(), Utc::now())
+                .unwrap_or_else(|| chrono::Duration::seconds(30))
+                .to_std()
+                .unwrap_or(Duration::from_secs(30))
+                .min(Duration::from_secs(3600));
+            return Ok(NativeDocument::Retry(delay));
+        }
+        if matches!(response.status().as_u16(), 400 | 404 | 410) {
+            return Ok(NativeDocument::Missing);
+        }
+        response = response.error_for_status()?;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            anyhow::ensure!(
+                bytes.len() + chunk.len() <= 262_144,
+                "identity document too large"
+            );
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(NativeDocument::Found(serde_json::from_slice(&bytes)?))
+    }
+
+    async fn resolve_native(&self, did: &str) -> Result<RemoteIdentityResult> {
+        let started = Utc::now();
+        let (url, host) = native_document_url(did)?;
+        let client = if let Some(host) = host {
+            let addresses = tokio::time::timeout(
+                Duration::from_secs(5),
+                tokio::net::lookup_host((host.as_str(), 443)),
+            )
+            .await??
+            .collect::<Vec<_>>();
+            anyhow::ensure!(
+                !addresses.is_empty() && addresses.iter().all(|a| public_identity_ip(a.ip())),
+                "DID host resolves to a private/reserved address"
+            );
+            // Pin checked addresses; do not perform a second DNS lookup or use
+            // proxy environment variables for an untrusted did:web hostname.
+            reqwest::Client::builder()
+                .no_proxy()
+                .resolve_to_addrs(&host, &addresses)
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(Duration::from_secs(8))
+                .build()?
+        } else {
+            self.inner.client.clone()
+        };
+        let value = match self.native_json(&client, &url).await? {
+            NativeDocument::Found(value) => value,
+            NativeDocument::Missing => return Ok(RemoteIdentityResult::Negative),
+            NativeDocument::Retry(d) => {
+                return Ok(RemoteIdentityResult::RetryAfter(
+                    d,
+                    "DID document upstream cooldown".into(),
+                ));
+            }
+        };
+        anyhow::ensure!(
+            value.get("id").and_then(Value::as_str) == Some(did),
+            "DID document does not match request"
+        );
+        let handle = value
+            .get("alsoKnownAs")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter_map(|v| v.strip_prefix("at://"))
+            .find(|v| valid_identity_hostname(v));
+        let Some(handle) = handle else {
+            return Ok(RemoteIdentityResult::Negative);
+        };
+        let mut verify =
+            url::Url::parse("https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle")?;
+        verify.query_pairs_mut().append_pair("handle", handle);
+        match self
+            .native_json(&self.inner.client, verify.as_str())
+            .await?
+        {
+            NativeDocument::Found(value)
+                if value.get("did").and_then(Value::as_str) == Some(did) =>
+            {
+                Ok(RemoteIdentityResult::Resolved(IdentityRecord {
+                    did: did.into(),
+                    handle: Some(handle.into()),
+                    observed_at: started,
+                    source: "identity_worker_native".into(),
+                }))
+            }
+            NativeDocument::Retry(d) => Ok(RemoteIdentityResult::RetryAfter(
+                d,
+                "handle verification upstream cooldown".into(),
+            )),
+            _ => Ok(RemoteIdentityResult::Negative),
+        }
     }
 
     fn cached(&self, did: &str) -> Option<IdentityRecord> {
@@ -555,6 +705,85 @@ impl IdentityService {
             if let Some(oldest) = cache.order.pop_front() {
                 cache.values.remove(&oldest);
             }
+        }
+    }
+}
+
+enum NativeDocument {
+    Found(Value),
+    Missing,
+    Retry(Duration),
+}
+
+fn valid_identity_hostname(host: &str) -> bool {
+    host.len() <= 253
+        && host.contains('.')
+        && ![
+            ".local",
+            ".localhost",
+            ".internal",
+            ".invalid",
+            ".test",
+            ".example",
+            ".arpa",
+            ".onion",
+        ]
+        .iter()
+        .any(|suffix| host.to_ascii_lowercase().ends_with(suffix))
+        && host
+            .rsplit('.')
+            .next()
+            .is_some_and(|v| v.as_bytes().first().is_some_and(u8::is_ascii_alphabetic))
+        && host.split('.').all(|part| {
+            !part.is_empty()
+                && part.len() <= 63
+                && !part.starts_with('-')
+                && !part.ends_with('-')
+                && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+}
+fn native_document_url(did: &str) -> Result<(String, Option<String>)> {
+    if let Some(id) = did.strip_prefix("did:plc:") {
+        anyhow::ensure!(
+            id.len() == 24
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || (b'2'..=b'7').contains(&b)),
+            "invalid PLC DID"
+        );
+        return Ok((format!("https://plc.directory/{did}"), None));
+    }
+    let host = did
+        .strip_prefix("did:web:")
+        .context("unsupported DID method")?;
+    anyhow::ensure!(valid_identity_hostname(host), "unsafe did:web hostname");
+    Ok((
+        format!("https://{host}/.well-known/did.json"),
+        Some(host.into()),
+    ))
+}
+fn public_identity_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_documentation()
+                || ip.is_multicast()
+                || ip.is_unspecified()
+                || a == 0
+                || a >= 240
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 198 && (b == 18 || b == 19))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 192 && b == 88 && c == 99))
+        }
+        std::net::IpAddr::V6(ip) => {
+            ip.segments()[0] & 0xe000 == 0x2000
+                && !(ip.segments()[0] == 0x2001
+                    && (ip.segments()[1] == 0x0db8 || ip.segments()[1] < 0x0200))
+                && ip.segments()[0] != 0x2002
         }
     }
 }
@@ -688,6 +917,42 @@ mod tests {
             .unwrap()
             .is_none()
         );
+    }
+
+    #[test]
+    fn native_identity_urls_and_dns_targets_are_safe() {
+        assert_eq!(
+            native_document_url("did:web:atproto.com").unwrap().0,
+            "https://atproto.com/.well-known/did.json"
+        );
+        assert!(native_document_url("did:plc:ewvi7nxzyoun6zhxrhs64oiz").is_ok());
+        for bad in [
+            "did:web:localhost",
+            "did:web:127.0.0.1",
+            "did:web:example.com:admin",
+            "did:web:example.com%3A443",
+            "did:web:user@host.com",
+            "did:web:host.com/path",
+            "did:web:host.local",
+            "did:plc:../admin",
+        ] {
+            assert!(native_document_url(bad).is_err(), "{bad}");
+        }
+        for private in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "169.254.169.254",
+            "100.94.132.48",
+            "198.18.0.1",
+            "::1",
+            "::ffff:127.0.0.1",
+            "fc00::1",
+            "2001:db8::1",
+        ] {
+            assert!(!public_identity_ip(private.parse().unwrap()), "{private}");
+        }
+        assert!(public_identity_ip("1.1.1.1".parse().unwrap()));
+        assert!(public_identity_ip("2606:4700::1111".parse().unwrap()));
     }
 
     #[tokio::test]

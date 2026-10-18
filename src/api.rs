@@ -2624,7 +2624,10 @@ async fn identity_queue_detail(
         }
         return s
             .identities
-            .remote_get(&format!("/api/identity-queue/{id}"), &())
+            .remote_get(
+                &format!("/api/identity-queue/{id}"),
+                &Vec::<(String, String)>::new(),
+            )
             .await
             .map(Json)
             .map_err(internal_error);

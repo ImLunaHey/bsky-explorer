@@ -24,6 +24,7 @@ COPY --from=build /src/target/release/backfill_account /usr/local/bin/backfill_a
 COPY --from=build /src/target/release/backfill_associations /usr/local/bin/backfill_associations
 COPY --from=build /src/target/release/refresh_explorer /usr/local/bin/refresh_explorer
 COPY --from=build /src/target/release/enrich_collections /usr/local/bin/enrich_collections
+COPY --from=build /src/target/release/identity_service /usr/local/bin/identity_service
 COPY --from=web-build /web/dist /usr/share/bsky-observatory
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=4 \
   CMD wget -q -O /dev/null http://127.0.0.1:3000/readyz || exit 1

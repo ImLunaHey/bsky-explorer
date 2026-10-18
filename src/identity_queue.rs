@@ -98,6 +98,7 @@ impl IdentityQueue {
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS identity_cache(did TEXT PRIMARY KEY, record TEXT NOT NULL, observed_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS identity_progress(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS identity_outbox(did TEXT PRIMARY KEY,record TEXT NOT NULL);")?;
         db.execute_batch("CREATE INDEX IF NOT EXISTS identity_jobs_status_updated ON identity_jobs(status,updated_at DESC); CREATE INDEX IF NOT EXISTS identity_jobs_did ON identity_jobs(did); CREATE INDEX IF NOT EXISTS identity_jobs_handle ON identity_jobs(handle);")?;
         import_json(&root, &mut db)?;
         recover_expired(&mut db, Utc::now())?;
@@ -178,6 +179,19 @@ impl IdentityQueue {
         &self,
         record: &crate::identity::IdentityRecord,
     ) -> Result<crate::identity::IdentityRecord> {
+        self.store_identity_inner(record, false)
+    }
+    pub fn store_remote_identity(
+        &self,
+        record: &crate::identity::IdentityRecord,
+    ) -> Result<crate::identity::IdentityRecord> {
+        self.store_identity_inner(record, true)
+    }
+    fn store_identity_inner(
+        &self,
+        record: &crate::identity::IdentityRecord,
+        publish: bool,
+    ) -> Result<crate::identity::IdentityRecord> {
         let mut db = self.db.lock();
         let tx = db.transaction()?;
         let previous: Option<String> = tx
@@ -194,18 +208,45 @@ impl IdentityQueue {
             if record.source.starts_with("identity_worker") && old.source == "jetstream" {
                 return Ok(old);
             }
-            if old.observed_at > record.observed_at
+            if old == *record
+                || old.observed_at > record.observed_at
                 || (old.observed_at == record.observed_at && old.source == "jetstream")
             {
                 return Ok(old);
             }
         }
         tx.execute("INSERT INTO identity_cache(did,record,observed_at) VALUES(?1,?2,?3) ON CONFLICT(did) DO UPDATE SET record=excluded.record,observed_at=excluded.observed_at", params![record.did,serde_json::to_string(record)?,stamp(record.observed_at)])?;
+        if publish {
+            tx.execute("INSERT INTO identity_outbox VALUES(?1,?2) ON CONFLICT(did) DO UPDATE SET record=excluded.record",params![record.did,serde_json::to_string(record)?])?;
+        } else {
+            // An authoritative event supersedes a not-yet-published lookup.
+            tx.execute("DELETE FROM identity_outbox WHERE did=?1", [&record.did])?;
+        }
         // Event/cache fills cancel queued work, including a leased request.
         // finish() is lease-guarded so its eventual response cannot undo this.
         tx.execute("UPDATE identity_jobs SET status=?2,handle=?3,updated_at=?4,completed_at=?4,lease_token=NULL,lease_until=NULL WHERE did=?1 AND status IN ('queued','retrying','running','negative')", params![record.did,if record.handle.is_some() {"resolved"} else {"negative"},record.handle,stamp(Utc::now())])?;
         tx.commit()?;
         Ok(record.clone())
+    }
+
+    pub fn outbox(&self) -> Result<Vec<crate::identity::IdentityRecord>> {
+        let db = self.db.lock();
+        let mut q = db.prepare("SELECT record FROM identity_outbox LIMIT 250")?;
+        q.query_map([], |r| r.get::<_, String>(0))?
+            .map(|r| Ok(serde_json::from_str(&r?)?))
+            .collect()
+    }
+    pub fn acknowledge_outbox(&self, records: &[crate::identity::IdentityRecord]) -> Result<()> {
+        let mut db = self.db.lock();
+        let tx = db.transaction()?;
+        for record in records {
+            tx.execute(
+                "DELETE FROM identity_outbox WHERE did=?1 AND record=?2",
+                params![record.did, serde_json::to_string(record)?],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn progress(&self, key: &str) -> Result<String> {
@@ -314,6 +355,7 @@ impl IdentityQueue {
     fn claim(&self) -> Result<Option<IdentityJob>> {
         Ok(self.claim_batch(1)?.into_iter().next())
     }
+    #[cfg(test)]
     fn claim_batch(&self, limit: usize) -> Result<Vec<IdentityJob>> {
         self.claim_batch_priority(limit, false)
     }
@@ -862,6 +904,31 @@ mod tests {
                 )
                 .unwrap();
         assert_eq!(priority, 1);
+    }
+
+    #[test]
+    fn remote_cache_and_publication_are_atomic_and_event_supersedes_outbox() {
+        let d = tempdir().unwrap();
+        let q = IdentityQueue::open(d.path().into(), 100, Duration::hours(24)).unwrap();
+        let mut record = crate::identity::IdentityRecord {
+            did: "did:plc:alice".into(),
+            handle: Some("resolved.test".into()),
+            observed_at: Utc::now(),
+            source: "identity_worker_batch".into(),
+        };
+        q.store_remote_identity(&record).unwrap();
+        assert_eq!(q.outbox().unwrap(), vec![record.clone()]);
+        drop(q);
+        let q = IdentityQueue::open(d.path().into(), 100, Duration::hours(24)).unwrap();
+        assert_eq!(q.outbox().unwrap(), vec![record.clone()]);
+        let old = record.clone();
+        record.source = "jetstream".into();
+        record.handle = Some("changed.test".into());
+        record.observed_at += Duration::seconds(1);
+        q.store_identity(&record).unwrap();
+        assert!(q.outbox().unwrap().is_empty());
+        q.acknowledge_outbox(&[old]).unwrap();
+        assert_eq!(q.cached_identity(&record.did).unwrap(), Some(record));
     }
     #[test]
     fn imports_json_and_preserves_it() {

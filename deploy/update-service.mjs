@@ -6,8 +6,8 @@ import { execFileSync } from 'node:child_process';
 import http from 'node:http';
 
 const [service, image, confirmation] = process.argv.slice(2);
-if (!['api', 'frontend', 'ingester'].includes(service) || !image) {
-  throw Error('Usage: update-service.mjs api|frontend|ingester IMAGE [--allow-ingester-restart]');
+if (!['api', 'frontend', 'ingester', 'identity'].includes(service) || !image) {
+  throw Error('Usage: update-service.mjs api|frontend|ingester|identity IMAGE [--allow-ingester-restart]');
 }
 if (service === 'ingester' && confirmation !== '--allow-ingester-restart') {
   throw Error('Refusing to interrupt collection without --allow-ingester-restart');
@@ -21,6 +21,15 @@ const revision = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }
 const suffix = Date.now();
 const stagingName = `${name}-prepared-${suffix}`;
 const rollbackName = `${name}-previous-${suffix}`;
+const env = [...old.Config.Env];
+// Safe, explicit opt-in when migrating an existing API to the new service.
+if (service === 'api' && process.env.IDENTITY_SERVICE_URL) {
+  const url = new URL(process.env.IDENTITY_SERVICE_URL);
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw Error('Invalid IDENTITY_SERVICE_URL');
+  const index = env.findIndex(value => value.startsWith('IDENTITY_SERVICE_URL='));
+  if (index >= 0) env.splice(index, 1);
+  env.push(`IDENTITY_SERVICE_URL=${url.origin}`);
+}
 
 async function call(path, body) {
   return new Promise((resolve, reject) => {
@@ -37,7 +46,7 @@ async function call(path, body) {
 }
 
 const created = await call(`/containers/create?name=${stagingName}`, {
-  Image: imageId, Env: old.Config.Env, Entrypoint: old.Config.Entrypoint,
+  Image: imageId, Env: env, Entrypoint: old.Config.Entrypoint,
   Cmd: old.Config.Cmd, User: old.Config.User, WorkingDir: old.Config.WorkingDir,
   ExposedPorts: old.Config.ExposedPorts,
   Labels: { ...old.Config.Labels, 'org.opencontainers.image.revision': revision },
