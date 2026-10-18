@@ -1490,7 +1490,7 @@ export default function App({ route }: { route: AppRoute }) {
     <>
       {(route.view === 'firehose' || route.view === 'firehose-images') && <LiveUpdates />}
       <header className="sticky top-0 z-30 border-b border-line/80 bg-ink/90 backdrop-blur-xl">
-        <div className="flex items-center justify-between px-5 py-4">
+        <div className="mx-auto flex max-w-[1600px] items-center justify-between px-4 py-2.5 sm:px-6">
           <Link to="/" className="flex items-center gap-3" aria-label="ATProto Explorer home">
             <div className="grid size-9 place-items-center rounded-xl bg-mint text-ink">
               <Network className="size-5" />
@@ -1515,7 +1515,7 @@ export default function App({ route }: { route: AppRoute }) {
           </div>
         </div>
       </header>
-      <main className="min-w-0 px-4 py-5 sm:px-6 lg:ml-52 lg:px-8">
+      <main className="mx-auto min-w-0 max-w-[1600px] px-4 pb-6 sm:px-6">
         <Suspense fallback={<div role="status" className="panel p-10 text-sm text-dim">Opening explorer…</div>}>
         <ExplorerNavigation view={route.view}/>
         {route.view === 'discover' && <DiscoverPage />}
@@ -1792,7 +1792,7 @@ export default function App({ route }: { route: AppRoute }) {
         )}
         </Suspense>
       </main>
-      <footer className="flex flex-wrap justify-between gap-4 border-t border-line px-5 py-8 text-xs text-dim lg:ml-52"><p>Made for curiosity. Built on public ATProto data.</p><div className="flex gap-5"><Link to="/coverage">Coverage & privacy</Link><Link to="/advanced">Research tools</Link></div></footer>
+      <footer className="mx-auto flex max-w-[1600px] flex-wrap justify-between gap-4 border-t border-line px-6 py-5 text-xs text-dim"><p>Public ATProto data · Observed, not exhaustive.</p><div className="flex gap-5"><Link to="/coverage">Coverage & privacy</Link><Link to="/advanced">Research tools</Link><Link to="/admin">Administration</Link></div></footer>
     </>
   );
 }

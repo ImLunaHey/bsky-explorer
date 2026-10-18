@@ -35,10 +35,9 @@ function Profile({ did }: { did: string }) {
   return <div className="min-w-0 space-y-6">
     <Link to="/search" search={{ q: "", type: "account", offset: 0 }} className="text-sm text-dim hover:text-cyan">← Explore people</Link>
     <section className="panel overflow-hidden">
-      <div className="profile-cover h-20 sm:h-24" aria-hidden="true" />
-      <div className="px-5 pb-6 sm:px-8">
+      <div className="p-5">
         <div className="flex items-end justify-between gap-3">
-          <div className="-mt-10 grid size-24 shrink-0 place-items-center overflow-hidden rounded-3xl border-4 border-panel bg-ink shadow-xl">
+          <div className="grid size-16 shrink-0 place-items-center overflow-hidden border border-line bg-ink">
             {person?.avatar_url && !avatarFailed ? <img src={person.avatar_url} alt="" onError={() => setAvatarFailed(true)} referrerPolicy="no-referrer" className="size-full object-cover" /> : <UserRound className="size-10 text-cyan" />}
           </div>
           <a href={`https://bsky.app/profile/${encodeURIComponent(did)}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-full border border-line px-4 py-2 text-xs hover:border-cyan">View on Bluesky <ArrowUpRight className="size-4" /></a>

@@ -8,10 +8,10 @@ type Bucket = { timestamp_ms: number; gained: number; lost: number; net: number;
 type History = { start_ms: number; end_ms: number; bucket_ms: number; buckets: Bucket[]; note: string }
 type Metric = keyof Omit<Bucket, 'timestamp_ms'>
 type Series = { key: Metric; label: string; color: string }
-const audience: Series[] = [{key:'gained',label:'Follows gained',color:'#67e8f9'},{key:'lost',label:'Known losses',color:'#fbbf24'},{key:'net',label:'Observed net',color:'#a78bfa'}]
-const activity: Series[] = [{key:'posts',label:'Posts & quotes',color:'#67e8f9'},{key:'replies',label:'Replies',color:'#a78bfa'},{key:'likes',label:'Likes given',color:'#6ee7b7'},{key:'reposts',label:'Reposts',color:'#fbbf24'},{key:'other',label:'Other activity',color:'#94a3b8'}]
-const engagement: Series[] = [{key:'likes_received',label:'Likes received',color:'#67e8f9'},{key:'reposts_received',label:'Reposts received',color:'#6ee7b7'},{key:'replies_received',label:'Replies received',color:'#a78bfa'}]
-const following: Series[] = [{key:'followed',label:'Followed others',color:'#67e8f9'},{key:'unfollowed',label:'Unfollowed others',color:'#fbbf24'}]
+const audience: Series[] = [{key:'gained',label:'Follows gained',color:'#ededed'},{key:'lost',label:'Known losses',color:'#d9a441'},{key:'net',label:'Observed net',color:'#bca58a'}]
+const activity: Series[] = [{key:'posts',label:'Posts & quotes',color:'#ededed'},{key:'replies',label:'Replies',color:'#bca58a'},{key:'likes',label:'Likes given',color:'#a3b89a'},{key:'reposts',label:'Reposts',color:'#d9a441'},{key:'other',label:'Other activity',color:'#929292'}]
+const engagement: Series[] = [{key:'likes_received',label:'Likes received',color:'#ededed'},{key:'reposts_received',label:'Reposts received',color:'#a3b89a'},{key:'replies_received',label:'Replies received',color:'#bca58a'}]
+const following: Series[] = [{key:'followed',label:'Followed others',color:'#ededed'},{key:'unfollowed',label:'Unfollowed others',color:'#d9a441'}]
 const number = new Intl.NumberFormat()
 const stamp = (ms:number, hourly:boolean) => new Date(ms).toLocaleString([], hourly ? {month:'short',day:'numeric',hour:'numeric'} : {month:'short',day:'numeric'})
 
@@ -32,13 +32,13 @@ function HistoryChart({did,category,title,description,data,series,hourly}:{did:s
     <h3 className="text-lg font-semibold">{title}</h3><p className="mt-1 text-xs leading-5 text-dim">{description}</p>
     <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-xs">{series.map(s=><span key={s.key} style={{color:s.color}}>{s.label} · {number.format(data.reduce((n,row)=>n+row[s.key],0))}</span>)}</div>
     <svg viewBox="0 0 760 210" role="img" aria-label={`${title}. ${series.map(s=>`${s.label}: ${data.reduce((n,r)=>n+r[s.key],0)}`).join('. ')}. Exact values in the table below.`} className="mt-3 w-full">
-      {[...new Set([minimum,0,Math.round((maximum+minimum)/2),maximum])].map(value=><g key={value}><line x1="45" x2="735" y1={y(value)} y2={y(value)} stroke="#334155" strokeDasharray="3 5"/><text x="38" y={y(value)+4} textAnchor="end" fill="#94a3b8" fontSize="11">{number.format(value)}</text></g>)}
+      {[...new Set([minimum,0,Math.round((maximum+minimum)/2),maximum])].map(value=><g key={value}><line x1="45" x2="735" y1={y(value)} y2={y(value)} stroke="#303030" strokeDasharray="3 5"/><text x="38" y={y(value)+4} textAnchor="end" fill="#929292" fontSize="11">{number.format(value)}</text></g>)}
       {series.map(s=><polyline key={s.key} fill="none" stroke={s.color} strokeWidth="2.5" points={data.map((row,i)=>point(i,row[s.key])).join(' ')}/>)}
       {data.map((row,i)=><g key={row.timestamp_ms} role="button" tabIndex={0} aria-label={`${stamp(row.timestamp_ms,hourly)}: ${series.map(s=>`${s.label} ${row[s.key]}`).join(', ')}`} onClick={()=>setSelected(i)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setSelected(i)}}} className="cursor-pointer focus:outline-cyan">
-        <rect x={35+i*690/Math.max(1,data.length-1)} y="20" width="20" height="160" fill={selected===i?'#67e8f920':'transparent'}/>
+        <rect x={35+i*690/Math.max(1,data.length-1)} y="20" width="20" height="160" fill={selected===i?'#ededed20':'transparent'}/>
         <circle cx={45+i*690/Math.max(1,data.length-1)} cy={y(row[series[0].key])} r="3" fill={series[0].color}/>
       </g>)}
-      <text x="45" y="202" fill="#94a3b8" fontSize="11">{stamp(data[0].timestamp_ms,hourly)}</text><text x="735" y="202" textAnchor="end" fill="#94a3b8" fontSize="11">{stamp(data.at(-1)!.timestamp_ms,hourly)}</text>
+      <text x="45" y="202" fill="#929292" fontSize="11">{stamp(data[0].timestamp_ms,hourly)}</text><text x="735" y="202" textAnchor="end" fill="#929292" fontSize="11">{stamp(data.at(-1)!.timestamp_ms,hourly)}</text>
     </svg>
     <p aria-live="polite" className="min-h-10 text-xs leading-5 text-dim">{row ? `${stamp(row.timestamp_ms,hourly)} — ${series.map(s=>`${s.label}: ${number.format(row[s.key])}`).join(' · ')}` : 'Select a point to inspect that period, or expand the exact values below.'}</p>
     {row && <BucketEvents did={did} start={row.timestamp_ms} width={hourly?3_600_000:86_400_000} category={category}/>}

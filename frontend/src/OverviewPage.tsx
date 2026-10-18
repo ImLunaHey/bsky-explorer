@@ -89,7 +89,7 @@ function History({ data }: { data: Overview }) {
   const definition = useMemo(
     () =>
       defineChart({
-        marks: [lineY(rows, { x: "bucket", y: "value", stroke: "#58b8ff" })],
+        marks: [lineY(rows, { x: "bucket", y: "value", stroke: "#ededed" })],
         scales: {
           x: {
             scale: scaleLinear,

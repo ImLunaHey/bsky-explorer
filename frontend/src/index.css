@@ -1,31 +1,39 @@
 @import "tailwindcss";
 
-.profile-cover { background: radial-gradient(ellipse at 20% 30%, #256ea4 0%, transparent 60%), linear-gradient(115deg, #142c46, #162336 60%, #243d59); }
+.profile-cover { background: #111; }
 button:not(:disabled), summary { cursor: pointer; }
 :focus-visible { outline: 2px solid var(--color-cyan); outline-offset: 4px; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 
 @theme {
-  --color-ink: #080d16;
-  --color-panel: #101927;
-  --color-line: #263347;
-  --color-mint: #58b8ff;
-  --color-cyan: #8dd1ff;
-  --color-dim: #9eafc4;
+  --color-ink: #090909;
+  --color-panel: #111111;
+  --color-line: #262626;
+  --color-mint: #ededed;
+  --color-cyan: #dedede;
+  --color-dim: #939393;
+  --color-sky-300: #d4d4d4;
+  --color-sky-200: #eeeeee;
   --font-sans: Inter, ui-sans-serif, system-ui, sans-serif;
 }
 
 * { box-sizing: border-box; }
 html { background: var(--color-ink); }
-body { margin: 0; min-width: 320px; min-height: 100vh; color: #eef5ff; background: var(--color-ink); }
+body { margin: 0; min-width: 320px; min-height: 100vh; color: #ededed; background: var(--color-ink); }
 button, input { font: inherit; }
-.panel { border: 1px solid var(--color-line); background: color-mix(in srgb, var(--color-panel) 92%, transparent); border-radius: 1rem; }
+.panel { border: 1px solid var(--color-line); background: var(--color-panel); border-radius: 0; }
 .eyebrow { color: var(--color-dim); font-size: .67rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
-.discovery-hero { background: radial-gradient(ellipse at 90% 0%, #20517b55, transparent 55%), linear-gradient(125deg, #142537, #101927 65%); }
-.discovery-card { border: 1px solid var(--color-line); border-radius: 1.15rem; background: var(--color-panel); transition: border-color .15s, background .15s; }
-a.discovery-card:hover, .discovery-card:focus-within { border-color: #58b8ff99; background: #142135; }
-.topic-chip { display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--color-line); border-radius:9999px; padding:.6rem 1rem; font-size:.8rem; color:var(--color-dim); }
+.discovery-hero { background: #0e0e0e; padding: 1.5rem; }
+.discovery-hero h1 { font-size: clamp(1.65rem, 2.5vw, 2.5rem); line-height: 1.15; margin-top: .75rem; }
+.discovery-hero p { margin-top: .75rem; }
+.discovery-card { border: 1px solid var(--color-line); border-radius: 0; background: var(--color-panel); transition: border-color .15s, background .15s; }
+a.discovery-card:hover, .discovery-card:focus-within { border-color: #555; background: #171717; }
+.topic-chip { display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--color-line); border-radius:0; padding:.4rem .7rem; font-size:.8rem; color:var(--color-dim); }
 .topic-chip:hover { border-color:var(--color-cyan); color:white; }
 .topic-chip.topic-active { color:var(--color-ink); background:var(--color-cyan); border-color:var(--color-cyan); }
 .scrollbar::-webkit-scrollbar { height: 6px; width: 6px; }
-.scrollbar::-webkit-scrollbar-thumb { background: #34465e; border-radius: 9px; }
+.scrollbar::-webkit-scrollbar-thumb { background: #444; border-radius: 0; }
+/* The interface uses square geometry throughout, including legacy tools. */
+[class*="rounded"] { border-radius: 0 !important; }
+input, select, textarea { accent-color: #dedede; }
+::selection { background: #404040; color: #fff; }
