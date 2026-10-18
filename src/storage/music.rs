@@ -510,6 +510,18 @@ mod tests {
                 .bind(format!("at://did:plc:test/fm.teal.feed.play/{uri}")).bind(format!("{uri}-{version}")).bind(version).bind(operation).bind(body).execute().await.unwrap();
         }
         storage.refresh_music().await.unwrap();
+        storage.refresh_discovery().await.unwrap();
+        let discovery: Value =
+            serde_json::from_str(&storage.snapshot("discovery").await.unwrap().unwrap()).unwrap();
+        assert_eq!(discovery["sections"].as_array().unwrap().len(), 6);
+        assert!(
+            storage
+                .account_content("did:plc:test")
+                .await
+                .unwrap()
+                .iter()
+                .all(|row| row.operation != "delete")
+        );
         for seconds in [3600, 86400, 604800] {
             let value: Value = serde_json::from_str(
                 &storage
@@ -523,6 +535,12 @@ mod tests {
             assert_eq!(value["scanned_records"], 3);
             assert_eq!(value["unparseable_records"], 1);
             assert_eq!(value["tracks"][0]["title"], "Song");
+            assert_eq!(value["tracks_by_listeners"][0]["listeners"], 1);
+            let details: Value =
+                serde_json::from_str(&storage.snapshot("music-entities").await.unwrap().unwrap())
+                    .unwrap();
+            let id = value["tracks"][0]["id"].as_str().unwrap();
+            assert_eq!(details[id]["windows"]["24h"]["plays"], 1);
         }
         admin
             .query(&format!("DROP DATABASE {db}"))
