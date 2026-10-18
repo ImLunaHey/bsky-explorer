@@ -15,6 +15,22 @@ pub struct RepositoryRecord {
 }
 
 impl Storage {
+    pub async fn account_post_page(
+        &self,
+        did: &str,
+        before: i64,
+        uri: &str,
+        filter: &str,
+    ) -> Result<Vec<StoredRecord>> {
+        let filter = match filter {
+            "posts" => "kind IN ('post','quote')",
+            "replies" => "kind='reply'",
+            "media" => "media_kind IN ('images','video','record_with_media') OR media_count>0",
+            _ => "1",
+        };
+        Ok(self.client.query(&format!("SELECT at_uri,actor_did,timestamp_ms,kind,text,reply_parent,reply_root,quote_target,urls,domains,languages FROM (SELECT at_uri,actor_did,toUnixTimestamp64Milli(timestamp) AS timestamp_ms,kind,text,reply_parent,reply_root,quote_target,urls,domains,languages,operation,media_kind,media_count FROM events PREWHERE actor_did=? WHERE collection='app.bsky.feed.post' ORDER BY timestamp DESC,time_us DESC LIMIT 1 BY at_uri) WHERE operation!='delete' AND ({filter}) AND (timestamp_ms,at_uri)<(?,?) ORDER BY timestamp_ms DESC,at_uri DESC LIMIT 51 SETTINGS max_execution_time=5,max_threads=2,max_memory_usage=250000000"))
+            .bind(did).bind(before).bind(uri).fetch_all::<StoredRecord>().await?)
+    }
     pub async fn repository_record(&self, uri: &str) -> Result<Option<RepositoryRecord>> {
         let owner = uri
             .strip_prefix("at://")

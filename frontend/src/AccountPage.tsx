@@ -1,6 +1,6 @@
 import { ProfileHeaderSkeleton, CardSkeletons, ListSkeleton } from './Skeletons'
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { ArrowUpRight, Copy, UserRound } from 'lucide-react'
 import { api } from './api'
@@ -14,7 +14,7 @@ import { ContentCards } from './DiscoveryCards'
 import { appFor, topicFor } from './discovery'
 import { ProfileAnalytics } from './ProfileAnalytics'
 import { CoverageNote } from './CoverageNote'
-import { profileTabs as tabs, profileDays, type ProfileTab as Tab, type ProfileSearch, type ProfileTime } from './profileLocation'
+import { profileTabs as tabs, profileDays, type ProfileTab as Tab, type ProfileSearch, type ProfileTime, type PostFilter } from './profileLocation'
 
 const count = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
 type ProfileProps = { did: string; tab?: Tab; search?: ProfileSearch }
@@ -72,7 +72,7 @@ function Profile({ did, tab = 'Overview', search = {} }: ProfileProps) {
       </div>
     </section>
     <section id="profile-panel" role="tabpanel" aria-labelledby={`profile-tab-${tab}`}>
-      {tab === 'Posts' && <Posts did={did} name={name} replies={search.replies !== false} onRepliesChange={replies => changeSearch({...search,replies:replies ? undefined : false})} />}
+      {tab === 'Posts' && <Posts did={did} name={name} filter={search.posts || (search.replies===false?'posts':'all')} onFilterChange={posts=>changeSearch({...search,posts,replies:undefined})} />}
       {tab === 'Overview' && <div className="space-y-8"><ProfileAnalytics did={did} {...history}/><CrossAppContent did={did} section="Highlights"/></div>}
       {(['Writing','Listening'] as string[]).includes(tab) && <CrossAppContent did={did} section={tab} />}
       {tab === 'Audience' && <div className="space-y-6"><ProfileAnalytics did={did} mode="audience" {...history}/><details className="panel p-5"><summary className="cursor-pointer text-sm">Recent follow records & short-window totals</summary><AccountFollows did={did} onAccount={accountDid => void navigate({ to: '/accounts/$did', params: { did: accountDid } })} /></details></div>}
@@ -94,13 +94,18 @@ function CrossAppContent({did,section}:{did:string;section:Tab|'Highlights'}) {
   return <div className="space-y-5"><header><h2 className="text-xl font-semibold">{section==='Highlights'?'A life across apps':section==='Writing'?'Writing & ideas':'Recently shared listening'}</h2><p className="mt-2 text-sm text-dim">{section==='Highlights'?'Some of what this person creates, enjoys and shares.':'Selected public records from this person’s activity.'} This is what we’ve retained, not their full history.</p></header>{section==='Highlights' && seenApps.length>0 && <div className="flex flex-wrap gap-2">{seenApps.map(app=>app && <Link key={app.id} to="/apps/$appId" params={{appId:app.id}} className="topic-chip">{app.name} →</Link>)}</div>}{query.isPending && <CardSkeletons/>}{query.isError && <Failure retry={()=>void query.refetch()}/>}<ContentCards records={shown}/>{query.isSuccess && !shown.length && <div className="panel p-6 text-sm leading-7 text-dim">We haven’t collected {section==='Writing'?'writing':section==='Listening'?'listening':'cross-app highlights'} for this person yet. That isn’t evidence they don’t use other apps. Check their posts or explore the apps directly.<div className="mt-3"><Link to="/apps" className="text-cyan">Explore apps →</Link></div></div>}</div>
 }
 
-function Posts({ did, name, replies, onRepliesChange }: { did: string; name: string; replies: boolean; onRepliesChange: (value: boolean) => void }) {
-  const posts = useQuery({ queryKey: ['account-posts', did], queryFn: () => api<RecordItem[]>(`/api/accounts/${encodeURIComponent(did)}/posts`) })
-  const visible = posts.data?.filter(post => replies || post.kind !== 'reply')
-  return <div className="space-y-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-semibold">Recent posts</h2><p className="mt-1 text-xs text-dim">Latest 50 retained posts, replies and quotes. This is not a complete timeline.</p></div><label className="flex items-center gap-2 text-xs text-dim"><input type="checkbox" checked={replies} onChange={e => onRepliesChange(e.target.checked)} />Include replies</label></div>
-    {posts.isPending && <Loading />}{posts.isError && <Failure retry={() => void posts.refetch()} />}
-    {visible?.map(post => <PostCard key={post.at_uri} post={post} name={name} />)}
-    {!posts.isPending && !posts.isError && !visible?.length && <Empty text="No retained posts in this view. Try including replies or open this account on Bluesky." />}
+function Posts({ did, name, filter, onFilterChange }: { did: string; name: string; filter:PostFilter; onFilterChange:(filter:PostFilter)=>void }) {
+  type Cursor={before:number;uri:string}
+  type Page={posts:RecordItem[];next:Cursor|null}
+  const posts = useInfiniteQuery({ queryKey: ['account-post-pages', did, filter], initialPageParam:null as Cursor|null, queryFn: ({pageParam}) => api<Page>(`/api/accounts/${encodeURIComponent(did)}/posts/page?filter=${filter}${pageParam?`&before=${pageParam.before}&uri=${encodeURIComponent(pageParam.uri)}`:''}`),getNextPageParam:page=>page.next??undefined,staleTime:60_000 })
+  const visible=[...new Map((posts.data?.pages.flatMap(page=>page.posts)||[]).map(post=>[post.at_uri,post])).values()]
+  return <div className="space-y-4"><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-lg font-semibold">Recent posts</h2><div className="flex flex-wrap gap-1" aria-label="Post filters">{(['all','posts','replies','media'] as const).map(value=><button key={value} aria-pressed={filter===value} onClick={()=>onFilterChange(value)} className={`border px-3 py-2 text-xs capitalize ${filter===value?'border-cyan text-cyan':'border-line text-dim'}`}>{value==='all'?'All posts':value[0].toUpperCase()+value.slice(1)}</button>)}</div></div>
+    <CoverageNote>Newest retained records first, 50 per page. Media filters use recorded attachment metadata; older records may be missing it. Counts below are current Bluesky totals when available.</CoverageNote>
+    {posts.isPending && <Loading />}{posts.isError && <Failure retry={() => void (posts.isFetchNextPageError?posts.fetchNextPage():posts.refetch())} />}
+    {visible.map(post => <PostCard key={post.at_uri} post={post} name={name} />)}
+    {posts.hasNextPage&&<button disabled={posts.isFetchingNextPage} onClick={()=>void posts.fetchNextPage()} className="w-full border border-line p-4 text-sm text-cyan disabled:opacity-50">{posts.isFetchingNextPage?'Loading older posts…':'Load more retained posts'}</button>}
+    {!posts.isPending && !posts.isError && !visible.length && <Empty text="No matching posts in the retained archive. Try another filter or open the account on Bluesky; this does not mean they have never posted." />}
+    {!!visible.length&&!posts.hasNextPage&&<p className="text-xs text-dim">End of retained results—not necessarily the account’s full history.</p>}
   </div>
 }
 

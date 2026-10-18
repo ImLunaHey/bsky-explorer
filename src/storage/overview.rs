@@ -220,6 +220,32 @@ mod tests {
             "hello network"
         );
         assert_eq!(storage.account_posts("did:plc:a").await.unwrap().len(), 1);
+        let page = storage
+            .account_post_page("did:plc:a", i64::MAX, "", "all")
+            .await
+            .unwrap();
+        assert_eq!(page.len(), 1);
+        assert!(
+            storage
+                .account_post_page("did:plc:a", page[0].timestamp_ms, &page[0].at_uri, "all")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            storage
+                .account_post_page("did:plc:a", i64::MAX, "", "replies")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            storage
+                .account_post_page("did:plc:a", i64::MAX, "", "media")
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
             storage
                 .existing_uris(std::slice::from_ref(&uri))

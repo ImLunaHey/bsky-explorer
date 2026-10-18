@@ -70,7 +70,20 @@ impl Storage {
             .bind(did).bind(start).bind(end).fetch_all::<ProfileHistoryEvent>().await.map_err(Into::into)
     }
     pub async fn profile_history(&self, did: &str, days: u32) -> Result<ProfileHistory> {
-        let now = Utc::now().timestamp_millis();
+        self.profile_history_period(did, days, false).await
+    }
+    pub async fn profile_history_period(
+        &self,
+        did: &str,
+        days: u32,
+        previous: bool,
+    ) -> Result<ProfileHistory> {
+        let now = Utc::now().timestamp_millis()
+            - if previous {
+                i64::from(days) * 86_400_000
+            } else {
+                0
+            };
         let (start, end, bucket) = history_window(days, now);
         // Only narrow scalar columns, no record bodies. Explicit budgets prevent
         // popular profiles from occupying the server indefinitely. Exclude repo

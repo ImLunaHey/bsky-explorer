@@ -1,7 +1,7 @@
 import type { RecordMediaResponse } from './types'
 
 // Per-post query keys, with coalesced metadata requests for nearby cards.
-export function createMediaBatcher(fetchBatch: (uris: string[]) => Promise<{items: {uri: string; media: RecordMediaResponse['media']; found: boolean}[]}>) {
+export function createMediaBatcher(fetchBatch: (uris: string[]) => Promise<{items: ({uri: string; found: boolean}&Pick<RecordMediaResponse,'media'|'counts'|'quote'>)[]}>) {
   let pending: {uri: string; resolve: (value: RecordMediaResponse & {found: boolean}) => void; reject: (reason: unknown) => void}[] = []
   let timer: ReturnType<typeof setTimeout> | undefined
   return (uri: string) => new Promise<RecordMediaResponse & {found: boolean}>((resolve,reject) => {
@@ -14,7 +14,7 @@ export function createMediaBatcher(fetchBatch: (uris: string[]) => Promise<{item
           const byUri=new Map(result.items.map(item=>[item.uri,item]))
           for(const entry of batch) {
             const item=byUri.get(entry.uri)
-            if(item)entry.resolve({media:item.media,found:item.found,source:'public_appview',ephemeral:true})
+            if(item)entry.resolve({media:item.media,counts:item.counts,quote:item.quote,found:item.found,source:'public_appview',ephemeral:true})
             else entry.reject(new Error('Media response omitted a post'))
           }
         }).catch(error=>batch.forEach(entry=>entry.reject(error)))

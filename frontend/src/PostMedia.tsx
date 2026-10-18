@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { HlsVideo } from './HlsVideo'
 import { fetchPostMedia } from './postMedia'
+import { Link } from '@tanstack/react-router'
+import { IdentityLink } from './identities'
 
 function PostImage({url,alt,width,height}:{url:string;alt:string;width?:number;height?:number}) {
   const [failed,setFailed]=useState(false)
@@ -9,7 +11,7 @@ function PostImage({url,alt,width,height}:{url:string;alt:string;width?:number;h
     : <a href={url} target="_blank" rel="noreferrer" aria-label={alt ? `Open image: ${alt}` : 'Open full-size image'}><img src={url} alt={alt} width={width} height={height} loading="lazy" referrerPolicy="no-referrer" onError={()=>setFailed(true)} className="max-h-[65vh] w-full bg-black object-contain" /></a>
 }
 
-export function PostMedia({uri}:{uri:string}) {
+export function PostMedia({uri,quoteTarget}:{uri:string;quoteTarget?:string}) {
   const host=useRef<HTMLDivElement>(null)
   const [visible,setVisible]=useState(false)
   useEffect(()=>{
@@ -27,5 +29,7 @@ export function PostMedia({uri}:{uri:string}) {
         ? <PostImage key={asset.url} url={asset.url} alt={asset.alt} width={asset.width} height={asset.height}/>
         : <HlsVideo key={asset.url} src={asset.url} poster={asset.thumbnail_url} label={asset.alt||`Post video ${index+1}`} className="aspect-video max-h-[65vh] w-full"/>)}
     </div>}
+    {(query.data?.quote||quoteTarget)&&<blockquote className="mt-4 border border-line p-4 text-sm">{query.data?.quote?.did&&<IdentityLink did={query.data.quote.did} handle={query.data.quote.handle||undefined} inline className="text-xs"/>}<Link to="/records/$uri" params={{uri:query.data?.quote?.uri||quoteTarget!}} className="mt-2 block whitespace-pre-wrap text-dim">{query.data?.quote?.text||'View quoted post →'}</Link></blockquote>}
+    {query.data?.counts&&<p className="mt-4 flex flex-wrap gap-3 text-xs text-dim" aria-label="Current Bluesky engagement">{Object.entries(query.data.counts).map(([name,value])=><span key={name}>{value==null?'—':value.toLocaleString()} {name}</span>)}<span className="text-[10px]">Current public totals</span></p>}
   </div>
 }

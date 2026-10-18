@@ -113,6 +113,7 @@ pub fn router(s: AppState) -> Router {
         .route("/api/accounts/{did}/profile", get(account_profile))
         .route("/api/accounts/{did}/events", get(account_events))
         .route("/api/accounts/{did}/posts", get(account_posts))
+        .route("/api/accounts/{did}/posts/page", get(account_post_page))
         .route(
             "/api/accounts/{did}/investigations",
             get(account_investigations),
@@ -1573,6 +1574,53 @@ async fn account_investigations(
         .map_err(internal_error)
 }
 
+#[derive(Deserialize)]
+struct PostPageQuery {
+    before: Option<i64>,
+    uri: Option<String>,
+    filter: Option<String>,
+}
+
+async fn account_post_page(
+    State(s): State<AppState>,
+    Path(did): Path<String>,
+    Query(q): Query<PostPageQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let filter = q.filter.as_deref().unwrap_or("all");
+    if !crate::identity_queue::valid_did(&did)
+        || !matches!(filter, "all" | "posts" | "replies" | "media")
+        || q.uri.as_ref().is_some_and(|uri| uri.len() > 1024)
+        || q.before.is_some_and(|before| before < 0)
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Invalid account, cursor or post filter".into(),
+        ));
+    }
+    let mut posts = s
+        .storage
+        .account_post_page(
+            &did,
+            q.before.unwrap_or(i64::MAX),
+            q.uri.as_deref().unwrap_or(""),
+            filter,
+        )
+        .await
+        .map_err(internal_error)?;
+    let more = posts.len() > 50;
+    posts.truncate(50);
+    let next = if more {
+        posts
+            .last()
+            .map(|post| serde_json::json!({"before":post.timestamp_ms,"uri":post.at_uri}))
+    } else {
+        None
+    };
+    Ok(Json(
+        serde_json::json!({"posts":posts,"next":next,"scope":"retained"}),
+    ))
+}
+
 async fn account_posts(
     State(s): State<AppState>,
     Path(did): Path<String>,
@@ -1632,6 +1680,7 @@ async fn account_analytics(
 #[derive(Deserialize)]
 struct ProfileHistoryQuery {
     days: Option<u32>,
+    previous: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -1681,7 +1730,7 @@ async fn account_history(
         ));
     }
     s.storage
-        .profile_history(&did, q.days.unwrap_or(1))
+        .profile_history_period(&did, q.days.unwrap_or(1), q.previous.unwrap_or(false))
         .await
         .map(Json)
         .map_err(internal_error)
@@ -1968,6 +2017,8 @@ struct RecordMediaBatchItem {
     uri: String,
     media: Vec<RecordMedia>,
     found: bool,
+    counts: Option<serde_json::Value>,
+    quote: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -2138,6 +2189,8 @@ async fn record_media_batch(
                     uri: uri.to_owned(),
                     media,
                     found: true,
+                    counts: Some(serde_json::json!({"likes":post["likeCount"].as_u64(),"reposts":post["repostCount"].as_u64(),"replies":post["replyCount"].as_u64(),"quotes":post["quoteCount"].as_u64()})),
+                    quote: post.pointer("/embed/record/record").or_else(||post.pointer("/embed/record")).filter(|record|record["uri"].as_str().is_some_and(is_bluesky_post_uri)).map(|record|serde_json::json!({"uri":record["uri"],"text":record.pointer("/value/text"),"did":record.pointer("/author/did"),"handle":record.pointer("/author/handle")})),
                 },
             );
         }
@@ -2156,6 +2209,8 @@ async fn record_media_batch(
                     uri: uri.clone(),
                     media: Vec::new(),
                     found: false,
+                    counts: None,
+                    quote: None,
                 });
             cached.insert(
                 uri.clone(),
