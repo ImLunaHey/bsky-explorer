@@ -66,7 +66,7 @@ impl Storage {
         };
         self.client.clone().with_option("max_execution_time","3").with_option("max_threads","2")
             .with_option("max_memory_usage","250000000")
-            .query(&format!("SELECT max(toUnixTimestamp64Milli(timestamp)) AS timestamp_ms,event_id,argMax(actor_did,timestamp) AS actor_did,argMax(target_did,timestamp) AS target_did,argMax(kind,timestamp) AS kind FROM (SELECT * FROM account_history_events PREWHERE account_did=? AND timestamp>=fromUnixTimestamp64Milli(?) AND timestamp<fromUnixTimestamp64Milli(?) WHERE {filter}) GROUP BY event_id ORDER BY timestamp_ms DESC,event_id LIMIT 50"))
+            .query(&format!("SELECT max(toUnixTimestamp64Milli(timestamp)) AS timestamp_ms,event_id,argMax(actor_did,timestamp) AS actor_did,argMax(target_did,length(target_did)) AS target_did,argMax(kind,timestamp) AS kind FROM (SELECT * FROM account_history_events PREWHERE account_did=? AND timestamp>=fromUnixTimestamp64Milli(?) AND timestamp<fromUnixTimestamp64Milli(?) WHERE {filter}) GROUP BY event_id ORDER BY timestamp_ms DESC,event_id LIMIT 50"))
             .bind(did).bind(start).bind(end).fetch_all::<ProfileHistoryEvent>().await.map_err(Into::into)
     }
     pub async fn profile_history(&self, did: &str, days: u32) -> Result<ProfileHistory> {
@@ -108,9 +108,11 @@ impl Storage {
                 uniqExactIf(event_id, target_did=who AND actor_did!=who AND kind='like') AS likes_received,
                 uniqExactIf(event_id, target_did=who AND actor_did!=who AND kind='repost') AS reposts_received,
                 uniqExactIf(event_id, target_did=who AND actor_did!=who AND kind='reply') AS replies_received
-              FROM account_history_events
-              PREWHERE account_did=who AND timestamp >= fromUnixTimestamp64Milli(?) AND timestamp <= fromUnixTimestamp64Milli(?)
-              WHERE operation IN ('create','delete')
+              FROM (SELECT event_id,any(timestamp) AS timestamp,any(actor_did) AS actor_did,
+                argMax(target_did,length(target_did)) AS target_did,any(kind) AS kind
+                FROM account_history_events AS h
+                WHERE h.account_did=who AND h.timestamp >= fromUnixTimestamp64Milli(?) AND h.timestamp <= fromUnixTimestamp64Milli(?)
+                  AND operation IN ('create','delete') GROUP BY event_id)
               GROUP BY timestamp_ms ORDER BY timestamp_ms")
             .bind(did).bind(bucket).bind(start).bind(now)
             .fetch_all::<ProfileBucket>().await?;
@@ -131,7 +133,7 @@ impl Storage {
             end_ms: now,
             bucket_ms: bucket,
             buckets,
-            note: "Observed live events only; repository imports are excluded. Zero means no retained events, not verified inactivity. Lost followers include only unfollows with a known target, so net change may overstate growth. This is not a historical follower-total chart. The final bucket is still in progress.",
+            note: "Observed live events only; repository imports are excluded. Attributed losses are a partial lower bound, not total unfollows. Zero attributed losses means the true loss count is unknown. Follow balance subtracts only attributed losses and may overstate growth. Historical attribution is repaired in the background; the final bucket is still in progress.",
         })
     }
 }

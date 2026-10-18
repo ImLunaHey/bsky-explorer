@@ -121,6 +121,7 @@ pub fn router(s: AppState) -> Router {
         .route("/api/accounts/{did}/follows", get(account_follows))
         .route("/api/accounts/{did}/analytics", get(account_analytics))
         .route("/api/accounts/{did}/history", get(account_history))
+        .route("/api/follow-resolution", get(follow_resolution_status))
         .route(
             "/api/accounts/{did}/history/events",
             get(account_history_events),
@@ -1716,6 +1717,21 @@ async fn account_history_events(
         .await
         .map(Json)
         .map_err(internal_error)
+}
+
+async fn follow_resolution_status(
+    State(s): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let value = s
+        .storage
+        .snapshot("follow-resolution:status")
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(
+        value
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_else(|| serde_json::json!({"status":"not_started","losses_complete":false})),
+    ))
 }
 
 async fn account_history(

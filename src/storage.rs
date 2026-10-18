@@ -8,6 +8,7 @@ use chrono::Utc;
 use clickhouse::{Client, Row};
 use serde::{Deserialize, Serialize};
 pub mod discovery;
+pub mod follow_resolution;
 pub mod music;
 pub mod overview;
 pub mod profile_history;
@@ -526,6 +527,7 @@ impl Storage {
             include_str!("../migrations/007_event_media.sql"),
             include_str!("../migrations/009_explorer_performance.sql"),
             include_str!("../migrations/010_profile_history.sql"),
+            include_str!("../migrations/011_follow_resolution.sql"),
         ]
         .join("\n")
         .split(';')
@@ -1147,35 +1149,33 @@ impl Storage {
     /// unfollows are reported separately instead of being misattributed.
     pub async fn account_follow_analytics(&self, did: &str) -> Result<AccountFollowAnalytics> {
         let window_query = self.client.query(
-            "WITH ? AS account_did
+            "WITH ? AS who
              SELECT toUInt64(window_seconds) AS seconds,
-               countIf(kind='follow' AND actor_did=account_did AND timestamp >= now64(3)-toIntervalSecond(window_seconds)) AS outbound_follows,
-               countIf(kind='follow' AND target_did=account_did AND timestamp >= now64(3)-toIntervalSecond(window_seconds)) AS inbound_follows,
-               countIf(kind='unfollow' AND actor_did=account_did AND target_did!='' AND timestamp >= now64(3)-toIntervalSecond(window_seconds)) AS outbound_unfollows_resolved,
-               countIf(kind='unfollow' AND target_did=account_did AND timestamp >= now64(3)-toIntervalSecond(window_seconds)) AS inbound_unfollows_resolved,
-               countIf(kind='unfollow' AND actor_did=account_did AND target_did='' AND timestamp >= now64(3)-toIntervalSecond(window_seconds)) AS outbound_unfollows_unresolved,
+               countIf(kind='follow' AND actor_did=who AND timestamp >= now64(3)-toIntervalSecond(window_seconds)) AS outbound_follows,
+               countIf(kind='follow' AND target_did=who AND timestamp >= now64(3)-toIntervalSecond(window_seconds)) AS inbound_follows,
+               countIf(kind='unfollow' AND actor_did=who AND target_did!='' AND timestamp >= now64(3)-toIntervalSecond(window_seconds)) AS outbound_unfollows_resolved,
+               countIf(kind='unfollow' AND target_did=who AND timestamp >= now64(3)-toIntervalSecond(window_seconds)) AS inbound_unfollows_resolved,
+               countIf(kind='unfollow' AND actor_did=who AND target_did='' AND timestamp >= now64(3)-toIntervalSecond(window_seconds)) AS outbound_unfollows_unresolved,
                toInt64(outbound_follows)-toInt64(outbound_unfollows_resolved)-toInt64(outbound_unfollows_unresolved) AS outbound_net,
                toInt64(inbound_follows)-toInt64(inbound_unfollows_resolved) AS inbound_net
-             FROM events ARRAY JOIN [60,300,3600,86400] AS window_seconds
-             WHERE collection='app.bsky.graph.follow'
-               AND timestamp >= now64(3)-INTERVAL 1 DAY
-               AND (actor_did=account_did OR target_did=account_did)
+             FROM (SELECT event_id,any(timestamp) AS timestamp,any(actor_did) AS actor_did,argMax(target_did,length(target_did)) AS target_did,any(kind) AS kind
+               FROM account_history_events AS h WHERE h.account_did=? AND h.timestamp >= now64(3)-INTERVAL 1 DAY AND h.kind IN ('follow','unfollow') AND operation IN ('create','delete') GROUP BY event_id)
+             ARRAY JOIN [60,300,3600,86400] AS window_seconds
              GROUP BY window_seconds ORDER BY window_seconds"
-        ).bind(did).fetch_all::<FollowWindowStats>();
+        ).bind(did).bind(did).fetch_all::<FollowWindowStats>();
         let events_query = self
             .client
             .query(
-                "WITH ? AS account_did
+                "WITH ? AS who
              SELECT event_id, toUnixTimestamp64Milli(timestamp) AS timestamp_ms,
                actor_did, target_did, kind,
-               if(actor_did=account_did,'outbound','inbound') AS direction,
+               if(actor_did=who,'outbound','inbound') AS direction,
                toBool(target_did!='') AS target_resolved
-             FROM events
-             WHERE collection='app.bsky.graph.follow'
-               AND timestamp >= now64(3)-INTERVAL 30 DAY
-               AND (actor_did=account_did OR target_did=account_did)
+             FROM (SELECT event_id,any(timestamp) AS timestamp,any(actor_did) AS actor_did,argMax(target_did,length(target_did)) AS target_did,any(kind) AS kind
+               FROM account_history_events AS h WHERE h.account_did=? AND h.timestamp >= now64(3)-INTERVAL 30 DAY AND h.kind IN ('follow','unfollow') AND operation IN ('create','delete') GROUP BY event_id)
              ORDER BY timestamp DESC LIMIT 100",
             )
+            .bind(did)
             .bind(did)
             .fetch_all::<StoredFollowEvent>();
         let (mut windows, recent_events) = tokio::try_join!(window_query, events_query)?;
