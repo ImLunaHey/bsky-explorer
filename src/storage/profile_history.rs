@@ -160,15 +160,24 @@ mod tests {
             ("8", "other", "person", "follow", "pds_backfill"),
             ("9", "person", "", "post", "update"),
             ("10", "other", "elsewhere", "follow", "create"),
+            ("11", "another", "person", "unfollow", "delete"),
         ] {
             storage.client.query("INSERT INTO events (event_id,actor_did,target_did,kind,operation,timestamp) VALUES (?,?,?,?,?,now64(3)-INTERVAL 1 SECOND)")
                 .bind(id).bind(actor).bind(target).bind(kind).bind(op).execute().await.unwrap();
         }
+        // Backfill/view overlap adds physical duplicates but not chart counts.
+        storage
+            .client
+            .query("INSERT INTO account_history_events SELECT * FROM account_history_events")
+            .execute()
+            .await
+            .unwrap();
         for (days, length) in [(1, 24), (7, 7), (30, 30)] {
             let result = storage.profile_history("person", days).await.unwrap();
             assert_eq!(result.buckets.len(), length);
             assert_eq!(result.buckets.iter().map(|r| r.gained).sum::<u64>(), 1);
-            assert_eq!(result.buckets.iter().map(|r| r.lost).sum::<u64>(), 1);
+            assert_eq!(result.buckets.iter().map(|r| r.lost).sum::<u64>(), 2);
+            assert_eq!(result.buckets.iter().map(|r| r.net).sum::<i64>(), -1);
             assert_eq!(
                 result
                     .buckets
@@ -192,6 +201,19 @@ mod tests {
                 .iter()
                 .all(|r| r.gained == 0)
         );
+        let now = Utc::now().timestamp_millis();
+        let events = storage
+            .profile_history_events("person", now - 86_400_000, now, "audience")
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().all(|e| e.target_did == "person"));
+        let response = storage
+            .profile_history_events("person", now - 86_400_000, now, "response")
+            .await
+            .unwrap();
+        assert_eq!(response.len(), 1);
+        assert_eq!(response[0].actor_did, "other");
         admin
             .query(&format!("DROP DATABASE {db}"))
             .execute()
