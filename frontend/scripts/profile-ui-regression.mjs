@@ -9,6 +9,7 @@ try {
  const page=await browser.newPage({viewport:{width:1280,height:1000}});const errors=[];const batches=[]
  page.on('pageerror',e=>{errors.push(e.message);console.error('Page error:',e.message)})
  await page.addInitScript(()=>{window.EventSource=class {addEventListener(){} close(){}}})
+ await page.route('**/api/follow-resolution',route=>route.fulfill({json:{updated_at:Math.floor(Date.now()/1000),attributed:1234,seed_remaining_days:2}}))
  await page.route('**/api/accounts/**',async route=>{
    const path=new URL(route.request().url()).pathname
    if(path.endsWith('/follows'))return route.fulfill({json:{windows:[],recent_events:[],unresolved_note:'Fixture'}})
@@ -46,6 +47,9 @@ try {
  await page.getByRole('tab',{name:'Audience',exact:true}).click()
  await page.waitForURL('**/audience?*')
  await page.getByRole('heading',{name:'Audience changes',exact:true}).waitFor()
+ await page.getByText('Total losses unknown',{exact:true}).waitFor()
+ await page.getByText(/Background repair active · 1,234 unfollows attributed across the network/).waitFor()
+ assert.equal(await page.getByText('Known losses',{exact:true}).count(),0)
  await page.getByLabel('Previous period comparison').first().waitFor()
  await page.getByRole('button',{name:'30 days',exact:true}).click()
  assert.equal(new URL(page.url()).searchParams.get('time'),'30d')
