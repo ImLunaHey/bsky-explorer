@@ -111,13 +111,14 @@ search retained history. No claim of complete network coverage is made.
 
 ## Independent deployments
 
-Production Compose runs three application services:
+Production Compose runs four application services:
 
 - `ingester`: Jetstream, archive/checkpoint ownership, backfills, identity workers,
   analytics materializations and private hot-state endpoints. No published host port.
 - `api`: durable queries and queue controls; explicitly proxies live state/SSE to
   `INGESTER_URL`. It never starts collection or background workers.
 - `frontend`: static assets and the public reverse proxy on port 3000.
+- `enrichment`: independent background music-chart materialization, with no archive mount.
 
 The two Rust roles share ClickHouse and the archive's SQLite queues (WAL). Only the
 ingester writes stream segments/checkpoints. SQLite queue controls still need write
