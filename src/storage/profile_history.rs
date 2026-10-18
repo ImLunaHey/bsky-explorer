@@ -66,7 +66,7 @@ impl Storage {
         };
         self.client.clone().with_option("max_execution_time","3").with_option("max_threads","2")
             .with_option("max_memory_usage","250000000")
-            .query(&format!("SELECT DISTINCT toUnixTimestamp64Milli(timestamp) AS timestamp_ms,event_id,actor_did,target_did,kind FROM account_history_events PREWHERE account_did=? AND timestamp>=fromUnixTimestamp64Milli(?) AND timestamp<fromUnixTimestamp64Milli(?) WHERE {filter} ORDER BY timestamp_ms DESC,event_id LIMIT 50"))
+            .query(&format!("SELECT max(toUnixTimestamp64Milli(timestamp)) AS timestamp_ms,event_id,argMax(actor_did,timestamp) AS actor_did,argMax(target_did,timestamp) AS target_did,argMax(kind,timestamp) AS kind FROM (SELECT * FROM account_history_events PREWHERE account_did=? AND timestamp>=fromUnixTimestamp64Milli(?) AND timestamp<fromUnixTimestamp64Milli(?) WHERE {filter}) GROUP BY event_id ORDER BY timestamp_ms DESC,event_id LIMIT 50"))
             .bind(did).bind(start).bind(end).fetch_all::<ProfileHistoryEvent>().await.map_err(Into::into)
     }
     pub async fn profile_history(&self, did: &str, days: u32) -> Result<ProfileHistory> {
