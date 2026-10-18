@@ -2,6 +2,7 @@
 import { createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
 import App from './App'
 import type { SearchKind } from './types'
+import { profileSearch, profileTab } from './profileLocation'
 
 const rootRoute=createRootRoute()
 const musicRoute=createRoute({getParentRoute:()=>rootRoute,path:'/music',component:()=> <App route={{view:'music'}}/>})
@@ -29,12 +30,14 @@ const communitiesRoute=createRoute({getParentRoute:()=>rootRoute,path:'/communit
 const communityRoute=createRoute({getParentRoute:()=>rootRoute,path:'/communities/$communityId',component:CommunityRoute})
 const backfillRoute=createRoute({getParentRoute:()=>rootRoute,path:'/backfills/$jobId',component:BackfillRoute})
 const searchRoute=createRoute({getParentRoute:()=>rootRoute,path:'/search',validateSearch:(search:Record<string,unknown>)=>({q:typeof search.q==='string'?search.q:'',type:(['all','account','record','event'].includes(String(search.type))?search.type:'all') as SearchKind,offset:Math.max(0,Number(search.offset)||0)}),component:SearchRoute})
-const accountRoute=createRoute({getParentRoute:()=>rootRoute,path:'/accounts/$did',component:AccountRoute})
+const accountRoute=createRoute({getParentRoute:()=>rootRoute,path:'/accounts/$did',validateSearch:profileSearch,component:AccountRoute})
+const accountSectionRoute=createRoute({getParentRoute:()=>rootRoute,path:'/accounts/$did/$section',validateSearch:profileSearch,component:AccountSectionRoute})
 const recordRoute=createRoute({getParentRoute:()=>rootRoute,path:'/records/$uri',component:RecordRoute})
 const clusterRoute=createRoute({getParentRoute:()=>rootRoute,path:'/clusters/$clusterId',component:ClusterRoute})
 const trendRoute=createRoute({getParentRoute:()=>rootRoute,path:'/trends/$dimension',validateSearch:(search:Record<string,unknown>)=>({key:typeof search.key==='string'?search.key:''}),component:TrendRoute})
 
-function AccountRoute(){const {did}=accountRoute.useParams();return <App route={{view:'account',did}}/>}
+function AccountRoute(){const {did}=accountRoute.useParams();const search=accountRoute.useSearch();return <App route={{view:'account',did,tab:'Overview',search}}/>}
+function AccountSectionRoute(){const {did,section}=accountSectionRoute.useParams();const search=accountSectionRoute.useSearch();return <App route={{view:'account',did,tab:profileTab(section),search}}/>}
 function ExploreRoute(){const {topic}=exploreRoute.useSearch();return <App route={{view:'explore',topic}}/>}
 function AppRoute(){const {appId}=appRoute.useParams();return <App route={{view:'app',appId}}/>}
 function StoryRoute(){const {uri}=storyRoute.useParams();return <App route={{view:'story',uri}}/>}
@@ -49,7 +52,7 @@ function IdentityRoute(){const {jobId}=identityRoute.useParams();return <App rou
 function CrawlRoute(){const {crawlId}=crawlRoute.useParams();return <App route={{view:'crawl',crawlId}}/>}
 function CommunityRoute(){const {communityId}=communityRoute.useParams();return <App route={{view:'community',communityId}}/>}
 
-const routeTree=rootRoute.addChildren([indexRoute,networkRoute,exploreRoute,appsRoute,appRoute,storyRoute,musicDetailRoute,advancedRoute,adminRoute,musicRoute,collectionsRoute,firehoseRoute,firehoseImagesRoute,searchRoute,coverageRoute,communitiesRoute,communityRoute,backfillsRoute,backfillRoute,crawlRoute,identitiesRoute,identityRoute,detectionsRoute,systemRoute,diagnosticsRoute,accountRoute,recordRoute,clusterRoute,trendRoute])
+const routeTree=rootRoute.addChildren([indexRoute,networkRoute,exploreRoute,appsRoute,appRoute,storyRoute,musicDetailRoute,advancedRoute,adminRoute,musicRoute,collectionsRoute,firehoseRoute,firehoseImagesRoute,searchRoute,coverageRoute,communitiesRoute,communityRoute,backfillsRoute,backfillRoute,crawlRoute,identitiesRoute,identityRoute,detectionsRoute,systemRoute,diagnosticsRoute,accountRoute,accountSectionRoute,recordRoute,clusterRoute,trendRoute])
 export const router=createRouter({routeTree,defaultPreload:'intent'})
 
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }

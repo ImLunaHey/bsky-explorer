@@ -13,18 +13,20 @@ import type { RepositoryRecord } from './CollectionsPage'
 import { ContentCards } from './DiscoveryCards'
 import { appFor, topicFor } from './discovery'
 import { ProfileAnalytics } from './ProfileAnalytics'
+import { profileTabs as tabs, profileDays, type ProfileTab as Tab, type ProfileSearch, type ProfileTime } from './profileLocation'
 
 const count = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
-const tabs = ['Overview', 'Audience', 'Activity', 'Posts', 'Writing', 'Listening', 'Apps'] as const
-type Tab = typeof tabs[number]
-
-export function AccountPage({ did }: { did: string }) {
-  return <Profile key={did} did={did} />
+type ProfileProps = { did: string; tab?: Tab; search?: ProfileSearch }
+export function AccountPage(props: ProfileProps) {
+  return <Profile key={props.did} {...props} />
 }
 
-function Profile({ did }: { did: string }) {
+function Profile({ did, tab = 'Overview', search = {} }: ProfileProps) {
   const navigate = useNavigate()
-  const [tab, setTab] = useState<Tab>('Overview')
+  const changeSearch = (next: ProfileSearch) => void navigate(tab === 'Overview'
+    ? { to: '/accounts/$did', params: { did }, search: next, resetScroll: false }
+    : { to: '/accounts/$did/$section', params: { did, section: tab.toLowerCase() }, search: next, resetScroll: false })
+  const history = { days: profileDays(search.time), onDaysChange: (days: number) => changeSearch({ ...search, time: ({1:'24h',7:'7d',30:'30d'} as Record<number, ProfileTime>)[days] }) }
   const [technical, setTechnical] = useState(false)
   const [copied, setCopied] = useState(false)
   const [avatarFailed, setAvatarFailed] = useState(false)
@@ -65,15 +67,15 @@ function Profile({ did }: { did: string }) {
         </div></div>
       </div>}
       <div className="flex overflow-x-auto border-t border-line px-3" role="tablist" aria-label="Profile sections">
-        {tabs.map(value => <button key={value} role="tab" aria-selected={tab === value} aria-controls="profile-panel" id={`profile-tab-${value}`} onClick={() => setTab(value)} className={`shrink-0 border-b-2 px-4 py-4 text-sm font-medium transition ${tab === value ? 'border-cyan text-cyan' : 'border-transparent text-dim hover:text-white'}`}>{value}</button>)}
+        {tabs.map(value => <Link key={value} {...(value === 'Overview' ? {to:'/accounts/$did' as const,params:{did}} : {to:'/accounts/$did/$section' as const,params:{did,section:value.toLowerCase()}})} search={search} resetScroll={false} role="tab" aria-selected={tab === value} aria-controls="profile-panel" id={`profile-tab-${value}`} className={`shrink-0 border-b-2 px-4 py-4 text-sm font-medium transition ${tab === value ? 'border-cyan text-cyan' : 'border-transparent text-dim hover:text-white'}`}>{value}</Link>)}
       </div>
     </section>
     <section id="profile-panel" role="tabpanel" aria-labelledby={`profile-tab-${tab}`}>
-      {tab === 'Posts' && <Posts did={did} name={name} />}
-      {tab === 'Overview' && <div className="space-y-8"><ProfileAnalytics did={did}/><CrossAppContent did={did} section="Highlights"/></div>}
+      {tab === 'Posts' && <Posts did={did} name={name} replies={search.replies !== false} onRepliesChange={replies => changeSearch({...search,replies:replies ? undefined : false})} />}
+      {tab === 'Overview' && <div className="space-y-8"><ProfileAnalytics did={did} {...history}/><CrossAppContent did={did} section="Highlights"/></div>}
       {(['Writing','Listening'] as string[]).includes(tab) && <CrossAppContent did={did} section={tab} />}
-      {tab === 'Audience' && <div className="space-y-6"><ProfileAnalytics did={did} mode="audience"/><details className="panel p-5"><summary className="cursor-pointer text-sm">Recent follow records & short-window totals</summary><AccountFollows did={did} onAccount={accountDid => void navigate({ to: '/accounts/$did', params: { did: accountDid } })} /></details></div>}
-      {tab === 'Activity' && <div className="space-y-6"><ProfileAnalytics did={did} mode="activity"/><Activity did={did}/></div>}
+      {tab === 'Audience' && <div className="space-y-6"><ProfileAnalytics did={did} mode="audience" {...history}/><details className="panel p-5"><summary className="cursor-pointer text-sm">Recent follow records & short-window totals</summary><AccountFollows did={did} onAccount={accountDid => void navigate({ to: '/accounts/$did', params: { did: accountDid } })} /></details></div>}
+      {tab === 'Activity' && <div className="space-y-6"><ProfileAnalytics did={did} mode="activity" {...history}/><Activity did={did}/></div>}
       {tab === 'Apps' && <AccountLexicons did={did}/>}
     </section>
     <details className="panel p-5 text-sm" onToggle={event=>setTechnical(event.currentTarget.open)}><summary className="text-dim">Research & investigations</summary>{technical && <div className="mt-5"><Investigations did={did}/></div>}</details>
@@ -91,11 +93,10 @@ function CrossAppContent({did,section}:{did:string;section:Tab|'Highlights'}) {
   return <div className="space-y-5"><header><h2 className="text-xl font-semibold">{section==='Highlights'?'A life across apps':section==='Writing'?'Writing & ideas':'Recently shared listening'}</h2><p className="mt-2 text-sm text-dim">{section==='Highlights'?'Some of what this person creates, enjoys and shares.':'Selected public records from this person’s activity.'} This is what we’ve retained, not their full history.</p></header>{section==='Highlights' && seenApps.length>0 && <div className="flex flex-wrap gap-2">{seenApps.map(app=>app && <Link key={app.id} to="/apps/$appId" params={{appId:app.id}} className="topic-chip">{app.name} →</Link>)}</div>}{query.isPending && <CardSkeletons/>}{query.isError && <Failure retry={()=>void query.refetch()}/>}<ContentCards records={shown}/>{query.isSuccess && !shown.length && <div className="panel p-6 text-sm leading-7 text-dim">We haven’t collected {section==='Writing'?'writing':section==='Listening'?'listening':'cross-app highlights'} for this person yet. That isn’t evidence they don’t use other apps. Check their posts or explore the apps directly.<div className="mt-3"><Link to="/apps" className="text-cyan">Explore apps →</Link></div></div>}</div>
 }
 
-function Posts({ did, name }: { did: string; name: string }) {
-  const [replies, setReplies] = useState(true)
+function Posts({ did, name, replies, onRepliesChange }: { did: string; name: string; replies: boolean; onRepliesChange: (value: boolean) => void }) {
   const posts = useQuery({ queryKey: ['account-posts', did], queryFn: () => api<RecordItem[]>(`/api/accounts/${encodeURIComponent(did)}/posts`) })
   const visible = posts.data?.filter(post => replies || post.kind !== 'reply')
-  return <div className="space-y-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-semibold">Recent posts</h2><p className="mt-1 text-xs text-dim">Latest 50 retained posts, replies and quotes. This is not a complete timeline.</p></div><label className="flex items-center gap-2 text-xs text-dim"><input type="checkbox" checked={replies} onChange={e => setReplies(e.target.checked)} />Include replies</label></div>
+  return <div className="space-y-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-semibold">Recent posts</h2><p className="mt-1 text-xs text-dim">Latest 50 retained posts, replies and quotes. This is not a complete timeline.</p></div><label className="flex items-center gap-2 text-xs text-dim"><input type="checkbox" checked={replies} onChange={e => onRepliesChange(e.target.checked)} />Include replies</label></div>
     {posts.isPending && <Loading />}{posts.isError && <Failure retry={() => void posts.refetch()} />}
     {visible?.map(post => <PostCard key={post.at_uri} post={post} name={name} />)}
     {!posts.isPending && !posts.isError && !visible?.length && <Empty text="No retained posts in this view. Try including replies or open this account on Bluesky." />}

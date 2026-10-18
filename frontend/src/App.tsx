@@ -2,6 +2,7 @@ import { PageSkeleton } from './Skeletons'
 import { lazy, Suspense, useCallback, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { IdentityName, useIdentityMap } from './identities';
+import type { ProfileTab, ProfileSearch } from './profileLocation';
 import {
   createColumnHelper,
   flexRender,
@@ -1370,7 +1371,7 @@ export type AppRoute =
   | { view: "identity"; jobId: string }
   | { view: "crawl"; crawlId: string }
   | { view: "community"; communityId: string }
-  | { view: "account"; did: string }
+  | { view: "account"; did: string; tab?: ProfileTab; search?: ProfileSearch }
   | { view: "record"; uri: string }
   | { view: "cluster"; clusterId: string }
   | { view: "trend"; dimension: string; trendKey: string };
@@ -1739,7 +1740,7 @@ export default function App({ route }: { route: AppRoute }) {
             history={history.data || []}
           />
         )}
-        {route.view === "account" && <AccountPage did={route.did} />}
+        {route.view === "account" && <AccountPage did={route.did} tab={route.tab} search={route.search} />}
         {route.view === "record" && (
           !route.uri.includes('/app.bsky.feed.post/') ? <GenericRecordPage uri={route.uri} /> :
           <RecordPage

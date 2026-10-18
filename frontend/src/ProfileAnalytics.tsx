@@ -45,8 +45,7 @@ function HistoryChart({did,category,title,description,data,series,hourly}:{did:s
   </section>
 }
 
-export function ProfileAnalytics({did,mode='overview'}:{did:string;mode?:'overview'|'audience'|'activity'}) {
-  const [days,setDays]=useState(1)
+export function ProfileAnalytics({did,mode='overview',days,onDaysChange:setDays}:{did:string;mode?:'overview'|'audience'|'activity';days:number;onDaysChange:(days:number)=>void}) {
   const query=useQuery({queryKey:['profile-history',did,days],queryFn:()=>api<History>(`/api/accounts/${encodeURIComponent(did)}/history?days=${days}`),staleTime:60_000,retry:1})
   const data=query.data
   const sum=(key:Metric)=>data?.buckets.reduce((n,row)=>n+row[key],0) || 0
