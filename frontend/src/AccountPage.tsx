@@ -70,7 +70,7 @@ function Profile({ did }: { did: string }) {
 }
 
 function Posts({ did, name }: { did: string; name: string }) {
-  const [replies, setReplies] = useState(false)
+  const [replies, setReplies] = useState(true)
   const posts = useQuery({ queryKey: ['account-posts', did], queryFn: () => api<RecordItem[]>(`/api/accounts/${encodeURIComponent(did)}/posts`) })
   const visible = posts.data?.filter(post => replies || post.kind !== 'reply')
   return <div className="space-y-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-semibold">Recent posts</h2><p className="mt-1 text-xs text-dim">Latest 50 retained posts, replies and quotes. This is not a complete timeline.</p></div><label className="flex items-center gap-2 text-xs text-dim"><input type="checkbox" checked={replies} onChange={e => setReplies(e.target.checked)} />Include replies</label></div>
