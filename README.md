@@ -14,6 +14,61 @@ docker compose up --build -d
 
 Open <http://localhost:3000>. Prometheus metrics are at `/metrics`; JSON endpoints are under `/api`. Set `STORAGE_ROOT` for another array mount. Do not point it at this repository. Compose passes all retention, batching, window, and ClickHouse credential settings from `.env` into the service; the storage array remains the only durable-data location.
 
+## Bluesky now
+
+The homepage explores observed public Bluesky activity across the last hour, 24 hours,
+or seven days. A shared time range controls active accounts, published posts, replies,
+activity history, rising posts and conversations, languages, and shared domains.
+Every metric comes from retained ClickHouse events, independently of the bounded
+in-memory firehose buffer. Operations and investigations are grouped separately;
+the former network dashboard remains available at `/system/network`.
+
+`GET /api/overview?window=1h` (also `24h` and `7d`) returns one consistent,
+half-open event-time window and an equal-length preceding comparison window.
+Counts use `uniqCombined64` distinct-count estimates to bound memory and deduplicate
+replayed event IDs. Posts include newly created posts, replies, and quotes; active
+accounts include actors taking any observed `app.bsky.*` action. These are not
+platform membership counts. Backfilled records use historical timestamps and can
+change past results. Multilingual posts count in each declared language.
+
+Rankings compare a bounded candidate set: the approximate 1,000 most active targets
+in each comparison period, then rank positive interaction growth among that union.
+Conversation rankings require at least two replying accounts. This is not an
+exhaustive ranking of every thread. Post previews come from the comparison windows;
+older roots remain clickable even when their text is unavailable in the overview.
+Record drilldowns show available history, not time-filtered dashboard totals.
+
+Queries have memory, thread, and execution limits. Results are cached for one minute
+(hour), five minutes (day), or fifteen minutes (week), with duplicate requests
+coalesced independently for each range. Cold day/week queries may take minutes on
+large archives. This first version queries durable events directly; it does not
+yet maintain precomputed dashboard rollups. Empty chart buckets mean no retained
+activity, not verified network inactivity. Coverage and ingestion status remain
+visible, and the connection indicator reads actual Jetstream state.
+
+Validate the overview against an isolated ClickHouse server with:
+
+```bash
+CLICKHOUSE_TEST_URL=http://127.0.0.1:18123 cargo test --lib storage::overview -- --include-ignored
+```
+
+The integration test creates and removes its own `overview_test_<pid>` database.
+Never point this test at an untrusted/shared test namespace.
+
+## Source-only publishing
+
+Ingested archives, databases, local environment files, keys, and build outputs must
+remain outside Git. `fixtures/synthetic.jsonl` contains fabricated test scenarios,
+not collected network data. Before publishing, scan the complete outgoing history:
+
+```bash
+gitleaks git . --redact --log-opts=HEAD
+git ls-files
+```
+
+`.gitleaksignore` contains one reviewed historical false positive: a SQL upsert
+field assignment, not an API credential. Do not add real secrets to that allowlist.
+
 The observatory allocation defaults to 25 TiB. Change `STORAGE_BUDGET_TIB`, or set `STORAGE_BUDGET_BYTES` for an exact override. This logical budget is reported separately from filesystem capacity; runway projections show both and identify whichever limit arrives first at the currently measured daily growth rate.
 
 The dashboard is a Vite/React application built into the production container. Axum serves its hashed assets with immutable caching, keeps the SPA entry point fresh, and marks live API responses `no-store`. During frontend development, run `npm install && npm run dev` in `frontend`; Vite proxies API calls to the Rust service on port 3000.

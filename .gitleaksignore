@@ -1,0 +1,2 @@
+# Reviewed false positive: SQL upsert identifiers, not a credential.
+60de62bc1095005fe7ec6d03cd2095501ee4562e:src/identity_queue.rs:generic-api-key:219
