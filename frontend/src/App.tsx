@@ -1516,8 +1516,8 @@ export default function App({ route }: { route: AppRoute }) {
         </div>
       </header>
       <main className="mx-auto min-w-0 max-w-[1600px] px-4 pb-6 sm:px-6">
-        <Suspense fallback={<div role="status" className="panel p-10 text-sm text-dim">Opening explorer…</div>}>
         <ExplorerNavigation view={route.view}/>
+        <Suspense fallback={<div role="status" className="panel p-10 text-sm text-dim">Opening explorer…</div>}>
         {route.view === 'discover' && <DiscoverPage />}
         {route.view === 'explore' && <DiscoverPage key={route.topic} topic={route.topic} />}
         {route.view === 'apps' && <AppsPage />}

@@ -33,7 +33,7 @@ function Profile({ did }: { did: string }) {
   const handle = person?.handle || account.data?.current_identity.handle
   const name = person?.display_name || (handle ? `@${handle}` : 'A person on the open web')
   return <div className="min-w-0 space-y-6">
-    <Link to="/search" search={{ q: "", type: "account", offset: 0 }} className="text-sm text-dim hover:text-cyan">← Explore people</Link>
+
     <section className="panel overflow-hidden">
       <div className="p-5">
         <div className="flex items-end justify-between gap-3">

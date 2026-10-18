@@ -19,7 +19,7 @@ export function CollectionsPage({ collection }: { collection: string }) {
   return <div className="space-y-6">
     <header><p className="eyebrow">Repositories, not just social posts</p><h1 className="mt-2 text-3xl font-semibold tracking-tight">Explore ATProto collections</h1><p className="mt-3 max-w-3xl text-sm leading-7 text-dim">Every app defines collections of public records. Browse the collection identifiers observed by this collector, then inspect their records. Namespaces identify record schemas; they do not prove who operates an app.</p></header>
     {collection ? <>
-      <Link to="/collections" search={{ collection: '' }} className="text-sm text-cyan">← All collections</Link>
+
       <section className="panel p-5"><p className="eyebrow">{collectionInfo(collection).label}</p><h2 className="mt-3 break-all font-mono text-lg text-cyan">{collection}</h2><p className="mt-3 text-sm text-dim">{collectionInfo(collection).description}</p><p className="mt-3 text-xs text-dim">Up to 30 latest retained record events from the last 24 hours. Imported timestamps and older records may fall outside this view.</p>{collectionInfo(collection).category === 'Music' && <Link to="/music" className="mt-4 inline-block text-sm text-cyan">Explore listening charts →</Link>}</section>
       {records.isPending && <p role="status" className="panel p-8 text-dim">Loading recent records…</p>}
       {records.isError && <p role="alert" className="panel p-8 text-dim">This collection couldn’t load within the request budget. <button onClick={() => void records.refetch()} className="text-cyan">Retry</button></p>}

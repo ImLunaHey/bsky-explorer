@@ -307,7 +307,7 @@ export function IdentityDetailPage({ jobId }: { jobId: string }) {
   ];
   return (
     <div className="mx-auto max-w-4xl space-y-5">
-      <Link to="/identities" className="text-xs text-sky-300 hover:text-sky-200">← Identity operations</Link>
+
       <section className="rounded-xl border border-line bg-panel/70 p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
