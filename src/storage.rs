@@ -49,11 +49,18 @@ pub struct IdentityChangeRow {
 }
 impl IdentityChangeRow {
     pub fn record(self) -> Option<IdentityRecord> {
+        // This feed was created after ingestion began ignoring omitted handles.
+        // Unlike historical empty rows, its empty events are explicit invalidations.
+        let source = if self.source == "jetstream" && self.handle.is_empty() {
+            "jetstream_invalid".into()
+        } else {
+            self.source
+        };
         IdentityServiceRow {
             did: self.did,
             handle: self.handle,
             observed_at_ms: self.observed_at_ms,
-            source: self.source,
+            source,
         }
         .record()
     }
@@ -840,7 +847,7 @@ impl Storage {
         if dids.is_empty() {
             return Ok(vec![]);
         }
-        let rows = self.client.query("SELECT did,handle,toUnixTimestamp64Milli(observed_at) AS observed_at_ms,source FROM identities FINAL WHERE did IN ? SETTINGS max_execution_time=3,max_threads=2")
+        let rows = self.client.query("SELECT did,handle,toUnixTimestamp64Milli(observed_at) AS observed_at_ms,source FROM identities FINAL WHERE did IN ? AND (handle != '' OR source = 'jetstream_invalid') SETTINGS max_execution_time=3,max_threads=2")
             .bind(dids).fetch_all::<IdentityServiceRow>().await?;
         Ok(rows
             .into_iter()
@@ -858,7 +865,7 @@ impl Storage {
     }
 
     pub async fn identity_bootstrap_page(&self, after: &str) -> Result<Vec<IdentityRecord>> {
-        let rows = self.client.query("SELECT did,handle,toUnixTimestamp64Milli(observed_at) AS observed_at_ms,source FROM identities FINAL WHERE did > ? ORDER BY did LIMIT 1000 SETTINGS max_execution_time=5,max_threads=1")
+        let rows = self.client.query("SELECT did,handle,toUnixTimestamp64Milli(observed_at) AS observed_at_ms,source FROM identities FINAL WHERE did > ? AND (handle != '' OR source = 'jetstream_invalid') ORDER BY did LIMIT 1000 SETTINGS max_execution_time=5,max_threads=1")
             .bind(after).fetch_all::<IdentityServiceRow>().await?;
         Ok(rows
             .into_iter()
@@ -880,7 +887,7 @@ impl Storage {
         struct Did {
             did: String,
         }
-        Ok(self.client.query("SELECT account_did AS did FROM account_history_events WHERE account_did > ? GROUP BY account_did ORDER BY account_did LIMIT 250 SETTINGS max_execution_time=5,max_threads=1")
+        Ok(self.client.query("SELECT DISTINCT account_did AS did FROM (SELECT account_did FROM account_history_events WHERE account_did > ? AND (startsWith(account_did,'did:plc:') OR startsWith(account_did,'did:web:')) ORDER BY account_did LIMIT 10000) ORDER BY did LIMIT 250 SETTINGS optimize_read_in_order=1,max_execution_time=5,max_threads=1")
             .bind(after).fetch_all::<Did>().await?.into_iter().map(|r| r.did).collect())
     }
     pub async fn identity_history(&self, did: &str, limit: u64) -> Result<Vec<IdentityRecord>> {

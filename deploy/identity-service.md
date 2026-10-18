@@ -11,6 +11,9 @@ development only.
 - Known mappings do not expire or trigger upstream lookups on page views.
 - Jetstream identity events with a handle populate/update mappings. An omitted
   handle does not erase a mapping; explicit invalid handles do.
+  The current upstream often omits handles. Such events neither fill nor refresh
+  a mapping under this policy. Legacy empty `jetstream` cache rows are discarded
+  as unknown during migration; original ClickHouse history remains intact.
 - The ingester writes observations to ClickHouse independently. An insertion-time
   ordered materialized feed lets the service consume them every two seconds,
   including after downtime. Checkpoints and a one-minute replay overlap are
@@ -24,7 +27,8 @@ development only.
   work. One worker batches up to 25 actors with a shared request budget (default
   two requests/second) and service-wide Retry-After backoff.
 - Backlog discovery walks distinct accounts in `account_history_events`, including
-  actors and targets, 250 at a time. It persists its cursor, wraps to pick up newly
+  actors and targets, up to 250 at a time from a bounded 10,000-row ordered scan.
+  It skips malformed/non-DID targets, persists its cursor, wraps to pick up newly
   observed accounts, and pauses when 5,000 jobs are active. It does not claim to
   enumerate accounts we have never observed.
 - Cached handles are display metadata, not authentication proofs. Identity events

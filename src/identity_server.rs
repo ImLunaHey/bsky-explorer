@@ -263,7 +263,12 @@ async fn discover(
         queue.set_progress("backlog", "")?;
         return Ok(());
     }
-    for chunk in dids.chunks(100) {
+    let valid = dids
+        .iter()
+        .filter(|did| crate::identity_queue::valid_did(did))
+        .cloned()
+        .collect::<Vec<_>>();
+    for chunk in valid.chunks(100) {
         for record in identities.resolve_local_batch(chunk).await? {
             if record.source == "unresolved" {
                 queue.enqueue_priority(&record.did, false)?;

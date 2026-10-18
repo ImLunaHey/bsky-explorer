@@ -99,6 +99,9 @@ impl IdentityQueue {
         )?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS identity_cache(did TEXT PRIMARY KEY, record TEXT NOT NULL, observed_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS identity_progress(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS identity_outbox(did TEXT PRIMARY KEY,record TEXT NOT NULL);")?;
+        // Legacy omitted-handle events were incorrectly stored as invalidations.
+        // Discard only those derived entries; source/history rows remain intact.
+        db.execute("DELETE FROM identity_cache WHERE json_extract(record,'$.source')='jetstream' AND json_extract(record,'$.handle') IS NULL",[])?;
         db.execute_batch("CREATE INDEX IF NOT EXISTS identity_jobs_status_updated ON identity_jobs(status,updated_at DESC); CREATE INDEX IF NOT EXISTS identity_jobs_did ON identity_jobs(did); CREATE INDEX IF NOT EXISTS identity_jobs_handle ON identity_jobs(handle);")?;
         import_json(&root, &mut db)?;
         recover_expired(&mut db, Utc::now())?;
@@ -117,6 +120,7 @@ impl IdentityQueue {
         let mut db = self.db.lock();
         let tx = db.transaction()?;
         if let Some(j) = get_did(&tx, did)?
+            && j.status != IdentityJobStatus::Resolved
             && (j.status != IdentityJobStatus::Negative || now - j.updated_at < self.negative_ttl)
         {
             if visible {
@@ -205,7 +209,7 @@ impl IdentityQueue {
             let old: crate::identity::IdentityRecord = serde_json::from_str(&value)?;
             // A remote lookup is only ever allowed to fill an absent mapping.
             // Even a delayed, older-timestamp event beats an in-flight lookup.
-            if record.source.starts_with("identity_worker") && old.source == "jetstream" {
+            if record.source.starts_with("identity_worker") && old.source.starts_with("jetstream") {
                 return Ok(old);
             }
             if old == *record
@@ -883,6 +887,7 @@ mod tests {
         assert_eq!(q.store_identity(&remote).unwrap(), record);
         let mut invalid = record.clone();
         invalid.handle = None;
+        invalid.source = "jetstream_invalid".into();
         invalid.observed_at += Duration::seconds(20);
         q.store_identity(&invalid).unwrap();
         assert_eq!(
@@ -946,6 +951,37 @@ mod tests {
         assert!(q.outbox().unwrap().is_empty());
         q.acknowledge_outbox(&[old]).unwrap();
         assert_eq!(q.cached_identity(&record.did).unwrap(), Some(record));
+    }
+
+    #[test]
+    fn migration_does_not_treat_legacy_missing_event_handles_as_invalid() {
+        let d = tempdir().unwrap();
+        let q = IdentityQueue::open(d.path().into(), 100, Duration::hours(24)).unwrap();
+        let old = crate::identity::IdentityRecord {
+            did: "did:plc:legacy".into(),
+            handle: None,
+            observed_at: Utc::now(),
+            source: "jetstream".into(),
+        };
+        q.store_identity(&old).unwrap();
+        drop(q);
+        let q = IdentityQueue::open(d.path().into(), 100, Duration::hours(24)).unwrap();
+        assert!(q.cached_identity(&old.did).unwrap().is_none());
+        q.enqueue(&old.did).unwrap();
+        let job = q.claim().unwrap().unwrap();
+        q.finish(
+            job,
+            IdentityJobStatus::Resolved,
+            None,
+            None,
+            Some("old.test".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            q.enqueue(&old.did).unwrap().status,
+            IdentityJobStatus::Queued,
+            "a missing mapping can be recovered despite old resolved job history"
+        );
     }
     #[test]
     fn imports_json_and_preserves_it() {
