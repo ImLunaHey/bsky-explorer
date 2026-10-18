@@ -1498,7 +1498,7 @@ export default function App({ route }: { route: AppRoute }) {
               <p className="text-sm font-semibold tracking-tight">
                 ATProto Explorer
               </p>
-              <p className="text-[10px] uppercase tracking-[.16em] text-dim">
+              <p className="hidden text-[10px] uppercase tracking-[.16em] text-dim sm:block">
                 Discover the open social web
               </p>
             </div>
@@ -1530,7 +1530,7 @@ export default function App({ route }: { route: AppRoute }) {
               to={to}
               search={to === '/explore' ? {topic:''} : to === '/search' ? {q:'',type:'all',offset:0} : undefined}
               activeOptions={{ exact: true }}
-              className={`flex-1 rounded-lg px-4 py-2.5 text-center text-sm font-medium transition sm:flex-none ${route.view === id || (id === 'explore' && ['music','music-detail','story'].includes(route.view)) || (id === 'apps' && route.view === 'app') ? "bg-mint text-ink" : "text-dim hover:text-white"}`}
+              className={`flex-1 rounded-lg px-2 py-2.5 text-center text-sm font-medium transition sm:flex-none sm:px-4 ${route.view === id || (id === 'explore' && ['music','music-detail','story'].includes(route.view)) || (id === 'apps' && route.view === 'app') ? "bg-mint text-ink" : "text-dim hover:text-white"}`}
             >
               {label}
             </Link>

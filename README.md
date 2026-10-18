@@ -16,6 +16,52 @@ Open <http://localhost:3000>. Prometheus metrics are at `/metrics`; JSON endpoin
 
 ## ATProto exploration
 
+### A discovery product, with advanced tools underneath
+
+The public navigation is **Discover, Explore, Apps, Search**:
+
+- `/` shows actual selections of music, writing, films, upcoming events, saved links,
+  stream announcements and game activity. Small/empty sections do not become empty dashboards.
+- `/explore?topic=writing` (also music, films, events, bookmarks, streams, games)
+  lets visitors follow an interest, with readable cards and author links.
+- `/apps` is a curated guide with official destinations, examples and descriptions.
+  Standard.site is explicitly a shared publishing format, not one app. Activity
+  counts describe records using associated formats, not verified app users.
+- `/stories/<encoded-at-uri>` provides readable previews and original-source actions.
+  Standard publication references resolve from retained records only. No arbitrary
+  remote page fetches or HTML rendering are introduced. Film catalog links use supplied
+  IMDb/TMDB identifiers; saves and watched-film actions are not conflated.
+- `/music` defaults to distinct listeners; switching to plays ranks the full candidate
+  population separately. `/music/<entity-id>` shows song/album/artist listening history,
+  source listening links and coverage. Recently shared details are retained for up to
+  seven days (bounded to 1,000 previous entries plus current selections).
+- Profiles lead with cross-app highlights, writing and listening. Repository inventory
+  and investigations are collapsed under technical details. Profile lookups remain bounded.
+- Search includes matches from current discovery selections and weekly music picks,
+  alongside existing people/post search; it does not claim to index every song or article.
+
+`/advanced` retains collections, record inspection, network statistics, live events,
+experimental connection graphs and investigations. `/admin` groups operational tools.
+**This is navigation separation, not authentication.** Existing administrative APIs
+retain their current access model; do not expose this installation publicly without
+an appropriate authorization boundary.
+
+`GET /api/discover` reads a persisted selection built by the independent enrichment
+worker. Each topic considers at most 800 latest distinct records from seven days of
+event timestamps, then selects at most 30 items, with a maximum of three per author.
+Article/link source URLs are deduplicated when available. Drafts, explicit private or
+unlisted content, past/cancelled/opted-out events and future-dated writing are skipped.
+Events cover the next 90 days among those recently observed; this is not an exhaustive
+calendar. Film cards preserve action semantics; stream announcements never imply
+verified live status. Payloads are fetched only after candidate identifiers are selected,
+with one query thread, 500 MB memory and a 30-second limit per topic. Failures retain
+the previous complete selection. Discovery and music independently keep last-good data.
+
+App descriptions are checked against their official sites: [Teal](https://teal.fm),
+[Rocksky](https://rocksky.app), [WhiteWind](https://whtwnd.com/whtwnd.com/3kutsnrkgvk2o),
+[Currents](https://currents.is), [Streamplace](https://stream.place/docs/guides/start-streaming/quick-start/),
+[Popfeed](https://popfeed.social) and [Standard.site](https://standard.site).
+
 ### Enriched collections and music charts
 
 `/collections` groups observed collections by category and renders schema-aware
@@ -71,7 +117,7 @@ the database environment configured. Test adapters with `cd frontend && npm test
 
 ### Activity overview
 
-The homepage explores observed public ATProto activity across the last hour, 24 hours,
+The advanced `/network` page explores observed public ATProto activity across the last hour, 24 hours,
 or seven days. A shared time range controls active accounts, published posts, replies,
 activity history, rising posts and conversations, languages, and shared domains.
 Every metric comes from retained ClickHouse events, independently of the bounded
@@ -110,8 +156,8 @@ visible, and the connection indicator reads actual Jetstream state.
 
 `/collections` browses the retained collection inventory and recent records, including
 non-Bluesky schemas. Generic `/records/<encoded-at-uri>` pages show sanitized retained
-JSON. Account pages open on their repository inventory; Bluesky profiles and posts are
-optional views. Text/domain/collection search covers the last 24 hours; exact IDs
+JSON. Account pages open on cross-app highlights; repository inventory is a technical
+view. Text/domain/collection search covers the last 24 hours; exact IDs
 search retained history. No claim of complete network coverage is made.
 
 ## Independent deployments

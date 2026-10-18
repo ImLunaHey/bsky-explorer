@@ -43,6 +43,11 @@ export function presentRecord(record: RepositoryRecord) {
   if (topic === 'films') action = ({watched_movies:'Watched',watchlist_movies:'Added to watchlist',want_to_watch_movies:'Wants to watch',favorite_movies:'Added to favourites'} as Record<string,string>)[String(data.listType)] || 'Added to a film list'
   if (record.operation === 'delete') action = 'No longer available'
   let url = preview.url
+  if (topic === 'films' && data.identifiers && typeof data.identifiers === 'object') {
+    const identifiers = data.identifiers as Record<string,unknown>
+    if (typeof identifiers.imdbId === 'string' && /^tt\d+$/.test(identifiers.imdbId)) url = `https://www.imdb.com/title/${identifiers.imdbId}/`
+    else if (/^\d+$/.test(String(identifiers.tmdbId || ''))) url = `https://www.themoviedb.org/movie/${identifiers.tmdbId}`
+  }
   if (record.collection === 'com.whtwnd.blog.entry') url = `https://whtwnd.com/${encodeURIComponent(record.actor_did)}/${encodeURIComponent(record.at_uri.split('/').at(-1) || '')}`
   return { ...preview, url: safeWebUrl(url), topic, action, app: appFor(record.collection) }
 }
