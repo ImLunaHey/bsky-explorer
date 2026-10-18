@@ -7,9 +7,12 @@ import { AccountFollows } from './AccountFollows'
 import { AccountLexicons } from './AccountLexicons'
 import { PostCard } from './PostCard'
 import type { AccountDetail, AccountEvent, AccountProfile, RecordItem } from './types'
+import type { RepositoryRecord } from './CollectionsPage'
+import { ContentCards } from './DiscoveryCards'
+import { appFor, topicFor } from './discovery'
 
 const count = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
-const tabs = ['Repository', 'Posts', 'Activity', 'Connections', 'Investigations'] as const
+const tabs = ['Highlights', 'Writing', 'Listening', 'Posts', 'Connections'] as const
 type Tab = typeof tabs[number]
 
 export function AccountPage({ did }: { did: string }) {
@@ -18,7 +21,8 @@ export function AccountPage({ did }: { did: string }) {
 
 function Profile({ did }: { did: string }) {
   const navigate = useNavigate()
-  const [tab, setTab] = useState<Tab>('Repository')
+  const [tab, setTab] = useState<Tab>('Highlights')
+  const [technical, setTechnical] = useState(false)
   const [copied, setCopied] = useState(false)
   const [avatarFailed, setAvatarFailed] = useState(false)
   const [expandedBio, setExpandedBio] = useState(false)
@@ -26,7 +30,7 @@ function Profile({ did }: { did: string }) {
   const account = useQuery({ queryKey: ['account', did], queryFn: () => api<AccountDetail>(`/api/accounts/${encodeURIComponent(did)}`), staleTime: 60_000 })
   const person = profile.data
   const handle = person?.handle || account.data?.current_identity.handle
-  const name = person?.display_name || (handle ? `@${handle}` : 'ATProto repository')
+  const name = person?.display_name || (handle ? `@${handle}` : 'A person on the open web')
   return <div className="mx-auto max-w-5xl space-y-6">
     <Link to="/search" search={{ q: "", type: "account", offset: 0 }} className="text-sm text-dim hover:text-cyan">← Explore people</Link>
     <section className="panel overflow-hidden">
@@ -61,12 +65,22 @@ function Profile({ did }: { did: string }) {
     </section>
     <section id="profile-panel" role="tabpanel" aria-labelledby={`profile-tab-${tab}`}>
       {tab === 'Posts' && <Posts did={did} name={name} />}
-      {tab === 'Activity' && <Activity did={did} />}
+      {(['Highlights','Writing','Listening'] as string[]).includes(tab) && <CrossAppContent did={did} section={tab} />}
       {tab === 'Connections' && <div className="panel p-5"><AccountFollows did={did} onAccount={accountDid => void navigate({ to: '/accounts/$did', params: { did: accountDid } })} /></div>}
-      {tab === 'Repository' && <div className="panel p-5"><AccountLexicons did={did} /></div>}
-      {tab === 'Investigations' && <Investigations did={did} />}
     </section>
+    <details className="panel p-5 text-sm" onToggle={event=>setTechnical(event.currentTarget.open)}><summary className="text-dim">Technical account details</summary>{technical && <div className="mt-5 space-y-6"><AccountLexicons did={did}/><Activity did={did}/><Investigations did={did}/></div>}</details>
   </div>
+}
+
+function CrossAppContent({did,section}:{did:string;section:Tab}) {
+  const query = useQuery({queryKey:['account-content',did],queryFn:()=>api<RepositoryRecord[]>(`/api/accounts/${encodeURIComponent(did)}/content`),staleTime:60_000})
+  const records = query.data || []
+  const seenApps = [...new Set(records.map(record=>appFor(record.collection)).filter(Boolean))]
+  const selected = records.filter(record=>section === 'Writing' ? topicFor(record.collection)==='writing' : section==='Listening' ? topicFor(record.collection)==='music' : true)
+  // Highlights are deliberately varied: up to three examples from each interest.
+  const counts = new Map<string,number>()
+  const shown = selected.filter(record=>{const category=topicFor(record.collection)||'other';const count=counts.get(category)||0;counts.set(category,count+1);return section !== 'Highlights' || count < 3}).slice(0,section==='Highlights'?12:24)
+  return <div className="space-y-5"><header><h2 className="text-xl font-semibold">{section==='Highlights'?'A life across apps':section==='Writing'?'Writing & ideas':'Recently shared listening'}</h2><p className="mt-2 text-sm text-dim">{section==='Highlights'?'Some of what this person creates, enjoys and shares.':'Selected public records from this person’s activity.'} This is what we’ve retained, not their full history.</p></header>{section==='Highlights' && seenApps.length>0 && <div className="flex flex-wrap gap-2">{seenApps.map(app=>app && <Link key={app.id} to="/apps/$appId" params={{appId:app.id}} className="topic-chip">{app.name} →</Link>)}</div>}{query.isPending && <Loading/>}{query.isError && <Failure retry={()=>void query.refetch()}/>}<ContentCards records={shown}/>{query.isSuccess && !shown.length && <div className="panel p-6 text-sm leading-7 text-dim">We haven’t collected {section==='Writing'?'writing':section==='Listening'?'listening':'cross-app highlights'} for this person yet. That isn’t evidence they don’t use other apps. Check their posts or explore the apps directly.<div className="mt-3"><Link to="/apps" className="text-cyan">Explore apps →</Link></div></div>}</div>
 }
 
 function Posts({ did, name }: { did: string; name: string }) {

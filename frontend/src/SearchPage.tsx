@@ -14,6 +14,7 @@ import {
   UserRound,
 } from "lucide-react";
 import { api } from "./api";
+import { DiscoverySearch } from './DiscoverySearch';
 import { useIdentityMap } from "./identities";
 import type {
   BackfillJob,
@@ -26,9 +27,9 @@ import type {
 const PAGE_SIZE = 25;
 const kinds: { value: SearchKind; label: string }[] = [
   { value: "all", label: "Everything" },
-  { value: "account", label: "Accounts" },
+  { value: "account", label: "People" },
   { value: "record", label: "Posts" },
-  { value: "event", label: "Events" },
+  { value: "event", label: "Technical events" },
 ];
 function Result({ item }: { item: SearchResult }) {
   const identities = useIdentityMap(item.handle ? [] : [item.did]);
@@ -109,11 +110,11 @@ function Result({ item }: { item: SearchResult }) {
       <div className="mt-4 flex flex-wrap items-center gap-3">
         {canOpen && (
           <Link
-            to="/records/$uri"
+            to={item.collection === 'app.bsky.feed.post' ? '/records/$uri' : '/stories/$uri'}
             params={{ uri: item.at_uri! }}
             className="text-xs font-medium text-sky-300 hover:text-sky-200"
           >
-            View full record →
+            Open discovery →
           </Link>
         )}
         {item.urls.slice(0, 3).map((url) => (
@@ -326,11 +327,11 @@ export function SearchPage({
   return (
     <section className="mx-auto max-w-5xl">
       <div className="mb-7">
-        <p className="eyebrow">Retained public data</p>
-        <h1 className="mt-2 text-3xl font-semibold tracking-tight">Search the open network</h1>
+        <p className="eyebrow">Follow a name, an idea, an interest</p>
+        <h1 className="mt-2 text-3xl font-semibold tracking-tight">What are you curious about?</h1>
         <p className="mt-2 text-sm text-dim">
-          Find a person by handle or DID, open a post by its AT URI, or search
-          recently retained public posts. This is an explorer of collected data—not a complete index of ATProto.
+          Find people, recent posts, and matches from our music, writing and app selections.
+          You can also paste an account handle or record link.
         </p>
       </div>
       <form
@@ -346,7 +347,7 @@ export function SearchPage({
             autoFocus
             value={input}
             onChange={(event) => setInput(event.target.value)}
-            placeholder="Search handles, DIDs, post text, URLs, or AT URIs…"
+            placeholder="Try an artist, a topic, an app or someone’s handle…"
             className="h-12 w-full rounded-xl border border-line bg-panel pl-11 pr-4 text-sm outline-none focus:border-sky-500/60"
           />
         </label>
@@ -365,7 +366,8 @@ export function SearchPage({
           </button>
         ))}
       </div>
-      <p className="mt-3 text-xs leading-6 text-dim">Text, domain and collection search covers the last 24 hours. Exact DIDs and AT URIs search retained history. For arbitrary record fields, browse <Link to="/collections" search={{collection:''}} className="text-cyan">collections</Link> and inspect the record JSON.</p>
+      {query && initialType === 'all' && <DiscoverySearch query={query}/>}
+      <details className="mt-3 text-xs leading-6 text-dim"><summary>What can I search?</summary>Discovery results cover current selections. Post text and domains cover the last 24 hours; exact account IDs and record links search retained history. <Link to="/advanced" className="text-cyan">Advanced exploration →</Link></details>
       <div
         className={`mt-7 space-y-3 transition-opacity ${results.isPlaceholderData ? "opacity-50" : ""}`}
       >

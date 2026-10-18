@@ -30,6 +30,11 @@ import { api } from "./api";
 import { LiveUpdates } from "./live";
 const CollectionsPage = lazy(() => import('./CollectionsPage').then(m => ({ default: m.CollectionsPage })));
 const MusicPage = lazy(() => import('./MusicPage').then(m => ({ default: m.MusicPage })));
+const MusicDetailPage = lazy(() => import('./MusicPage').then(m => ({ default: m.MusicDetailPage })));
+const DiscoverPage = lazy(() => import('./DiscoverPage').then(m => ({ default: m.DiscoverPage })));
+const AppsPage = lazy(() => import('./AppsPage').then(m => ({ default: m.AppsPage })));
+const StoryPage = lazy(() => import('./StoryPage').then(m => ({ default: m.StoryPage })));
+const AdvancedPage = lazy(() => import('./AdvancedPage').then(m => ({ default: m.AdvancedPage })));
 const GenericRecordPage = lazy(() => import('./CollectionsPage').then(m => ({ default: m.GenericRecordPage })));
 const RecordPage = lazy(() => import('./RecordDrawer').then(m => ({ default: m.RecordPage })));
 import { FirehoseView } from "./FirehoseView";
@@ -1385,6 +1390,11 @@ function SystemView({
 }
 
 export type AppRoute =
+  | { view: "discover" | "apps" | "advanced" | "admin" }
+  | { view: "explore"; topic: string }
+  | { view: "app"; appId: string }
+  | { view: "story"; uri: string }
+  | { view: "music-detail"; id: string }
   | { view: "music" }
   | { view: "collections"; collection: string }
   | { view: "network" | "diagnostics" | "firehose" | "firehose-images" | "anomalies" | "system" | "backfills" | "identities" | "coverage" | "communities" }
@@ -1419,7 +1429,8 @@ export default function App({ route }: { route: AppRoute }) {
     detections = route.view === "anomalies",
     systemPage = route.view === "system";
   const rates = useApi<Rates>("rates", "/api/stats", network);
-  const ingestion = useApi<{ connected: boolean; lag_ms: number }>("ingestion", "/api/ingestion", true, 15000);
+  const advanced = ['network','collections','record','advanced','admin','diagnostics','system','backfills','backfill','identities','identity','crawl','anomalies','cluster','communities','community','firehose','firehose-images'].includes(route.view);
+  const ingestion = useApi<{ connected: boolean; lag_ms: number }>("ingestion", "/api/ingestion", advanced, 15000);
   const urls = useApi<[string, number][]>(
     "urls",
     "/api/trending/urls",
@@ -1479,60 +1490,61 @@ export default function App({ route }: { route: AppRoute }) {
       {(route.view === 'firehose' || route.view === 'firehose-images') && <LiveUpdates />}
       <header className="sticky top-0 z-30 border-b border-line/80 bg-ink/90 backdrop-blur-xl">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4">
-          <div className="flex items-center gap-3">
+          <Link to="/" className="flex items-center gap-3" aria-label="ATProto Explorer home">
             <div className="grid size-9 place-items-center rounded-xl bg-mint text-ink">
               <Network className="size-5" />
             </div>
             <div>
-              <h1 className="text-sm font-semibold tracking-tight">
+              <p className="text-sm font-semibold tracking-tight">
                 ATProto Explorer
-              </h1>
+              </p>
               <p className="text-[10px] uppercase tracking-[.16em] text-dim">
-                A window into the public network
+                Discover the open social web
               </p>
             </div>
-          </div>
+          </Link>
           <div className="flex items-center gap-3">
             <CommandPalette />
-            <div className="flex items-center gap-2 text-xs text-dim">
+            {advanced && <div className="hidden items-center gap-2 text-xs text-dim sm:flex">
               <span
                 className={`size-2 rounded-full ${!ingestion.data?.connected || ingestion.isError ? "bg-red-400" : "bg-mint"}`}
               />
               {ingestion.isError ? "Ingestion status unavailable" : !ingestion.data ? "Checking ingestion…" : !ingestion.data.connected ? "Ingestion disconnected" : ingestion.data.lag_ms > 10000 ? "Catching up" : "Firehose live"}
-            </div>
+            </div>}
           </div>
         </div>
       </header>
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-8 sm:py-8">
         <Suspense fallback={<div role="status" className="panel p-10 text-sm text-dim">Opening explorer…</div>}>
-        <nav className="mb-7 flex gap-1 overflow-x-auto rounded-xl border border-line bg-panel/70 p-1 sm:w-fit">
-          <Link to="/collections" search={{collection:''}} className={`shrink-0 rounded-lg px-4 py-2 text-xs font-medium ${route.view === 'collections' ? 'bg-mint text-ink' : 'text-dim hover:text-white'}`}>Collections</Link>
-          <Link to="/music" className={`shrink-0 rounded-lg px-4 py-2 text-xs font-medium ${route.view === 'music' ? 'bg-mint text-ink' : 'text-dim hover:text-white'}`}>Music</Link>
+        <nav aria-label="Main navigation" className="mb-8 flex gap-1 rounded-xl border border-line bg-panel/70 p-1 sm:w-fit">
           {(
             [
-              ["/", "Network", "network"],
-              ["/firehose", "Live stream", "firehose"],
+              ["/", "Discover", "discover"],
+              ["/explore", "Explore", "explore"],
+              ["/apps", "Apps", "apps"],
               ["/search", "Search", "search"],
-              ["/coverage", "Our dataset", "coverage"],
-              ["/communities", "Communities", "communities"],
             ] as const
           ).map(([to, label, id]) => (
             <Link
               key={to}
               to={to}
+              search={to === '/explore' ? {topic:''} : to === '/search' ? {q:'',type:'all',offset:0} : undefined}
               activeOptions={{ exact: true }}
-              className={`shrink-0 rounded-lg px-4 py-2 text-xs font-medium transition ${route.view === id || (id === "firehose" && route.view === "firehose-images") ? "bg-mint text-ink" : "text-dim hover:text-white"}`}
+              className={`flex-1 rounded-lg px-4 py-2.5 text-center text-sm font-medium transition sm:flex-none ${route.view === id || (id === 'explore' && ['music','music-detail','story'].includes(route.view)) || (id === 'apps' && route.view === 'app') ? "bg-mint text-ink" : "text-dim hover:text-white"}`}
             >
               {label}
             </Link>
           ))}
         </nav>
-        <details className="mb-6 text-xs text-dim" open={['system','diagnostics','backfills','backfill','identities','identity','crawl','anomalies','cluster'].includes(route.view) || undefined}>
-          <summary className="w-fit cursor-pointer rounded-lg border border-line px-3 py-2">Operations & investigations</summary>
-          <div className="mt-3 flex flex-wrap gap-4">
-            <Link to="/system">System health</Link><Link to="/system/network">Ingestion diagnostics</Link><Link to="/backfills">Backfills</Link><Link to="/identities">Identity queue</Link><Link to="/detections">Coordination investigations</Link>
-          </div>
-        </details>
+        {advanced && !['advanced','admin'].includes(route.view) && <Link to="/advanced" className="mb-5 inline-block text-xs text-dim">← Advanced explorer</Link>}
+        {route.view === 'discover' && <DiscoverPage />}
+        {route.view === 'explore' && <DiscoverPage key={route.topic} topic={route.topic} />}
+        {route.view === 'apps' && <AppsPage />}
+        {route.view === 'app' && <AppsPage appId={route.appId} />}
+        {route.view === 'story' && <StoryPage key={route.uri} uri={route.uri} />}
+        {route.view === 'music-detail' && <MusicDetailPage key={route.id} id={route.id} />}
+        {route.view === 'advanced' && <AdvancedPage />}
+        {route.view === 'admin' && <AdvancedPage admin />}
         {route.view === "network" && <OverviewPage />}
         {route.view === "collections" && <CollectionsPage collection={route.collection} />}
         {route.view === "music" && <MusicPage />}
@@ -1799,6 +1811,7 @@ export default function App({ route }: { route: AppRoute }) {
         )}
         </Suspense>
       </main>
+      <footer className="mx-auto flex max-w-7xl flex-wrap justify-between gap-4 border-t border-line px-5 py-8 text-xs text-dim"><p>Made for curiosity. Built on public ATProto data.</p><div className="flex gap-5"><Link to="/coverage">Coverage & privacy</Link><Link to="/advanced">Advanced explorer</Link></div></footer>
     </>
   );
 }

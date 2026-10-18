@@ -21,5 +21,11 @@ body { margin: 0; min-width: 320px; min-height: 100vh; color: #eef5ff; backgroun
 button, input { font: inherit; }
 .panel { border: 1px solid var(--color-line); background: color-mix(in srgb, var(--color-panel) 92%, transparent); border-radius: 1rem; }
 .eyebrow { color: var(--color-dim); font-size: .67rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+.discovery-hero { background: radial-gradient(ellipse at 90% 0%, #20517b55, transparent 55%), linear-gradient(125deg, #142537, #101927 65%); }
+.discovery-card { border: 1px solid var(--color-line); border-radius: 1.15rem; background: var(--color-panel); transition: border-color .15s, background .15s; }
+a.discovery-card:hover, .discovery-card:focus-within { border-color: #58b8ff99; background: #142135; }
+.topic-chip { display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--color-line); border-radius:9999px; padding:.6rem 1rem; font-size:.8rem; color:var(--color-dim); }
+.topic-chip:hover { border-color:var(--color-cyan); color:white; }
+.topic-chip.topic-active { color:var(--color-ink); background:var(--color-cyan); border-color:var(--color-cyan); }
 .scrollbar::-webkit-scrollbar { height: 6px; width: 6px; }
 .scrollbar::-webkit-scrollbar-thumb { background: #34465e; border-radius: 9px; }

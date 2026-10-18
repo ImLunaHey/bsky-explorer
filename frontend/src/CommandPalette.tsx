@@ -4,7 +4,11 @@ import { Search } from "lucide-react";
 
 const destinations = [
   { label: "Music charts", hint: "Most played songs, artists and albums", to: "/music" },
-  { label: "ATProto now", hint: "People, posts and conversations", to: "/" },
+  { label: "Discover", hint: "Fresh writing, music and discoveries", to: "/" },
+  { label: "Explore", hint: "Music, writing, films and events", to: "/explore" },
+  { label: "Apps", hint: "Find your next app on the open web", to: "/apps" },
+  { label: "Advanced explorer", hint: "Schemas, network activity and research", to: "/advanced" },
+  { label: "Administration", hint: "Installation operations", to: "/admin" },
   { label: "Firehose", hint: "Newest public ATProto events", to: "/firehose" },
   { label: "Firehose images", hint: "Live public image posts", to: "/firehose/images" },
   { label: "Search", hint: "Find accounts, posts, and events", to: "/search" },
