@@ -1,4 +1,6 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
+import { NetworkGraph } from './NetworkGraph';
+import { AnalyticsSkeleton } from './Skeletons';
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { createColumnHelper, flexRender, getCoreRowModel, type SortingState, useReactTable } from "@tanstack/react-table";
@@ -6,7 +8,7 @@ import { Chart } from "@tanstack/charts/react";
 import { defineChart, lineY } from "@tanstack/charts";
 import { scaleLinear } from "@tanstack/charts/scales/linear";
 import { tooltip } from "@tanstack/charts/tooltip";
-import { ArrowDownUp, ChevronLeft, ChevronRight, Minus, Plus } from "lucide-react";
+import { ArrowDownUp, ChevronLeft, ChevronRight } from "lucide-react";
 import { api } from "./api";
 import { useIdentityMap } from "./identities";
 import type { CommunitiesResponse, Community, CommunityDetailResponse, CommunityMember, CommunityTimelinePoint } from "./types";
@@ -16,29 +18,6 @@ const interactionTypes = ["like", "repost", "follow", "reply", "quote"];
 const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
 const local = (value: string | number) => new Date(value).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
-type GraphNode = { id: string; label: string; weight: number; meta: string };
-type GraphEdge = { source: string; target: string; weight: number; types: string[] };
-
-function NetworkGraph({ nodes, edges, onOpen, label }: { nodes: GraphNode[]; edges: GraphEdge[]; onOpen?: (id: string) => void; label: string }) {
-  const [view, setView] = useState({ x: 0, y: 0, zoom: 1 });
-  const [hovered, setHovered] = useState<string | null>(null);
-  const drag = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
-  const positioned = useMemo(() => nodes.map((node, index) => { const angle = (index / Math.max(1, nodes.length)) * Math.PI * 2 - Math.PI / 2; const ring = 110 + Math.floor(index / 24) * 65; return { ...node, x: 300 + Math.cos(angle) * ring, y: 210 + Math.sin(angle) * ring }; }), [nodes]);
-  const lookup = useMemo(() => new Map(positioned.map((node) => [node.id, node])), [positioned]);
-  const selected = hovered ? lookup.get(hovered) : undefined;
-  const zoom = (factor: number) => setView((current) => ({ ...current, zoom: Math.min(4, Math.max(0.45, current.zoom * factor)) }));
-  return <div className="relative overflow-hidden rounded-xl border border-line bg-black" onWheel={(event) => { event.preventDefault(); zoom(event.deltaY < 0 ? 1.12 : 0.89); }}>
-    <svg role="img" aria-label={label} viewBox="0 0 600 420" className="h-105 w-full touch-none" onPointerDown={(event) => { drag.current = { x: event.clientX, y: event.clientY, startX: view.x, startY: view.y }; event.currentTarget.setPointerCapture(event.pointerId); }} onPointerMove={(event) => { if (!drag.current) return; setView((current) => ({ ...current, x: drag.current!.startX + (event.clientX - drag.current!.x) / current.zoom, y: drag.current!.startY + (event.clientY - drag.current!.y) / current.zoom })); }} onPointerUp={() => { drag.current = null; }}>
-      <g transform={`translate(${view.x} ${view.y}) scale(${view.zoom})`}>
-        {edges.map((edge, index) => { const source = lookup.get(edge.source), target = lookup.get(edge.target); return source && target ? <line key={`${edge.source}-${edge.target}-${index}`} x1={source.x} y1={source.y} x2={target.x} y2={target.y} stroke="#f97316" strokeOpacity={Math.min(.65, .08 + Math.log2(edge.weight + 1) / 12)} strokeWidth={Math.min(5, 0.5 + Math.log2(edge.weight + 1) / 2)}><title>{edge.weight.toLocaleString()} interactions · {edge.types.join(", ")}</title></line> : null; })}
-        {positioned.map((node) => { const radius = Math.min(24, 5 + Math.sqrt(Math.max(1, node.weight))); return <g key={node.id} role={onOpen ? "link" : undefined} tabIndex={onOpen ? 0 : undefined} aria-label={`${node.label}, ${node.meta}`} onClick={() => onOpen?.(node.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onOpen?.(node.id); }} onMouseEnter={() => setHovered(node.id)} onMouseLeave={() => setHovered(null)} className={onOpen ? "cursor-pointer outline-none" : ""}><circle cx={node.x} cy={node.y} r={radius} fill={hovered === node.id ? "#fb923c" : "#f97316"} fillOpacity={hovered === node.id ? .95 : .72} stroke="#fed7aa" strokeWidth={hovered === node.id ? 2 : .6} /><text x={node.x} y={node.y + radius + 11} textAnchor="middle" fill="#d6d3d1" fontSize="8">{node.label.length > 24 ? `${node.label.slice(0, 22)}…` : node.label}</text></g>; })}
-      </g>
-    </svg>
-    <div className="absolute right-3 top-3 flex gap-1"><button onClick={() => zoom(1.2)} aria-label="Zoom in" className="rounded border border-line bg-black/90 p-2"><Plus className="size-4" /></button><button onClick={() => zoom(.8)} aria-label="Zoom out" className="rounded border border-line bg-black/90 p-2"><Minus className="size-4" /></button></div>
-    <p className="absolute bottom-3 left-3 rounded bg-black/85 px-2 py-1 text-[10px] text-dim">Drag to pan · scroll to zoom</p>
-    {selected && <div role="tooltip" className="pointer-events-none absolute left-3 top-3 max-w-72 rounded-lg border border-sky-500/30 bg-black/95 p-3 text-xs"><b className="block break-all text-sky-300">{selected.label}</b><span className="mt-1 block text-dim">{selected.meta}</span></div>}
-  </div>;
-}
 
 const communityHelper = createColumnHelper<Community>();
 
@@ -75,14 +54,14 @@ export function CommunityDetailPage({ communityId }: { communityId: string }) {
   const handles = useIdentityMap((query.data?.members || []).map((member) => member.did));
   const columns = useMemo(() => [memberHelper.accessor("did", { header: "Account", cell: ({ getValue }) => { const did = getValue(), handle = handles.get(did); return <Link to="/accounts/$did" params={{ did }} className="block max-w-96"><b className="block break-all text-sky-300">{handle ? `@${handle}` : did}</b>{handle && <span className="block break-all font-mono text-[9px] text-dim">{did}</span>}</Link>; } }), memberHelper.accessor("weighted_degree", { header: "Weighted degree", cell: ({ getValue }) => getValue().toLocaleString() }), memberHelper.accessor("internal_weight", { header: "Internal weight", cell: ({ getValue }) => getValue().toLocaleString() })], [handles]);
   const table = useReactTable({ data: query.data?.members || [], columns, getCoreRowModel: getCoreRowModel() });
-  if (query.isLoading) return <Empty text="Loading community…" />;
+  if (query.isLoading) return <AnalyticsSkeleton/>;
   if (!query.data) return <Empty text="This community is unavailable." />;
   const data = query.data, community = data.community;
   const memberNodes = data.members.map((member) => ({ id: member.did, label: handles.get(member.did) ? `@${handles.get(member.did)}` : member.did, weight: member.weighted_degree, meta: `${member.weighted_degree.toLocaleString()} weighted degree` }));
   const memberEdges = (data.member_edges || []).filter((edge) => edge.weight >= minEdge && (!types.length || edge.types.some((type) => types.includes(type)))).map((edge) => ({ source: edge.source_did, target: edge.target_did, weight: edge.weight, types: edge.types }));
-  return <section className="space-y-5"><Link to="/communities" className="inline-flex items-center gap-2 text-sm text-dim hover:text-sky-300"><ChevronLeft className="size-4" />Communities</Link><header><p className="eyebrow">Community detail</p><h1 className="mt-2 break-all font-mono text-2xl font-semibold">{community.community_id}</h1></header><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><Stat label="Accounts" value={community.account_count} /><Stat label="Internal events" value={community.internal_event_count} /><Stat label="Density" value={community.density.toFixed(3)} /><Stat label="Score" value={community.score.toFixed(3)} /></div>
+  return <section className="space-y-5"><header><p className="eyebrow">Community detail</p><h1 className="mt-2 break-all font-mono text-2xl font-semibold">{community.community_id}</h1></header><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><Stat label="Accounts" value={community.account_count} /><Stat label="Internal events" value={community.internal_event_count} /><Stat label="Density" value={community.density.toFixed(3)} /><Stat label="Score" value={community.score.toFixed(3)} /></div>
     <section className="panel p-4"><div className="grid gap-4 md:grid-cols-2"><label className="text-xs text-dim">Minimum edge weight<input type="number" min={1} value={minEdge} onChange={(event) => setMinEdge(Math.max(1, Number(event.target.value)))} className="mt-2 h-9 w-full rounded border border-line bg-black px-3 text-white" /></label><fieldset><legend className="text-xs text-dim">Interaction types</legend><div className="mt-2 flex flex-wrap gap-2">{interactionTypes.map((type) => <label key={type} className={`rounded border px-2 py-1.5 text-xs ${types.includes(type) ? "border-sky-500/40 text-sky-300" : "border-line text-dim"}`}><input type="checkbox" className="sr-only" checked={types.includes(type)} onChange={() => setTypes((current) => current.includes(type) ? current.filter((item) => item !== type) : [...current, type])} />{type}</label>)}</div></fieldset></div></section>
-    <section className="panel p-5"><h2 className="font-semibold">Bounded account graph</h2><p className="mt-1 text-xs text-dim">Up to 100 members and 500 strongest retained edges. Select a node to open its account.</p><div className="mt-4">{memberNodes.length ? <NetworkGraph nodes={memberNodes} edges={memberEdges} label={`Account graph for ${community.community_id}`} onOpen={(did) => navigate({ to: "/accounts/$did", params: { did } })} /> : <Empty text="No members in this page." />}</div>{data.edges_truncated && <p className="mt-3 text-xs text-amber-300">Only the strongest 500 member edges are shown.</p>}</section>
+    <section className="panel p-5"><h2 className="font-semibold">Account connections</h2><p className="mt-1 text-xs text-dim">Up to 100 members and 500 strongest retained edges. Select a node to highlight its neighbours and inspect the account.</p><div className="mt-4">{memberNodes.length ? <NetworkGraph nodes={memberNodes} edges={memberEdges} label={`Account graph for ${community.community_id}`} onOpen={(did) => navigate({ to: "/accounts/$did", params: { did } })} /> : <Empty text="No members in this page." />}</div>{data.edges_truncated && <p className="mt-3 text-xs text-amber-300">Only the strongest 500 member edges are shown.</p>}</section>
     {(data.timeline?.length || 0) > 1 && <Timeline points={data.timeline || []} />}
     <section className="panel overflow-hidden"><div className="border-b border-line p-5"><h2 className="font-semibold">Community members</h2><p className="mt-1 text-xs text-dim">Accessible table fallback with account links.</p></div><div className="overflow-x-auto"><table className="w-full min-w-160 text-left text-xs"><thead className="border-b border-line text-dim">{table.getHeaderGroups().map((group) => <tr key={group.id}>{group.headers.map((header) => <th key={header.id} className="px-4 py-3">{flexRender(header.column.columnDef.header, header.getContext())}</th>)}</tr>)}</thead><tbody>{table.getRowModel().rows.map((row) => <tr key={row.original.did} className="border-b border-line/60">{row.getVisibleCells().map((cell) => <td key={cell.id} className="px-4 py-3">{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}</tr>)}</tbody></table></div><Pager page={page} total={data.member_total} size={100} fetching={query.isFetching} onPage={setPage} /></section>
   </section>;
