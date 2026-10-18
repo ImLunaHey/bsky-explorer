@@ -16,6 +16,56 @@ Open <http://localhost:3000>. Prometheus metrics are at `/metrics`; JSON endpoin
 
 ## ATProto exploration
 
+### Enriched collections and music charts
+
+`/collections` groups observed collections by category and renders schema-aware
+cards for Teal/Rocksky music, Standard documents, Currents saves, Streamplace,
+calendar events, Popfeed films, Podping, sensor batches, weather, flights and
+Puzzmo streaks. Unknown schemas keep a text/field preview and raw record inspector.
+Recent collection browsing is limited to 30 records observed in the last 24 hours.
+External links are HTTP(S)-only; record text is never rendered as HTML. Cards do
+not fetch remote artwork, resolve arbitrary schema URLs, or infer measurement units.
+
+`/music` and `GET /api/music?window=24h` (`1h`, `24h`, `7d`) expose top-30 songs,
+artists and albums, exact observed play/listener counts and listening activity.
+Sources are `fm.teal.feed.play`, legacy `fm.teal.alpha.feed.play`, and
+`app.rocksky.scrobble`. Catalog songs and now-playing statuses are not listens.
+Adapters follow observed records and the [Teal play schema](https://tangled.org/byjp.me/rocksky/commit/cde26b06e7cc0040975fc4998b27b2ffbf76f242)
+and [Rocksky lexicons](https://next.tangled.org/rocksky.app/rocksky/blob/main/LEXICONS.md).
+
+The independent `enrichment` service scans only these collections over seven
+days of retained event timestamps, selects the latest version per URI, excludes
+observed deletions, then filters by declared playback time (`playedTime` or
+`createdAt`). Undated, malformed, future and historical out-of-window plays are
+excluded. Cross-app duplicates match account, case/whitespace-normalized song
+and artist credits, and exact playback second. Different spellings, credits or
+timestamps may remain separate; this is not canonical MusicBrainz resolution.
+Album rankings use track artist credits, so compilations may split. Each credited
+artist receives a play. Repeated listens count: a high rank may come from one
+account, which is why listener counts are shown alongside plays.
+
+Charts are retained snapshots, not complete or independently verified network
+statistics. A serial worker refreshes every five minutes (one ClickHouse thread,
+90-second query budget, 750 MB query memory, 500,000 record ceiling). On failure
+or budget exhaustion it keeps the previous result instead of publishing a partial
+ranking. The UI warns after 30 minutes without a completed refresh. HTTP requests
+read only persisted snapshots; they never trigger archive aggregation.
+
+For an existing split deployment, build the runtime image and start **only** the
+new service (set the image tag and project name for your installation):
+
+```bash
+ENRICHMENT_IMAGE=bsky-explorer-api:enriched docker compose -p bsky-explorer up -d --no-deps enrichment
+```
+
+The worker has no archive mount and does not touch ingestion cursors or queues.
+Do not recreate the existing ClickHouse or ingester to deploy enrichment. For a
+one-shot refresh, use `ENRICHMENT_ONCE=1 cargo run --bin enrich_collections` with
+the database environment configured. Test adapters with `cd frontend && npm test`
+(Node 22.18+); Rust tests include an opt-in isolated ClickHouse integration test.
+
+### Activity overview
+
 The homepage explores observed public ATProto activity across the last hour, 24 hours,
 or seven days. A shared time range controls active accounts, published posts, replies,
 activity history, rising posts and conversations, languages, and shared domains.

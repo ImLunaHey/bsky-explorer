@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Search } from "lucide-react";
 
 const destinations = [
+  { label: "Music charts", hint: "Most played songs, artists and albums", to: "/music" },
   { label: "ATProto now", hint: "People, posts and conversations", to: "/" },
   { label: "Firehose", hint: "Newest public ATProto events", to: "/firehose" },
   { label: "Firehose images", hint: "Live public image posts", to: "/firehose/images" },

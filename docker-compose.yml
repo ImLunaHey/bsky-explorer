@@ -104,7 +104,7 @@ services:
       CLICKHOUSE_DATABASE: observatory
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
-      RUST_LOG: bsky_observatory=info
+      RUST_LOG: bsky_observatory=info,enrich_collections=info
     healthcheck:
       test: ["CMD-SHELL", "test -n \"$$(find /tmp/enrichment-ready -mmin -30 2>/dev/null)\""]
       interval: 30s

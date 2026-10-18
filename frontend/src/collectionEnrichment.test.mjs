@@ -30,3 +30,10 @@ test('events, saved links and films expose useful fields', () => {
   assert.equal(enrichRecord('is.currents.feed.save', '{"originUrl":"https://example.org/article"}').title, 'example.org')
   assert.match(enrichRecord('social.popfeed.feed.listItem', '{"title":"Film","mainCredit":"Director","creativeWorkType":"movie"}').subtitle, /Director/)
 })
+test('observations and games are summarized without inventing measurement units', () => {
+  const sensor = enrichRecord('dev.sensorthings.observationBatch', '{"observations":[{"result":{"value":2110}}]}')
+  assert.equal(sensor.subtitle, '1 measurements')
+  assert.equal(sensor.tags[0], 'Units and scaling belong to the datastream')
+  assert.equal(enrichRecord('net.atmowx.observation', '{"temperature":{"value":51,"scale":-1}}').body, 'temperature')
+  assert.equal(enrichRecord('com.puzzmo.streak', '{"gameDisplayName":"Crossword","current":4,"max":12,"total":20}').subtitle, 'Current streak: 4')
+})

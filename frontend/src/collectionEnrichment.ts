@@ -64,6 +64,28 @@ export function enrichRecord(collection: string, raw: string, operation = 'creat
     const uris = Array.isArray(data.uris) ? data.uris : []
     preview.url = safeWebUrl(uris[0]); preview.title = preview.url ? new URL(preview.url).hostname : 'Podcast feed update'
     preview.subtitle = `${uris.length} feed URLs · ${text(data.reason) || 'update'}`
+  } else if (collection === 'dev.sensorthings.observationBatch') {
+    preview.title = 'Sensor observation batch'
+    preview.subtitle = `${Array.isArray(data.observations) ? data.observations.length : 0} measurements`
+    preview.body = text(data.datastream)
+    preview.date = text(data.windowEnd)
+    preview.tags = ['Units and scaling belong to the datastream']
+  } else if (collection === 'net.atmowx.observation') {
+    preview.title = 'Weather station observation'
+    preview.subtitle = 'Structured weather measurements'
+    preview.body = ['temperature', 'relativeHumidity', 'wind', 'precipitation', 'pressureSeaLevel', 'uvIndex'].filter(key => key in data).join(' · ')
+    preview.date = text(data.observedAt)
+  } else if (collection === 'at.adsb.flight.record') {
+    preview.title = text(data.callsign) || 'Aircraft observation'
+    preview.subtitle = 'Observed flight record'
+    preview.body = typeof data.messageCount === 'number' ? `${data.messageCount.toLocaleString()} messages · ${typeof data.positionCount === 'number' ? data.positionCount.toLocaleString() : 'unknown'} positions` : ''
+    preview.date = text(data.lastSeen)
+  } else if (collection === 'com.puzzmo.streak') {
+    preview.title = text(data.gameDisplayName) || 'Game streak'
+    preview.subtitle = typeof data.current === 'number' ? `Current streak: ${data.current}` : 'Recorded game progress'
+    preview.body = typeof data.max === 'number' && typeof data.total === 'number' ? `Best streak: ${data.max} · Total: ${data.total}` : ''
+    preview.date = text(data.lastUpdated)
   }
+  if (preview.title === 'Structured record' && !preview.body) preview.body = `Fields: ${Object.keys(data).filter(key => key !== '$type').slice(0, 12).join(', ') || 'No retained fields'}`
   return preview
 }
