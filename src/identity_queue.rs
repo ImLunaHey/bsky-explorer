@@ -91,6 +91,13 @@ impl IdentityQueue {
         ensure_column(&db, "identity_jobs", "completed_at", "TEXT")?;
         ensure_column(&db, "identity_jobs", "duration_ms", "INTEGER")?;
         ensure_column(&db, "identity_jobs", "handle", "TEXT")?;
+        ensure_column(
+            &db,
+            "identity_jobs",
+            "priority",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS identity_cache(did TEXT PRIMARY KEY, record TEXT NOT NULL, observed_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS identity_progress(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
         db.execute_batch("CREATE INDEX IF NOT EXISTS identity_jobs_status_updated ON identity_jobs(status,updated_at DESC); CREATE INDEX IF NOT EXISTS identity_jobs_did ON identity_jobs(did); CREATE INDEX IF NOT EXISTS identity_jobs_handle ON identity_jobs(handle);")?;
         import_json(&root, &mut db)?;
         recover_expired(&mut db, Utc::now())?;
@@ -101,6 +108,9 @@ impl IdentityQueue {
         })
     }
     pub fn enqueue(&self, did: &str) -> Result<IdentityJob> {
+        self.enqueue_priority(did, true)
+    }
+    pub fn enqueue_priority(&self, did: &str, visible: bool) -> Result<IdentityJob> {
         anyhow::ensure!(valid_did(did), "invalid DID");
         let now = Utc::now();
         let mut db = self.db.lock();
@@ -108,6 +118,9 @@ impl IdentityQueue {
         if let Some(j) = get_did(&tx, did)?
             && (j.status != IdentityJobStatus::Negative || now - j.updated_at < self.negative_ttl)
         {
+            if visible {
+                tx.execute("UPDATE identity_jobs SET priority=1 WHERE did=?1", [did])?;
+            }
             tx.commit()?;
             return Ok(j);
         }
@@ -138,8 +151,78 @@ impl IdentityQueue {
             handle: None,
         };
         upsert(&tx, &j)?;
+        tx.execute(
+            "UPDATE identity_jobs SET priority=?2 WHERE did=?1",
+            params![did, visible as i32],
+        )?;
         tx.commit()?;
         Ok(j)
+    }
+
+    pub fn cached_identity(&self, did: &str) -> Result<Option<crate::identity::IdentityRecord>> {
+        let value: Option<String> = self
+            .db
+            .lock()
+            .query_row(
+                "SELECT record FROM identity_cache WHERE did=?1",
+                [did],
+                |r| r.get(0),
+            )
+            .optional()?;
+        value
+            .map(|v| serde_json::from_str(&v).map_err(Into::into))
+            .transpose()
+    }
+
+    pub fn store_identity(
+        &self,
+        record: &crate::identity::IdentityRecord,
+    ) -> Result<crate::identity::IdentityRecord> {
+        let mut db = self.db.lock();
+        let tx = db.transaction()?;
+        let previous: Option<String> = tx
+            .query_row(
+                "SELECT record FROM identity_cache WHERE did=?1",
+                [&record.did],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(value) = previous {
+            let old: crate::identity::IdentityRecord = serde_json::from_str(&value)?;
+            // A remote lookup is only ever allowed to fill an absent mapping.
+            // Even a delayed, older-timestamp event beats an in-flight lookup.
+            if record.source.starts_with("identity_worker") && old.source == "jetstream" {
+                return Ok(old);
+            }
+            if old.observed_at > record.observed_at
+                || (old.observed_at == record.observed_at && old.source == "jetstream")
+            {
+                return Ok(old);
+            }
+        }
+        tx.execute("INSERT INTO identity_cache(did,record,observed_at) VALUES(?1,?2,?3) ON CONFLICT(did) DO UPDATE SET record=excluded.record,observed_at=excluded.observed_at", params![record.did,serde_json::to_string(record)?,stamp(record.observed_at)])?;
+        // Event/cache fills cancel queued work, including a leased request.
+        // finish() is lease-guarded so its eventual response cannot undo this.
+        tx.execute("UPDATE identity_jobs SET status=?2,handle=?3,updated_at=?4,completed_at=?4,lease_token=NULL,lease_until=NULL WHERE did=?1 AND status IN ('queued','retrying','running','negative')", params![record.did,if record.handle.is_some() {"resolved"} else {"negative"},record.handle,stamp(Utc::now())])?;
+        tx.commit()?;
+        Ok(record.clone())
+    }
+
+    pub fn progress(&self, key: &str) -> Result<String> {
+        Ok(self
+            .db
+            .lock()
+            .query_row(
+                "SELECT value FROM identity_progress WHERE key=?1",
+                [key],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or_default())
+    }
+    pub fn set_progress(&self, key: &str, value: &str) -> Result<()> {
+        self.db.lock().execute("INSERT INTO identity_progress VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,value])?;
+        Ok(())
     }
     pub fn list(&self, limit: usize, offset: usize) -> Vec<IdentityJob> {
         let db = self.db.lock();
@@ -232,12 +315,20 @@ impl IdentityQueue {
         Ok(self.claim_batch(1)?.into_iter().next())
     }
     fn claim_batch(&self, limit: usize) -> Result<Vec<IdentityJob>> {
+        self.claim_batch_priority(limit, false)
+    }
+    fn claim_batch_priority(
+        &self,
+        limit: usize,
+        background_first: bool,
+    ) -> Result<Vec<IdentityJob>> {
         let now = Utc::now();
         let mut db = self.db.lock();
         let tx = db.transaction()?;
         recover_expired_tx(&tx, now)?;
         let ids: Vec<String> = {
-            let mut q=tx.prepare("SELECT id FROM identity_jobs WHERE status IN ('queued','retrying') AND (next_attempt_at IS NULL OR next_attempt_at<=?1) AND (lease_until IS NULL OR lease_until<=?1) ORDER BY created_at LIMIT ?2")?;
+            let order = if background_first { "ASC" } else { "DESC" };
+            let mut q=tx.prepare(&format!("SELECT id FROM identity_jobs WHERE status IN ('queued','retrying') AND (next_attempt_at IS NULL OR next_attempt_at<=?1) AND (lease_until IS NULL OR lease_until<=?1) ORDER BY priority {order},created_at LIMIT ?2"))?;
             q.query_map(params![stamp(now), limit.clamp(1, 25) as i64], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?
         };
@@ -260,6 +351,7 @@ impl IdentityQueue {
         delay: Option<std::time::Duration>,
         handle: Option<String>,
     ) -> Result<()> {
+        let lease = j.lease_token.clone();
         j.status = status;
         j.updated_at = Utc::now();
         j.last_error = error;
@@ -282,7 +374,18 @@ impl IdentityQueue {
         if handle.is_some() {
             j.handle = handle;
         }
-        upsert(&self.db.lock(), &j)
+        let mut db = self.db.lock();
+        let tx = db.transaction()?;
+        let current = get_id(&tx, &j.id)?;
+        if current
+            .as_ref()
+            .is_none_or(|v| v.lease_token != lease || v.status != IdentityJobStatus::Running)
+        {
+            return Ok(());
+        }
+        upsert(&tx, &j)?;
+        tx.commit()?;
+        Ok(())
     }
 }
 fn stamp(v: DateTime<Utc>) -> String {
@@ -429,7 +532,7 @@ fn import_json(root: &PathBuf, db: &mut Connection) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct IdentityQueueSummary {
     pub total: usize,
     pub queued: usize,
@@ -439,7 +542,7 @@ pub struct IdentityQueueSummary {
     pub negative: usize,
     pub dead_letter: usize,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct IdentityQueuePage {
     pub summary: IdentityQueueSummary,
     pub jobs: Vec<IdentityJob>,
@@ -449,7 +552,7 @@ pub struct IdentityQueuePage {
     pub has_more: bool,
     pub analytics: IdentityQueueAnalytics,
 }
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct IdentityQueueAnalytics {
     pub avg_duration_ms: Option<f64>,
     pub p50_duration_ms: Option<u64>,
@@ -468,7 +571,7 @@ pub struct IdentityQueueAnalytics {
     pub max_attempts_observed: u32,
     pub series: Vec<IdentityTimeBucket>,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct IdentityTimeBucket {
     pub bucket: DateTime<Utc>,
     pub resolved: usize,
@@ -592,13 +695,45 @@ fn analytics_db(
     })
 }
 pub async fn run_worker(queue: IdentityQueue, service: IdentityService) {
-    let mut idle_ticks = 0_u32;
+    let mut batches = 0_u64;
     loop {
-        match queue.claim_batch(25) {
+        batches = batches.wrapping_add(1);
+        match queue.claim_batch_priority(25, batches.is_multiple_of(5)) {
             Ok(jobs) if !jobs.is_empty() => {
                 let dids = jobs.iter().map(|j| j.did.clone()).collect::<Vec<_>>();
+                // Recheck persisted observations immediately before spending a
+                // remote request. A firehose event may have filled a queued DID.
+                let local = match service.resolve_local_batch(&dids).await {
+                    Ok(records) => records,
+                    Err(error) => {
+                        tracing::warn!(%error,"identity cache unavailable; leases will retry");
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        continue;
+                    }
+                };
+                let mut pending = Vec::new();
+                for (job, record) in jobs.into_iter().zip(local) {
+                    if record.source != "unresolved" {
+                        let status = if record.handle.is_some() {
+                            IdentityJobStatus::Resolved
+                        } else {
+                            IdentityJobStatus::Negative
+                        };
+                        let _ = queue.finish(job, status, None, None, record.handle);
+                    } else {
+                        pending.push(job);
+                    }
+                }
+                if pending.is_empty() {
+                    continue;
+                }
+                let dids = pending.iter().map(|j| j.did.clone()).collect::<Vec<_>>();
                 let result = service.resolve_remote_batch(&dids).await;
-                for j in jobs {
+                let cooldown = match &result {
+                    Ok(RemoteIdentityBatchResult::RetryAfter(d, _)) => Some(*d),
+                    _ => None,
+                };
+                for j in pending {
                     let (status, err, delay, handle) = match &result {
                         Ok(RemoteIdentityBatchResult::Resolved(found)) => found.get(&j.did).map_or(
                             (IdentityJobStatus::Negative, None, None, None),
@@ -640,21 +775,11 @@ pub async fn run_worker(queue: IdentityQueue, service: IdentityService) {
                         tracing::error!(%e,"persist identity batch job")
                     }
                 }
-            }
-            Ok(_) => {
-                idle_ticks = idle_ticks.wrapping_add(1);
-                if idle_ticks.is_multiple_of(120) {
-                    match service.unresolved_candidates(250).await {
-                        Ok(dids) => {
-                            for did in dids {
-                                let _ = queue.enqueue(&did);
-                            }
-                        }
-                        Err(error) => tracing::debug!(%error,"identity discovery sweep failed"),
-                    }
+                if let Some(delay) = cooldown {
+                    tokio::time::sleep(delay).await;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await
             }
+            Ok(_) => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
             Err(e) => {
                 tracing::error!(%e,"claim identity job");
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await
@@ -662,7 +787,7 @@ pub async fn run_worker(queue: IdentityQueue, service: IdentityService) {
         }
     }
 }
-fn valid_did(v: &str) -> bool {
+pub fn valid_did(v: &str) -> bool {
     v.len() <= 256
         && v.starts_with("did:")
         && v.bytes()
@@ -672,6 +797,72 @@ fn valid_did(v: &str) -> bool {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+    #[test]
+    fn event_fill_cancels_work_and_survives_restart() {
+        let d = tempdir().unwrap();
+        let q = IdentityQueue::open(d.path().into(), 100, Duration::hours(24)).unwrap();
+        q.enqueue("did:plc:alice").unwrap();
+        let leased = q.claim().unwrap().unwrap();
+        let record = crate::identity::IdentityRecord {
+            did: leased.did.clone(),
+            handle: Some("event.test".into()),
+            observed_at: Utc::now(),
+            source: "jetstream".into(),
+        };
+        q.store_identity(&record).unwrap();
+        q.finish(leased, IdentityJobStatus::Negative, None, None, None)
+            .unwrap();
+        assert_eq!(
+            q.summary().resolved,
+            1,
+            "late worker completion must not undo event fill"
+        );
+        let mut remote = record.clone();
+        remote.handle = Some("stale.test".into());
+        remote.source = "identity_worker_batch".into();
+        remote.observed_at += Duration::seconds(10);
+        assert_eq!(q.store_identity(&remote).unwrap(), record);
+        let mut invalid = record.clone();
+        invalid.handle = None;
+        invalid.observed_at += Duration::seconds(20);
+        q.store_identity(&invalid).unwrap();
+        assert_eq!(
+            q.store_identity(&record).unwrap(),
+            invalid,
+            "replayed old event must not resurrect handle"
+        );
+        drop(q);
+        let q = IdentityQueue::open(d.path().into(), 100, Duration::hours(24)).unwrap();
+        assert_eq!(q.cached_identity(&record.did).unwrap(), Some(invalid));
+    }
+
+    #[test]
+    fn visible_priority_and_background_reservation() {
+        let d = tempdir().unwrap();
+        let q = IdentityQueue::open(d.path().into(), 100, Duration::hours(24)).unwrap();
+        q.enqueue_priority("did:plc:background", false).unwrap();
+        q.enqueue("did:plc:visible").unwrap();
+        assert_eq!(
+            q.claim_batch_priority(1, false).unwrap()[0].did,
+            "did:plc:visible"
+        );
+        q.enqueue("did:plc:visible2").unwrap();
+        assert_eq!(
+            q.claim_batch_priority(1, true).unwrap()[0].did,
+            "did:plc:background"
+        );
+        q.enqueue_priority("did:plc:promote", false).unwrap();
+        q.enqueue("did:plc:promote").unwrap();
+        let priority: i64 =
+            q.db.lock()
+                .query_row(
+                    "SELECT priority FROM identity_jobs WHERE did='did:plc:promote'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+        assert_eq!(priority, 1);
+    }
     #[test]
     fn imports_json_and_preserves_it() {
         let d = tempdir().unwrap();

@@ -52,6 +52,11 @@ pub fn parse_identity_event(raw: &[u8]) -> Result<Option<IdentityRecord>> {
         .and_then(Value::as_str)
         .filter(|handle| !handle.is_empty() && *handle != "handle.invalid")
         .map(str::to_owned);
+    // An omitted handle is not an invalidation. Only an explicit value can
+    // update our display mapping; ordinary identity notices need no lookup.
+    if identity.get("handle").and_then(Value::as_str).is_none() {
+        return Ok(None);
+    }
     let observed_at = value
         .get("time_us")
         .and_then(Value::as_i64)
@@ -80,6 +85,8 @@ struct Inner {
     minimum_request_interval: Duration,
     cache: Mutex<Cache>,
     last_request: AsyncMutex<Option<Instant>>,
+    persistent: Option<crate::identity_queue::IdentityQueue>,
+    remote: Option<String>,
 }
 
 #[derive(Default)]
@@ -131,12 +138,79 @@ impl IdentityService {
                 minimum_request_interval,
                 cache: Mutex::new(Cache::default()),
                 last_request: AsyncMutex::new(None),
+                persistent: None,
+                remote: None,
             }),
         }
     }
 
+    pub fn with_persistence(mut self, queue: crate::identity_queue::IdentityQueue) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("configure before cloning")
+            .persistent = Some(queue);
+        self
+    }
+
+    pub fn with_remote(mut self, origin: Option<String>) -> Result<Self> {
+        if let Some(origin) = &origin {
+            let url = url::Url::parse(origin)?;
+            anyhow::ensure!(
+                matches!(url.scheme(), "http" | "https")
+                    && url.host_str().is_some()
+                    && url.path() == "/"
+                    && url.query().is_none()
+                    && url.fragment().is_none()
+                    && url.username().is_empty()
+                    && url.password().is_none(),
+                "invalid IDENTITY_SERVICE_URL"
+            );
+        }
+        Arc::get_mut(&mut self.inner)
+            .expect("configure before cloning")
+            .remote = origin;
+        Ok(self)
+    }
+
+    pub fn remote_origin(&self) -> Option<&str> {
+        self.inner.remote.as_deref()
+    }
+
+    pub async fn remote_get<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &impl Serialize,
+    ) -> Result<T> {
+        Ok(self
+            .inner
+            .client
+            .get(format!(
+                "{}{path}",
+                self.remote_origin()
+                    .context("identity service not configured")?
+                    .trim_end_matches('/')
+            ))
+            .query(query)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    pub fn accept_observations(&self, records: &[IdentityRecord]) -> Result<()> {
+        for identity in records {
+            let identity = if let Some(db) = &self.inner.persistent {
+                db.store_identity(identity)?
+            } else {
+                identity.clone()
+            };
+            self.put_cache(identity, self.inner.ttl);
+        }
+        Ok(())
+    }
+
     pub async fn observe(&self, identity: IdentityRecord) -> Result<()> {
-        self.put_cache(identity.clone(), self.inner.ttl);
+        self.accept_observations(std::slice::from_ref(&identity))?;
         self.inner.storage.insert_identity(&identity).await
     }
 
@@ -148,14 +222,8 @@ impl IdentityService {
             return Ok(identity);
         }
         if let Some(identity) = self.inner.storage.identity(did).await? {
-            let age = Utc::now()
-                .signed_duration_since(identity.observed_at)
-                .to_std()
-                .unwrap_or(Duration::ZERO);
-            if age < self.inner.ttl {
-                self.put_cache(identity.clone(), self.inner.ttl - age);
-                return Ok(identity);
-            }
+            self.put_cache(identity.clone(), self.inner.ttl);
+            return Ok(identity);
         }
         let identity = self
             .resolve_public_profile(did)
@@ -187,23 +255,78 @@ impl IdentityService {
     /// Request paths that return activity data must not wait on the public
     /// network merely to decorate a DID with a handle.
     pub async fn resolve_local(&self, did: &str) -> Result<IdentityRecord> {
-        if !did.starts_with("did:") {
-            anyhow::bail!("invalid DID");
+        Ok(self.resolve_local_batch(&[did.to_owned()]).await?.remove(0))
+    }
+
+    pub async fn resolve_local_batch(&self, dids: &[String]) -> Result<Vec<IdentityRecord>> {
+        anyhow::ensure!(
+            dids.len() <= 100 && dids.iter().all(|v| crate::identity_queue::valid_did(v)),
+            "invalid DID batch"
+        );
+        if let Some(origin) = &self.inner.remote {
+            // The service owns freshness. Do not retain a second API cache that
+            // could hide event updates. Fail open to one local database batch.
+            let result = self
+                .inner
+                .client
+                .post(format!("{}/resolve", origin.trim_end_matches('/')))
+                .timeout(Duration::from_millis(1500))
+                .json(dids)
+                .send()
+                .await;
+            if let Ok(response) = result
+                && response.status().is_success()
+                && let Ok(records) = response.json::<Vec<IdentityRecord>>().await
+                && records.len() == dids.len()
+                && records.iter().zip(dids).all(|(r, d)| &r.did == d)
+            {
+                return Ok(records);
+            }
+            return self
+                .inner
+                .storage
+                .identity_records(dids)
+                .await
+                .map(|records| ordered_records(dids, records));
         }
-        if let Some(identity) = self.cached(did) {
-            return Ok(identity);
+        let mut found = HashMap::new();
+        let mut missing = Vec::new();
+        for did in dids {
+            if let Some(record) = self.cached(did) {
+                found.insert(did.clone(), record);
+                continue;
+            }
+            let persisted = if let Some(db) = &self.inner.persistent {
+                db.cached_identity(did)?
+            } else {
+                None
+            };
+            if let Some(record) = persisted {
+                self.put_cache(record.clone(), self.inner.ttl);
+                found.insert(did.clone(), record);
+            } else {
+                missing.push(did.clone());
+            }
         }
-        Ok(self
-            .inner
-            .storage
-            .identity(did)
-            .await?
-            .unwrap_or_else(|| IdentityRecord {
-                did: did.to_owned(),
-                handle: None,
-                observed_at: Utc::now(),
-                source: "unresolved".into(),
-            }))
+        if !missing.is_empty() {
+            let records = self.inner.storage.identity_records(&missing).await?;
+            self.accept_observations(&records)?;
+            found.extend(records.into_iter().map(|r| (r.did.clone(), r)));
+            for did in missing {
+                if !found.contains_key(&did) {
+                    self.put_cache(
+                        IdentityRecord {
+                            did,
+                            handle: None,
+                            observed_at: Utc::now(),
+                            source: "unresolved".into(),
+                        },
+                        self.inner.negative_ttl,
+                    );
+                }
+            }
+        }
+        Ok(ordered_records(dids, found.into_values().collect()))
     }
 
     async fn resolve_public_profile(&self, did: &str) -> Result<IdentityRecord> {
@@ -344,6 +467,7 @@ impl IdentityService {
             .inner
             .profile_endpoint
             .replace("app.bsky.actor.getProfile", "app.bsky.actor.getProfiles");
+        let started_at = Utc::now();
         let response = self
             .inner
             .client
@@ -374,9 +498,21 @@ impl IdentityService {
         let body = response.bytes().await?;
         anyhow::ensure!(body.len() <= 1_048_576, "profile batch response too large");
         let value: Value = serde_json::from_slice(&body)?;
-        let found = parse_batch_profiles(&value, &requested)?;
-        let identities = found.values().cloned().collect::<Vec<_>>();
-        for identity in &identities {
+        let mut found = parse_batch_profiles(&value, &requested)?;
+        for record in found.values_mut() {
+            record.observed_at = started_at;
+        }
+        let mut identities = Vec::new();
+        for identity in found.values_mut() {
+            let accepted = if let Some(db) = &self.inner.persistent {
+                db.store_identity(identity)?
+            } else {
+                identity.clone()
+            };
+            if accepted == *identity {
+                identities.push(identity.clone());
+            }
+            *identity = accepted;
             self.put_cache(identity.clone(), self.inner.ttl);
         }
         self.inner.storage.insert_identities(&identities).await?;
@@ -384,28 +520,30 @@ impl IdentityService {
     }
 
     fn cached(&self, did: &str) -> Option<IdentityRecord> {
-        let mut cache = self.inner.cache.lock();
+        let cache = self.inner.cache.lock();
         match cache.values.get(did) {
-            Some(entry) if entry.expires_at > Instant::now() => Some(entry.identity.clone()),
-            Some(_) => {
-                cache.values.remove(did);
-                None
+            Some(entry)
+                if entry.identity.source != "unresolved" || entry.expires_at > Instant::now() =>
+            {
+                Some(entry.identity.clone())
             }
+            Some(_) => None,
             None => None,
         }
     }
 
     fn put_cache(&self, identity: IdentityRecord, ttl: Duration) {
         let mut cache = self.inner.cache.lock();
-        if cache
-            .values
-            .get(&identity.did)
-            .is_some_and(|current| current.identity.observed_at > identity.observed_at)
-        {
+        if cache.values.get(&identity.did).is_some_and(|current| {
+            current.identity.source != "unresolved"
+                && current.identity.observed_at > identity.observed_at
+        }) {
             return;
         }
-        cache.order.retain(|did| did != &identity.did);
-        cache.order.push_back(identity.did.clone());
+        // FIFO eviction: updates are O(1), and never duplicate queue entries.
+        if !cache.values.contains_key(&identity.did) {
+            cache.order.push_back(identity.did.clone());
+        }
         cache.values.insert(
             identity.did.clone(),
             CacheEntry {
@@ -419,6 +557,23 @@ impl IdentityService {
             }
         }
     }
+}
+
+fn ordered_records(dids: &[String], records: Vec<IdentityRecord>) -> Vec<IdentityRecord> {
+    let found = records
+        .into_iter()
+        .map(|r| (r.did.clone(), r))
+        .collect::<HashMap<_, _>>();
+    dids.iter()
+        .map(|did| {
+            found.get(did).cloned().unwrap_or_else(|| IdentityRecord {
+                did: did.clone(),
+                handle: None,
+                observed_at: Utc::now(),
+                source: "unresolved".into(),
+            })
+        })
+        .collect()
 }
 
 fn parse_batch_profiles(
@@ -481,6 +636,8 @@ mod tests {
                 minimum_request_interval: Duration::ZERO,
                 cache: Mutex::new(Cache::default()),
                 last_request: AsyncMutex::new(None),
+                persistent: None,
+                remote: None,
             }),
         }
     }
@@ -519,6 +676,48 @@ mod tests {
             parse_identity_event(br#"{"kind":"commit","did":"did:plc:actor","commit":{"collection":"app.bsky.feed.like","record":{"subject":{"uri":"at://did:plc:target/app.bsky.feed.post/x"}}}}"#)
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn omitted_handle_is_not_an_invalidation() {
+        assert!(
+            parse_identity_event(
+                br#"{"kind":"identity","did":"did:plc:alice","identity":{"did":"did:plc:alice"}}"#
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn persisted_handles_never_expire_and_batch_order_is_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = crate::identity_queue::IdentityQueue::open(
+            dir.path().into(),
+            100,
+            chrono::Duration::hours(24),
+        )
+        .unwrap();
+        let record = IdentityRecord {
+            did: "did:plc:a".into(),
+            handle: Some("old.test".into()),
+            observed_at: Utc::now() - chrono::Duration::days(365),
+            source: "jetstream".into(),
+        };
+        queue.store_identity(&record).unwrap();
+        let service = test_service("http://unused.invalid".into()).with_persistence(queue);
+        let records = service
+            .resolve_local_batch(&[record.did.clone(), record.did.clone()])
+            .await
+            .unwrap();
+        assert_eq!(records, vec![record.clone(), record.clone()]);
+        service.put_cache(record.clone(), Duration::ZERO);
+        assert_eq!(service.cached(&record.did), Some(record));
+        assert_eq!(
+            service.inner.cache.lock().order.len(),
+            1,
+            "repeated cache hits must not grow eviction queue"
         );
     }
 

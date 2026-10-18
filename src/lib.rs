@@ -6,6 +6,7 @@ pub mod community;
 pub mod config;
 pub mod identity;
 pub mod identity_queue;
+pub mod identity_server;
 pub mod ingest;
 pub mod metrics;
 pub mod model;

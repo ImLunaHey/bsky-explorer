@@ -21,6 +21,43 @@ pub(super) static BACKGROUND_QUERY: tokio::sync::Semaphore = tokio::sync::Semaph
 pub struct Storage {
     client: Client,
 }
+
+#[derive(Row, Deserialize)]
+struct IdentityServiceRow {
+    did: String,
+    handle: String,
+    observed_at_ms: i64,
+    source: String,
+}
+impl IdentityServiceRow {
+    fn record(self) -> Option<IdentityRecord> {
+        Some(IdentityRecord {
+            did: self.did,
+            handle: (!self.handle.is_empty()).then_some(self.handle),
+            observed_at: chrono::DateTime::from_timestamp_millis(self.observed_at_ms)?,
+            source: self.source,
+        })
+    }
+}
+#[derive(Row, Deserialize)]
+pub struct IdentityChangeRow {
+    pub received_ms: i64,
+    pub did: String,
+    handle: String,
+    observed_at_ms: i64,
+    source: String,
+}
+impl IdentityChangeRow {
+    pub fn record(self) -> Option<IdentityRecord> {
+        IdentityServiceRow {
+            did: self.did,
+            handle: self.handle,
+            observed_at_ms: self.observed_at_ms,
+            source: self.source,
+        }
+        .record()
+    }
+}
 #[derive(Debug, Clone, Deserialize, Row, Serialize)]
 pub struct TableStats {
     pub table: String,
@@ -797,6 +834,54 @@ impl Storage {
                 source: row.source,
             })
         }))
+    }
+
+    pub async fn identity_records(&self, dids: &[String]) -> Result<Vec<IdentityRecord>> {
+        if dids.is_empty() {
+            return Ok(vec![]);
+        }
+        let rows = self.client.query("SELECT did,handle,toUnixTimestamp64Milli(observed_at) AS observed_at_ms,source FROM identities FINAL WHERE did IN ? SETTINGS max_execution_time=3,max_threads=2")
+            .bind(dids).fetch_all::<IdentityServiceRow>().await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(IdentityServiceRow::record)
+            .collect())
+    }
+
+    pub async fn ensure_identity_service_schema(&self) -> Result<()> {
+        for sql in include_str!("../migrations/012_identity_service.sql").split(';') {
+            if !sql.trim().is_empty() {
+                self.client.query(sql).execute().await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn identity_bootstrap_page(&self, after: &str) -> Result<Vec<IdentityRecord>> {
+        let rows = self.client.query("SELECT did,handle,toUnixTimestamp64Milli(observed_at) AS observed_at_ms,source FROM identities FINAL WHERE did > ? ORDER BY did LIMIT 1000 SETTINGS max_execution_time=5,max_threads=1")
+            .bind(after).fetch_all::<IdentityServiceRow>().await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(IdentityServiceRow::record)
+            .collect())
+    }
+
+    pub async fn identity_change_page(
+        &self,
+        after_ms: i64,
+        after_did: &str,
+    ) -> Result<Vec<IdentityChangeRow>> {
+        Ok(self.client.query("SELECT toUnixTimestamp64Milli(received_at) AS received_ms,did,argMax(handle,observed_at) AS handle,max(toUnixTimestamp64Milli(observed_at)) AS observed_at_ms,argMax(source,observed_at) AS source FROM identity_changes WHERE (received_at,did) > (fromUnixTimestamp64Milli(?),?) GROUP BY received_at,did ORDER BY received_at,did LIMIT 1000 SETTINGS max_execution_time=5,max_threads=1")
+            .bind(after_ms).bind(after_did).fetch_all::<IdentityChangeRow>().await?)
+    }
+
+    pub async fn identity_backlog_page(&self, after: &str) -> Result<Vec<String>> {
+        #[derive(Row, Deserialize)]
+        struct Did {
+            did: String,
+        }
+        Ok(self.client.query("SELECT account_did AS did FROM account_history_events WHERE account_did > ? GROUP BY account_did ORDER BY account_did LIMIT 250 SETTINGS max_execution_time=5,max_threads=1")
+            .bind(after).fetch_all::<Did>().await?.into_iter().map(|r| r.did).collect())
     }
     pub async fn identity_history(&self, did: &str, limit: u64) -> Result<Vec<IdentityRecord>> {
         #[derive(Row, Deserialize)]

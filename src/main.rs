@@ -95,7 +95,12 @@ async fn main() -> Result<()> {
         std::time::Duration::from_secs(cfg.identity_cache_ttl_seconds),
         std::time::Duration::from_secs(cfg.identity_negative_ttl_seconds),
         cfg.identity_requests_per_second,
-    );
+    )
+    .with_remote(if cfg.service_role == "api" {
+        cfg.identity_service_url.clone()
+    } else {
+        None
+    })?;
     let backfill_dir = cfg
         .backfill_queue_dir
         .clone()
@@ -111,20 +116,24 @@ async fn main() -> Result<()> {
             storage.clone(),
         ));
     }
-    let identity_queue = bsky_observatory::identity_queue::IdentityQueue::open(
-        cfg.identity_queue_dir
-            .clone()
-            .unwrap_or_else(|| cfg.data_dir.join("identity-queue")),
-        cfg.identity_queue_capacity,
-        chrono::Duration::seconds(cfg.identity_negative_ttl_seconds as i64),
-    )?;
-    for _ in 0..if runs_workers {
+    let identity_queue = if cfg.service_role == "all" {
+        Some(bsky_observatory::identity_queue::IdentityQueue::open(
+            cfg.identity_queue_dir
+                .clone()
+                .unwrap_or_else(|| cfg.data_dir.join("identity-queue")),
+            cfg.identity_queue_capacity,
+            chrono::Duration::seconds(cfg.identity_negative_ttl_seconds as i64),
+        )?)
+    } else {
+        None
+    };
+    for _ in 0..if cfg.service_role == "all" {
         cfg.identity_worker_concurrency.clamp(1, 4)
     } else {
         0
     } {
         tokio::spawn(bsky_observatory::identity_queue::run_worker(
-            identity_queue.clone(),
+            identity_queue.clone().expect("all role queue"),
             identities.clone(),
         ));
     }

@@ -5,11 +5,14 @@ use std::{path::PathBuf, time::Duration};
 #[command(version, about)]
 pub struct Config {
     /// `all` preserves single-process development. Production uses separate roles.
-    #[arg(long, env = "SERVICE_ROLE", default_value = "all", value_parser = ["all", "ingester", "api"])]
+    #[arg(long, env = "SERVICE_ROLE", default_value = "all", value_parser = ["all", "ingester", "api", "identity"])]
     pub service_role: String,
     /// Private ingester HTTP origin, required for the API role's live views.
     #[arg(long, env = "INGESTER_URL")]
     pub ingester_url: Option<String>,
+    /// Internal identity service origin. API only; ingestion persists events independently.
+    #[arg(long, env = "IDENTITY_SERVICE_URL")]
+    pub identity_service_url: Option<String>,
     #[arg(
         long,
         env = "JETSTREAM_URL",

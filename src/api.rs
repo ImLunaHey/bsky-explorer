@@ -51,7 +51,7 @@ pub struct AppState {
     pub system_history: SystemHistory,
     pub identities: IdentityService,
     pub backfills: crate::backfill::BackfillQueue,
-    pub identity_queue: crate::identity_queue::IdentityQueue,
+    pub identity_queue: Option<crate::identity_queue::IdentityQueue>,
 }
 pub type SystemHistory = Arc<RwLock<VecDeque<SystemSample>>>;
 pub fn router(s: AppState) -> Router {
@@ -1500,7 +1500,8 @@ async fn account(
     )
     .map_err(internal_error)?;
     if current_identity.handle.is_none()
-        && let Err(error) = s.identity_queue.enqueue(&did)
+        && let Some(queue) = &s.identity_queue
+        && let Err(error) = queue.enqueue(&did)
     {
         tracing::warn!(%error, %did, "account identity enrichment was not queued");
     }
@@ -2530,25 +2531,28 @@ async fn identities(
             "provide between 1 and 100 DIDs".into(),
         ));
     }
-    let mut resolved = Vec::with_capacity(dids.len());
-    for did in dids {
-        let identity = s
-            .identities
-            .resolve_local(did)
-            .await
-            .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    let dids = dids.into_iter().map(str::to_owned).collect::<Vec<_>>();
+    if dids.iter().any(|v| !crate::identity_queue::valid_did(v)) {
+        return Err((StatusCode::BAD_REQUEST, "invalid DID".into()));
+    }
+    let resolved = s
+        .identities
+        .resolve_local_batch(&dids)
+        .await
+        .map_err(internal_error)?;
+    for identity in &resolved {
         if identity.handle.is_none()
-            && let Err(error) = s.identity_queue.enqueue(did)
+            && let Some(queue) = &s.identity_queue
+            && let Err(error) = queue.enqueue(&identity.did)
         {
-            tracing::warn!(%error, %did, "visible identity enrichment was not queued");
+            tracing::warn!(%error, did=%identity.did, "visible identity enrichment was not queued");
         }
-        resolved.push(identity);
     }
     Ok(Json(resolved))
 }
 
-#[derive(Deserialize)]
-struct IdentityQueueQuery {
+#[derive(Deserialize, Serialize)]
+pub(crate) struct IdentityQueueQuery {
     limit: Option<usize>,
     #[serde(default)]
     offset: usize,
@@ -2563,6 +2567,28 @@ async fn identity_queue(
     State(s): State<AppState>,
     Query(q): Query<IdentityQueueQuery>,
 ) -> Result<Json<crate::identity_queue::IdentityQueuePage>, (StatusCode, String)> {
+    if s.identities.remote_origin().is_some() {
+        return s
+            .identities
+            .remote_get("/api/identity-queue", &q)
+            .await
+            .map(Json)
+            .map_err(internal_error);
+    }
+    queue_page(
+        s.identity_queue.as_ref().ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "identity service not configured".into(),
+        ))?,
+        q,
+    )
+    .map(Json)
+}
+
+pub(crate) fn queue_page(
+    queue: &crate::identity_queue::IdentityQueue,
+    q: IdentityQueueQuery,
+) -> Result<crate::identity_queue::IdentityQueuePage, (StatusCode, String)> {
     if q.status.as_ref().is_some_and(|v| {
         !matches!(
             v.as_str(),
@@ -2572,7 +2598,7 @@ async fn identity_queue(
         return Err((StatusCode::BAD_REQUEST, "invalid status".into()));
     }
     let descending = q.order.as_deref() != Some("asc");
-    s.identity_queue
+    queue
         .page(crate::identity_queue::IdentityPageQuery {
             limit: q.limit.unwrap_or(25).clamp(1, 100),
             offset: q.offset.min(1_000_000),
@@ -2583,7 +2609,6 @@ async fn identity_queue(
             hours: q.hours.unwrap_or(24),
             bucket_minutes: q.bucket_minutes.unwrap_or(15),
         })
-        .map(Json)
         .map_err(internal_error)
 }
 async fn identity_queue_detail(
@@ -2593,7 +2618,23 @@ async fn identity_queue_detail(
     if id.len() > 64 {
         return Err((StatusCode::BAD_REQUEST, "invalid job id".into()));
     }
+    if s.identities.remote_origin().is_some() {
+        if !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            return Err((StatusCode::BAD_REQUEST, "invalid job id".into()));
+        }
+        return s
+            .identities
+            .remote_get(&format!("/api/identity-queue/{id}"), &())
+            .await
+            .map(Json)
+            .map_err(internal_error);
+    }
     s.identity_queue
+        .as_ref()
+        .ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "identity service not configured".into(),
+        ))?
         .get(&id)
         .map_err(internal_error)?
         .map(Json)
