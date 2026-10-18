@@ -23,7 +23,7 @@ async fn main() -> Result<()> {
             .await?;
         storage
             .save_snapshot(
-                &format!("overview:{}", window.seconds()),
+                &format!("atproto-overview:{}", window.seconds()),
                 &serde_json::to_string(&data)?,
             )
             .await?;

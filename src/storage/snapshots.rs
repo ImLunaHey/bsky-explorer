@@ -4,7 +4,32 @@ use anyhow::Result;
 use clickhouse::Row;
 use serde::Deserialize;
 
+#[derive(Row, Deserialize, serde::Serialize)]
+pub struct RepositoryRecord {
+    pub at_uri: String,
+    pub actor_did: String,
+    pub collection: String,
+    pub operation: String,
+    pub timestamp_ms: i64,
+    pub record_json: String,
+}
+
 impl Storage {
+    pub async fn repository_record(&self, uri: &str) -> Result<Option<RepositoryRecord>> {
+        let owner = uri
+            .strip_prefix("at://")
+            .unwrap_or("")
+            .split('/')
+            .next()
+            .unwrap_or("");
+        Ok(self.client.query("SELECT at_uri, actor_did, collection, operation, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, record_json FROM events WHERE actor_did=? AND at_uri=? ORDER BY time_us DESC LIMIT 1 SETTINGS max_execution_time=5, max_threads=2")
+            .bind(owner).bind(uri).fetch_optional::<RepositoryRecord>().await?)
+    }
+
+    pub async fn collection_records(&self, collection: &str) -> Result<Vec<RepositoryRecord>> {
+        Ok(self.client.query("SELECT at_uri, actor_did, collection, operation, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, record_json FROM events WHERE collection=? AND timestamp >= now()-INTERVAL 1 HOUR ORDER BY timestamp DESC LIMIT 1 BY at_uri LIMIT 30 SETTINGS max_execution_time=5, max_threads=2")
+            .bind(collection).fetch_all::<RepositoryRecord>().await?)
+    }
     pub async fn snapshot(&self, key: &str) -> Result<Option<String>> {
         #[derive(Row, Deserialize)]
         struct Snapshot {
@@ -32,7 +57,7 @@ pub async fn refresh(storage: Storage) {
     let windows = [(Window::Hour, 60), (Window::Day, 300), (Window::Week, 900)];
     loop {
         for (window, ttl) in windows {
-            let key = format!("overview:{}", window.seconds());
+            let key = format!("atproto-overview:{}", window.seconds());
             let now = chrono::Utc::now().timestamp();
             let fresh = storage
                 .snapshot(&key)

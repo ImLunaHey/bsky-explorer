@@ -39,6 +39,7 @@ type Overview = {
   activity: Activity[];
   languages: Breakdown[];
   domains: Breakdown[];
+  collections: Breakdown[];
   posts: Rising[];
   conversations: Rising[];
 };
@@ -178,11 +179,6 @@ function RisingList({
         <h2 className="font-semibold">{title}</h2>
         <p className="mt-1 text-xs leading-relaxed text-dim">{note}</p>
       </header>
-      <div className="grid gap-3 sm:grid-cols-3">
-        <Link to="/search" search={{q:'',type:'account',offset:0}} className="panel p-5 transition hover:border-cyan/50"><h2 className="font-medium">Find your corner of Bluesky ↗</h2><p className="mt-2 text-xs leading-5 text-dim">Look up people, search posts, and explore their public activity.</p></Link>
-        <Link to="/firehose" className="panel p-5 transition hover:border-cyan/50"><h2 className="font-medium">Watch it happen ↗</h2><p className="mt-2 text-xs leading-5 text-dim">A live, filterable stream of public network activity.</p></Link>
-        <Link to="/communities" className="panel p-5 transition hover:border-cyan/50"><h2 className="font-medium">Explore connected circles ↗</h2><p className="mt-2 text-xs leading-5 text-dim">Discover accounts interacting with one another.</p></Link>
-      </div>
       <div className="divide-y divide-line">
         {rows.length ? (
           rows.map((row, index) => (
@@ -255,11 +251,11 @@ export function OverviewPage() {
         <div>
           <p className="eyebrow">A window into the public network</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl">
-            Bluesky now<span className="text-sky-400">.</span>
+            ATProto now<span className="text-sky-400">.</span>
           </h1>
           <p className="mt-3 max-w-2xl text-sm leading-relaxed text-dim">
-            Who’s here, what’s gathering attention, and how the conversation is
-            changing.
+            Public repositories, apps, and conversations across the open network.
+            Explore what this collector has observed—not a complete network census.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -296,6 +292,11 @@ export function OverviewPage() {
           </button>
         </div>
       </header>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Link to="/collections" search={{collection:''}} className="panel p-5 transition hover:border-cyan/50"><h2 className="font-medium">Explore apps & collections ↗</h2><p className="mt-2 text-xs leading-5 text-dim">Discover public record types beyond Bluesky.</p></Link>
+        <Link to="/search" search={{q:'',type:'account',offset:0}} className="panel p-5 transition hover:border-cyan/50"><h2 className="font-medium">People & repositories ↗</h2><p className="mt-2 text-xs leading-5 text-dim">Find identities and explore activity across their apps.</p></Link>
+        <Link to="/firehose" className="panel p-5 transition hover:border-cyan/50"><h2 className="font-medium">Watch the network ↗</h2><p className="mt-2 text-xs leading-5 text-dim">A live stream of observed public repository events.</p></Link>
+      </div>
       {query.isError && (
         <div
           role="alert"
@@ -326,28 +327,29 @@ export function OverviewPage() {
               What do these numbers cover? <ArrowUpRight className="size-3" />
             </Link>
           </div>
+          <section className="panel p-5"><div className="flex items-center justify-between gap-3"><h2 className="font-semibold">Beyond Bluesky</h2><Link to="/collections" search={{collection:''}} className="text-xs text-cyan">All collections →</Link></div><p className="mt-2 text-xs text-dim">Most active non-app.bsky collections in this period, measured by observed record events.</p><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{data.collections.map(item => <Link key={item.key} to="/collections" search={{collection:item.key}} className="rounded-xl border border-line p-4 hover:border-cyan/50"><p className="break-all font-mono text-xs text-cyan">{item.key}</p><p className="mt-3 text-sm">{number.format(item.count)} <span className="text-xs text-dim">events</span></p></Link>)}</div>{data.collections.length === 0 && <p className="mt-4 text-sm text-dim">No non-Bluesky collection activity retained for this period.</p>}</section>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {(
               [
                 {
                   key: "actors",
-                  label: "Active people",
+                  label: "Active accounts",
                   note: "Unique accounts taking public actions",
                 },
                 {
                   key: "posts",
-                  label: "Posts published",
+                  label: "Bluesky posts",
                   note: "Includes replies and quote posts",
                 },
                 {
                   key: "replies",
-                  label: "Replies",
+                  label: "Bluesky replies",
                   note: "Public conversation activity",
                 },
                 {
                   key: "events",
                   label: "Public actions",
-                  note: "Observed Bluesky record events",
+                  note: "All observed ATProto collections",
                 },
               ] as const
             ).map((stat) => (
@@ -453,7 +455,7 @@ export function OverviewPage() {
           </Link>
           <aside className="rounded-xl border border-line p-4 text-xs leading-relaxed text-dim">
             Rankings compare the 1,000 most active candidate posts or threads in
-            each period. Counts are estimates from retained public Bluesky
+            each period. Counts are estimates from retained public ATProto
             events, not a complete platform census. Distinct-count sketches
             deduplicate event IDs and use event timestamps; backfills can change
             historical results. Empty buckets may reflect collection gaps.{" "}

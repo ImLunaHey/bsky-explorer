@@ -66,7 +66,7 @@ function Result({ item }: { item: SearchResult }) {
         </div>
       </article>
     );
-  const canOpen = Boolean(item.at_uri?.includes("/app.bsky.feed.post/"));
+  const canOpen = Boolean(item.at_uri?.startsWith("at://"));
   return (
     <article className="rounded-xl border border-line bg-panel p-5 transition hover:border-sky-500/30">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
@@ -327,10 +327,10 @@ export function SearchPage({
     <section className="mx-auto max-w-5xl">
       <div className="mb-7">
         <p className="eyebrow">Retained public data</p>
-        <h1 className="mt-2 text-3xl font-semibold tracking-tight">Find your corner of Bluesky</h1>
+        <h1 className="mt-2 text-3xl font-semibold tracking-tight">Search the open network</h1>
         <p className="mt-2 text-sm text-dim">
           Find a person by handle or DID, open a post by its AT URI, or search
-          recently retained public posts. This is an explorer of collected data—not a complete index of Bluesky.
+          recently retained public posts. This is an explorer of collected data—not a complete index of ATProto.
         </p>
       </div>
       <form
@@ -365,6 +365,7 @@ export function SearchPage({
           </button>
         ))}
       </div>
+      <p className="mt-3 text-xs leading-6 text-dim">Text, domain and collection search covers the last 24 hours. Exact DIDs and AT URIs search retained history. For arbitrary record fields, browse <Link to="/collections" search={{collection:''}} className="text-cyan">collections</Link> and inspect the record JSON.</p>
       <div
         className={`mt-7 space-y-3 transition-opacity ${results.isPlaceholderData ? "opacity-50" : ""}`}
       >

@@ -121,6 +121,8 @@ pub fn router(s: AppState) -> Router {
         .route("/api/accounts/{did}/analytics", get(account_analytics))
         .route("/api/accounts/{did}/lexicons", get(account_lexicons))
         .route("/api/records", get(record))
+        .route("/api/repository-record", get(repository_record))
+        .route("/api/collection-records", get(collection_records))
         .route("/api/records/media", get(record_media))
         .route("/api/records/media/batch", post(record_media_batch))
         .route("/api/identities", get(identities))
@@ -277,7 +279,7 @@ struct OverviewQuery {
 }
 
 async fn overview(State(s): State<AppState>, Query(q): Query<OverviewQuery>) -> Response {
-    let key = format!("overview:{}", q.window.seconds());
+    let key = format!("atproto-overview:{}", q.window.seconds());
     match s.storage.snapshot(&key).await {
         Ok(Some(payload)) => (
             [(axum::http::header::CONTENT_TYPE, "application/json")],
@@ -395,22 +397,13 @@ async fn search(
                     .await?
             }
             "all" => {
-                // Put authored content ahead of generic interactions so a busy
-                // like history cannot bury the account's posts.
-                let (mut records, interactions) = tokio::try_join!(
-                    s.storage.search_events(
+                s.storage
+                    .search_events(
                         event_term,
-                        crate::storage::SearchEventType::Records,
-                        fetch_limit
-                    ),
-                    s.storage.search_events(
-                        event_term,
-                        crate::storage::SearchEventType::Events,
-                        fetch_limit
+                        crate::storage::SearchEventType::Both,
+                        fetch_limit,
                     )
-                )?;
-                records.extend(interactions);
-                records
+                    .await?
             }
             "account" => Vec::new(),
             _ => unreachable!("validated above"),
@@ -1551,15 +1544,21 @@ async fn account_analytics(
         .map_err(internal_error)
 }
 
+#[derive(Deserialize, Default)]
+struct InventoryQuery {
+    #[serde(default)]
+    memberships: bool,
+}
 async fn account_lexicons(
     State(s): State<AppState>,
     Path(did): Path<String>,
+    Query(query): Query<InventoryQuery>,
 ) -> Result<Json<crate::storage::AccountLexiconInventory>, (StatusCode, String)> {
     if !did.starts_with("did:") {
         return Err((StatusCode::BAD_REQUEST, "invalid DID".into()));
     }
     s.storage
-        .account_lexicon_inventory(&did)
+        .account_lexicon_inventory(&did, query.memberships)
         .await
         .map(Json)
         .map_err(internal_error)
@@ -1579,6 +1578,51 @@ struct RecordQuery {
     uri: String,
     #[serde(default)]
     summary: bool,
+}
+
+async fn repository_record(
+    State(s): State<AppState>,
+    Query(query): Query<RecordQuery>,
+) -> Result<Json<crate::storage::snapshots::RepositoryRecord>, (StatusCode, String)> {
+    if !is_at_uri(&query.uri) {
+        return Err((StatusCode::BAD_REQUEST, "A valid AT URI is required".into()));
+    }
+    s.storage
+        .repository_record(&query.uri)
+        .await
+        .map_err(internal_error)?
+        .map(Json)
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            "No retained record for this URI".into(),
+        ))
+}
+
+#[derive(Deserialize)]
+struct CollectionQuery {
+    collection: String,
+}
+async fn collection_records(
+    State(s): State<AppState>,
+    Query(query): Query<CollectionQuery>,
+) -> Result<Json<Vec<crate::storage::snapshots::RepositoryRecord>>, (StatusCode, String)> {
+    let name = &query.collection;
+    if name.len() > 253
+        || name.split('.').count() < 3
+        || !name
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-')
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "A collection NSID is required".into(),
+        ));
+    }
+    s.storage
+        .collection_records(name)
+        .await
+        .map(Json)
+        .map_err(internal_error)
 }
 
 #[derive(Serialize)]
@@ -2797,6 +2841,32 @@ fn cpu_percentages(previous: CpuCounters, current: CpuCounters, elapsed: f64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_service_boundary_is_explicit_and_durable_queries_stay_local() {
+        for path in [
+            "/api/live",
+            "/api/firehose",
+            "/api/ingestion",
+            "/metrics",
+            "/api/stats",
+        ] {
+            assert!(ingester_route(path));
+        }
+        for path in [
+            "/api/accounts/did:plc:test",
+            "/api/overview",
+            "/api/coverage",
+            "/api/search",
+            "/api/records",
+            "/api/backfills",
+            "/api/repository-record",
+            "/readyz",
+            "/api/live/other",
+        ] {
+            assert!(!ingester_route(path));
+        }
+    }
 
     #[test]
     fn reads_linux_process_metrics_without_panicking() {

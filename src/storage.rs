@@ -1133,7 +1133,11 @@ impl Storage {
     /// A bounded repository inventory for account/profile exploration. The
     /// aggregate and samples are separate so large record JSON is never read
     /// while computing counts.
-    pub async fn account_lexicon_inventory(&self, did: &str) -> Result<AccountLexiconInventory> {
+    pub async fn account_lexicon_inventory(
+        &self,
+        did: &str,
+        include_memberships: bool,
+    ) -> Result<AccountLexiconInventory> {
         #[derive(Debug, Deserialize, Row)]
         struct CollectionRow {
             collection: String,
@@ -1156,9 +1160,14 @@ impl Storage {
         // A listitem delete has no record body. Collapse each listitem URI to
         // its latest operation, but retain the latest non-empty record so an
         // observed membership can be attributed without inventing history.
-        let memberships = self.client.query(
+        let memberships = async {
+            if !include_memberships {
+                return Ok(Vec::<MembershipRow>::new());
+            }
+            self.client.clone().with_option("max_execution_time", "5").with_option("max_threads", "2").query(
             "SELECT listitem_uri, JSONExtractString(record_json, 'list') AS list_uri, toUnixTimestamp64Milli(observed_at) AS observed_at_ms FROM (SELECT at_uri AS listitem_uri, argMax(operation,time_us) AS latest_operation, argMaxIf(record_json,time_us,record_json!='') AS record_json, max(timestamp) AS observed_at FROM events WHERE collection='app.bsky.graph.listitem' GROUP BY at_uri HAVING latest_operation!='delete') WHERE JSONExtractString(record_json,'subject')=? AND list_uri!='' ORDER BY observed_at DESC LIMIT 200"
-        ).bind(did).fetch_all::<MembershipRow>();
+        ).bind(did).fetch_all::<MembershipRow>().await
+        };
         let (collection_rows, samples, memberships) =
             tokio::try_join!(stats, samples, memberships)?;
         let collections = collection_rows
@@ -1204,7 +1213,7 @@ impl Storage {
     }
     /// Searches retained normalized events. Exact identifiers search the full
     /// retention period; free-text searches are deliberately bounded to the
-    /// last 30 days so an interactive request cannot scan every partition.
+    /// last day so an interactive request cannot scan every partition.
     pub async fn search_events(
         &self,
         term: &str,
@@ -1223,7 +1232,7 @@ impl Storage {
         let time_predicate = if exact_identifier {
             "1"
         } else {
-            "timestamp >= now() - INTERVAL 30 DAY"
+            "timestamp >= now() - INTERVAL 1 DAY"
         };
         let (search_predicate, bind_count) = if is_did {
             ("(actor_did = ? OR target_did = ?)", 2)
@@ -1236,13 +1245,13 @@ impl Storage {
             ("(target = ? OR has(urls, ?))", 2)
         } else if term.contains('.') && !term.chars().any(char::is_whitespace) {
             (
-                "(has(domains, ?) OR has(urls, ?) OR positionCaseInsensitiveUTF8(text, ?) > 0)",
-                3,
+                "(collection = ? OR has(domains, ?) OR has(urls, ?) OR positionCaseInsensitiveUTF8(text, ?) > 0)",
+                4,
             )
         } else {
             (
-                "(target = ? OR positionCaseInsensitiveUTF8(text, ?) > 0 OR positionCaseInsensitiveUTF8(record_json, ?) > 0)",
-                3,
+                "(target = ? OR positionCaseInsensitiveUTF8(text, ?) > 0)",
+                2,
             )
         };
         let sql = format!(

@@ -9,7 +9,7 @@ import { PostCard } from './PostCard'
 import type { AccountDetail, AccountEvent, AccountProfile, RecordItem } from './types'
 
 const count = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
-const tabs = ['Posts', 'Activity', 'Connections', 'Repository', 'Investigations'] as const
+const tabs = ['Repository', 'Posts', 'Activity', 'Connections', 'Investigations'] as const
 type Tab = typeof tabs[number]
 
 export function AccountPage({ did }: { did: string }) {
@@ -18,14 +18,14 @@ export function AccountPage({ did }: { did: string }) {
 
 function Profile({ did }: { did: string }) {
   const navigate = useNavigate()
-  const [tab, setTab] = useState<Tab>('Posts')
+  const [tab, setTab] = useState<Tab>('Repository')
   const [copied, setCopied] = useState(false)
   const [avatarFailed, setAvatarFailed] = useState(false)
   const profile = useQuery({ queryKey: ['account-profile', did], queryFn: () => api<AccountProfile>(`/api/accounts/${encodeURIComponent(did)}/profile`), staleTime: 300_000 })
   const account = useQuery({ queryKey: ['account', did], queryFn: () => api<AccountDetail>(`/api/accounts/${encodeURIComponent(did)}`), staleTime: 60_000 })
   const person = profile.data
   const handle = person?.handle || account.data?.current_identity.handle
-  const name = person?.display_name || (handle ? `@${handle}` : 'Bluesky account')
+  const name = person?.display_name || (handle ? `@${handle}` : 'ATProto repository')
   return <div className="mx-auto max-w-5xl space-y-6">
     <Link to="/search" search={{ q: "", type: "account", offset: 0 }} className="text-sm text-dim hover:text-cyan">← Explore people</Link>
     <section className="panel overflow-hidden">
@@ -40,7 +40,7 @@ function Profile({ did }: { did: string }) {
         <h1 className="mt-5 break-words text-3xl font-semibold tracking-tight">{name}</h1>
         <p className="mt-1 break-all text-sm text-cyan">{handle ? `@${handle}` : did}</p>
         {profile.isPending && <p className="mt-3 text-sm text-dim">Loading public profile…</p>}
-        {profile.isError && <p className="mt-3 text-sm text-dim">Public profile unavailable. Retained activity is still shown below.</p>}
+        {profile.isError && <p className="mt-3 text-sm text-dim">No Bluesky profile available. This ATProto repository is still explorable.</p>}
         {person?.description && <p className="mt-4 max-w-2xl whitespace-pre-wrap break-words text-sm leading-7 text-white/85">{person.description}</p>}
         <div className="mt-5 flex flex-wrap gap-x-6 gap-y-2 text-sm text-dim">
           {([['followers', person?.followers_count], ['following', person?.follows_count], ['posts', person?.posts_count]] as const).map(([label, value]) => value != null && <span key={label}><b className="text-white">{count.format(value)}</b> {label}</span>)}

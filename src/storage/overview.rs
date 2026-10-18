@@ -69,6 +69,7 @@ pub struct Overview {
     pub activity: Vec<Activity>,
     pub languages: Vec<Breakdown>,
     pub domains: Vec<Breakdown>,
+    pub collections: Vec<Breakdown>,
     pub posts: Vec<Rising>,
     pub conversations: Vec<Rising>,
 }
@@ -87,10 +88,11 @@ impl Storage {
             .with_option("max_bytes_before_external_group_by", "128000000");
         // Explicit date predicates allow the existing event ordering to prune old data.
         let bounds = format!(
-            "timestamp >= fromUnixTimestamp({previous}) AND timestamp < fromUnixTimestamp({end}) AND toDate(timestamp) >= toDate(fromUnixTimestamp({previous})) AND startsWith(collection, 'app.bsky.')"
+            "timestamp >= fromUnixTimestamp({previous}) AND timestamp < fromUnixTimestamp({end}) AND toDate(timestamp) >= toDate(fromUnixTimestamp({previous}))"
         );
         let current_bounds = format!("{bounds} AND timestamp >= fromUnixTimestamp({start})");
-        let measures = "uniqCombined64(event_id) AS events, uniqCombined64If(event_id, kind IN ('post','reply','quote') AND operation='create') AS posts, uniqCombined64(actor_did) AS actors, uniqCombined64If(event_id, kind='reply' AND operation='create') AS replies";
+        let measures = "uniqCombined64(event_id) AS events, uniqCombined64If(event_id, collection='app.bsky.feed.post' AND kind IN ('post','reply','quote') AND operation='create') AS posts, uniqCombined64(actor_did) AS actors, uniqCombined64If(event_id, kind='reply' AND operation='create') AS replies";
+        let collections = client.query(&format!("SELECT collection AS key, uniqCombined64(event_id) AS count FROM events WHERE {current_bounds} AND NOT startsWith(collection, 'app.bsky.') GROUP BY collection ORDER BY count DESC LIMIT 12")).fetch_all::<Breakdown>().await?;
         let totals = client.query(&format!("SELECT toUInt8(timestamp >= fromUnixTimestamp({start})) AS current, {measures}, toInt64(min(toUnixTimestamp(timestamp))) AS first_event, toInt64(max(toUnixTimestamp(timestamp))) AS last_event FROM events WHERE {bounds} GROUP BY current ORDER BY current")).fetch_all::<Totals>().await?;
         let bucket = window.bucket();
         let activity = client.query(&format!("SELECT toInt64({start} + intDiv(toInt64(toUnixTimestamp(timestamp)) - {start}, {bucket}) * {bucket}) AS bucket, {measures} FROM events WHERE {current_bounds} GROUP BY bucket ORDER BY bucket")).fetch_all::<Activity>().await?;
@@ -167,6 +169,7 @@ impl Storage {
             activity,
             languages,
             domains,
+            collections,
             posts,
             conversations,
         })
@@ -202,7 +205,7 @@ mod tests {
             ('reply', fromUnixTimestamp({}), 0, 'did:plc:c', 'reply', 'app.bsky.feed.post', 'create', 'at://did:plc:c/app.bsky.feed.post/r', 'a reply', '', 'at://did:plc:a/app.bsky.feed.post/p', 'at://did:plc:a/app.bsky.feed.post/p', [], []),
             ('reply2', fromUnixTimestamp({start}), 0, 'did:plc:f', 'reply', 'app.bsky.feed.post', 'create', 'at://did:plc:f/app.bsky.feed.post/r', 'another reply', '', 'at://did:plc:a/app.bsky.feed.post/p', 'at://did:plc:a/app.bsky.feed.post/p', [], []),
             ('excluded', fromUnixTimestamp({end}), 0, 'did:plc:d', 'post', 'app.bsky.feed.post', 'create', '', 'boundary', '', '', '', [], []),
-            ('other-app', fromUnixTimestamp({start}), 0, 'did:plc:e', 'post', 'com.example.post', 'create', '', 'other app', '', '', '', [], [])", start - 1, start + 1, start + 2);
+            ('other-app', fromUnixTimestamp({start}), 0, 'did:plc:e', 'record', 'com.example.post', 'create', '', 'other app', '', '', '', [], [])", start - 1, start + 1, start + 2);
         admin.query(&insert).execute().await.unwrap();
         for statement in include_str!("../../migrations/009_explorer_performance.sql")
             .split(';')
@@ -265,7 +268,7 @@ mod tests {
                 current.actors,
                 current.replies
             ),
-            (4, 3, 4, 2)
+            (5, 3, 5, 2)
         );
         assert_eq!(
             result
@@ -276,7 +279,8 @@ mod tests {
                 .events,
             1
         );
-        assert_eq!(result.activity.iter().map(|r| r.events).sum::<u64>(), 4);
+        assert_eq!(result.activity.iter().map(|r| r.events).sum::<u64>(), 5);
+        assert_eq!(result.collections[0].key, "com.example.post");
         assert_eq!(result.posts[0].current, 3);
         assert_eq!(result.posts[0].text, "hello network");
         assert_eq!(result.conversations[0].current, 2);
@@ -302,7 +306,7 @@ mod tests {
                     .find(|r| r.current == 1)
                     .unwrap()
                     .events,
-                5
+                6
             );
         }
         admin

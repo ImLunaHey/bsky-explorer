@@ -28,6 +28,8 @@ import { scaleLinear } from "@tanstack/charts/scales/linear";
 import { tooltip } from "@tanstack/charts/tooltip";
 import { api } from "./api";
 import { LiveUpdates } from "./live";
+const CollectionsPage = lazy(() => import('./CollectionsPage').then(m => ({ default: m.CollectionsPage })));
+const GenericRecordPage = lazy(() => import('./CollectionsPage').then(m => ({ default: m.GenericRecordPage })));
 const RecordPage = lazy(() => import('./RecordDrawer').then(m => ({ default: m.RecordPage })));
 import { FirehoseView } from "./FirehoseView";
 const FirehoseImagesPage = lazy(() => import('./FirehoseImagesPage').then(m => ({ default: m.FirehoseImagesPage })));
@@ -1382,6 +1384,7 @@ function SystemView({
 }
 
 export type AppRoute =
+  | { view: "collections"; collection: string }
   | { view: "network" | "diagnostics" | "firehose" | "firehose-images" | "anomalies" | "system" | "backfills" | "identities" | "coverage" | "communities" }
   | { view: "search"; query: string; searchType: SearchKind; offset: number }
   | { view: "backfill"; jobId: string }
@@ -1480,7 +1483,7 @@ export default function App({ route }: { route: AppRoute }) {
             </div>
             <div>
               <h1 className="text-sm font-semibold tracking-tight">
-                Bluesky Explorer
+                ATProto Explorer
               </h1>
               <p className="text-[10px] uppercase tracking-[.16em] text-dim">
                 A window into the public network
@@ -1501,9 +1504,10 @@ export default function App({ route }: { route: AppRoute }) {
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-8 sm:py-8">
         <Suspense fallback={<div role="status" className="panel p-10 text-sm text-dim">Opening explorer…</div>}>
         <nav className="mb-7 flex gap-1 overflow-x-auto rounded-xl border border-line bg-panel/70 p-1 sm:w-fit">
+          <Link to="/collections" search={{collection:''}} className={`shrink-0 rounded-lg px-4 py-2 text-xs font-medium ${route.view === 'collections' ? 'bg-mint text-ink' : 'text-dim hover:text-white'}`}>Collections</Link>
           {(
             [
-              ["/", "Bluesky now", "network"],
+              ["/", "Network", "network"],
               ["/firehose", "Live stream", "firehose"],
               ["/search", "Search", "search"],
               ["/coverage", "Our dataset", "coverage"],
@@ -1527,6 +1531,7 @@ export default function App({ route }: { route: AppRoute }) {
           </div>
         </details>
         {route.view === "network" && <OverviewPage />}
+        {route.view === "collections" && <CollectionsPage collection={route.collection} />}
         {route.view === "diagnostics" && (
           <>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -1771,6 +1776,7 @@ export default function App({ route }: { route: AppRoute }) {
         )}
         {route.view === "account" && <AccountPage did={route.did} />}
         {route.view === "record" && (
+          !route.uri.includes('/app.bsky.feed.post/') ? <GenericRecordPage uri={route.uri} /> :
           <RecordPage
             uri={route.uri}
             onRecord={openRecord}

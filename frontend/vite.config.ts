@@ -9,6 +9,6 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    proxy: { '/api': 'http://localhost:3000' },
+    proxy: { '/api': process.env.API_ORIGIN || 'http://localhost:3000' },
   },
 })

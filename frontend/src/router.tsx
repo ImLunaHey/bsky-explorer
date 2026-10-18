@@ -15,6 +15,7 @@ const identitiesRoute=createRoute({getParentRoute:()=>rootRoute,path:'/identitie
 const identityRoute=createRoute({getParentRoute:()=>rootRoute,path:'/identities/$jobId',component:IdentityRoute})
 const crawlRoute=createRoute({getParentRoute:()=>rootRoute,path:'/crawls/$crawlId',component:CrawlRoute})
 const coverageRoute=createRoute({getParentRoute:()=>rootRoute,path:'/coverage',component:()=> <App route={{view:'coverage'}}/>})
+const collectionsRoute=createRoute({getParentRoute:()=>rootRoute,path:'/collections',validateSearch:(search:Record<string,unknown>)=>({collection:typeof search.collection==='string'?search.collection:''}),component:CollectionsRoute})
 const communitiesRoute=createRoute({getParentRoute:()=>rootRoute,path:'/communities',component:()=> <App route={{view:'communities'}}/>})
 const communityRoute=createRoute({getParentRoute:()=>rootRoute,path:'/communities/$communityId',component:CommunityRoute})
 const backfillRoute=createRoute({getParentRoute:()=>rootRoute,path:'/backfills/$jobId',component:BackfillRoute})
@@ -25,6 +26,7 @@ const clusterRoute=createRoute({getParentRoute:()=>rootRoute,path:'/clusters/$cl
 const trendRoute=createRoute({getParentRoute:()=>rootRoute,path:'/trends/$dimension',validateSearch:(search:Record<string,unknown>)=>({key:typeof search.key==='string'?search.key:''}),component:TrendRoute})
 
 function AccountRoute(){const {did}=accountRoute.useParams();return <App route={{view:'account',did}}/>}
+function CollectionsRoute(){const {collection}=collectionsRoute.useSearch();return <App route={{view:'collections',collection}}/>}
 function RecordRoute(){const {uri}=recordRoute.useParams();return <App route={{view:'record',uri}}/>}
 function ClusterRoute(){const {clusterId}=clusterRoute.useParams();return <App route={{view:'cluster',clusterId}}/>}
 function TrendRoute(){const {dimension}=trendRoute.useParams();const {key}=trendRoute.useSearch();return <App route={{view:'trend',dimension,trendKey:key}}/>}
@@ -34,7 +36,7 @@ function IdentityRoute(){const {jobId}=identityRoute.useParams();return <App rou
 function CrawlRoute(){const {crawlId}=crawlRoute.useParams();return <App route={{view:'crawl',crawlId}}/>}
 function CommunityRoute(){const {communityId}=communityRoute.useParams();return <App route={{view:'community',communityId}}/>}
 
-const routeTree=rootRoute.addChildren([indexRoute,firehoseRoute,firehoseImagesRoute,searchRoute,coverageRoute,communitiesRoute,communityRoute,backfillsRoute,backfillRoute,crawlRoute,identitiesRoute,identityRoute,detectionsRoute,systemRoute,diagnosticsRoute,accountRoute,recordRoute,clusterRoute,trendRoute])
+const routeTree=rootRoute.addChildren([indexRoute,collectionsRoute,firehoseRoute,firehoseImagesRoute,searchRoute,coverageRoute,communitiesRoute,communityRoute,backfillsRoute,backfillRoute,crawlRoute,identitiesRoute,identityRoute,detectionsRoute,systemRoute,diagnosticsRoute,accountRoute,recordRoute,clusterRoute,trendRoute])
 export const router=createRouter({routeTree,defaultPreload:'intent'})
 
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }

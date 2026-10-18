@@ -1052,6 +1052,7 @@ fn counts<I: Iterator<Item = String>>(it: I, n: usize) -> Vec<String> {
 fn event_matches(event: &NormalizedEvent, query: &str) -> bool {
     let contains = |value: &str| value.to_lowercase().contains(query);
     contains(&event.actor_did)
+        || contains(&event.collection)
         || contains(&event.at_uri)
         || event.text.as_deref().is_some_and(contains)
         || event.target.as_deref().is_some_and(contains)

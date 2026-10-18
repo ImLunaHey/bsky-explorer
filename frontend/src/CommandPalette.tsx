@@ -3,7 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Search } from "lucide-react";
 
 const destinations = [
-  { label: "Bluesky now", hint: "People, posts and conversations", to: "/" },
+  { label: "ATProto now", hint: "People, posts and conversations", to: "/" },
   { label: "Firehose", hint: "Newest public ATProto events", to: "/firehose" },
   { label: "Firehose images", hint: "Live public image posts", to: "/firehose/images" },
   { label: "Search", hint: "Find accounts, posts, and events", to: "/search" },
@@ -59,7 +59,7 @@ export function CommandPalette() {
   );
   const direct = value.trim();
   const isDid = /^did:[a-z0-9]+:[A-Za-z0-9._:%-]+$/.test(direct);
-  const isRecord = /^at:\/\/[^/]+\/app\.bsky\.feed\.post\/[^/]+$/.test(direct);
+  const isRecord = /^at:\/\/[^/]+\/[^/]+\/[^/]+$/.test(direct);
   const go = () => {
     if (isDid) navigate({ to: "/accounts/$did", params: { did: direct } });
     else if (isRecord)

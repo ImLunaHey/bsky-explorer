@@ -1,4 +1,4 @@
-# Bluesky Network Observatory MVP
+# ATProto Explorer
 
 A single-machine Rust + ClickHouse observatory for public ATProto activity. It connects to Jetstream from startup, archives the original JSON with Zstandard compression, normalizes records from every public ATProto collection, maintains rolling hot state, and emits evidence-led coordination scores. Known Bluesky lexicons receive dedicated fields; arbitrary lexicons retain their repository operation and compact sanitized record JSON for future search/reprocessing. Blob objects and inline media data are removed from normalized rows, and the application never downloads media/profile blobs or calls an LLM.
 
@@ -14,9 +14,9 @@ docker compose up --build -d
 
 Open <http://localhost:3000>. Prometheus metrics are at `/metrics`; JSON endpoints are under `/api`. Set `STORAGE_ROOT` for another array mount. Do not point it at this repository. Compose passes all retention, batching, window, and ClickHouse credential settings from `.env` into the service; the storage array remains the only durable-data location.
 
-## Bluesky now
+## ATProto exploration
 
-The homepage explores observed public Bluesky activity across the last hour, 24 hours,
+The homepage explores observed public ATProto activity across the last hour, 24 hours,
 or seven days. A shared time range controls active accounts, published posts, replies,
 activity history, rising posts and conversations, languages, and shared domains.
 Every metric comes from retained ClickHouse events, independently of the bounded
@@ -27,7 +27,8 @@ the former network dashboard remains available at `/system/network`.
 half-open event-time window and an equal-length preceding comparison window.
 Counts use `uniqCombined64` distinct-count estimates to bound memory and deduplicate
 replayed event IDs. Posts include newly created posts, replies, and quotes; active
-accounts include actors taking any observed `app.bsky.*` action. These are not
+accounts include actors taking actions in any observed collection. Social posts,
+reply counts and interaction graphs are explicitly Bluesky-specific. These are not
 platform membership counts. Backfilled records use historical timestamps and can
 change past results. Multilingual posts count in each declared language.
 
@@ -38,13 +39,60 @@ exhaustive ranking of every thread. Post previews come from the comparison windo
 older roots remain clickable even when their text is unavailable in the overview.
 Record drilldowns show available history, not time-filtered dashboard totals.
 
-Queries have memory, thread, and execution limits. Results are cached for one minute
-(hour), five minutes (day), or fifteen minutes (week), with duplicate requests
-coalesced independently for each range. Cold day/week queries may take minutes on
-large archives. This first version queries durable events directly; it does not
-yet maintain precomputed dashboard rollups. Empty chart buckets mean no retained
+Queries have memory, thread, and execution limits. A serial background worker
+refreshes persisted snapshots (target intervals: 60/300/900 seconds; actual refresh
+can be later under load). HTTP requests read only small saved responses. Last-good
+snapshots survive restarts and failed refreshes; displayed window end is their
+measurement time, not the current time. Dataset coverage refreshes every 30 minutes.
+Cold installations return an explicit preparing response until snapshots exist.
+These are precomputed responses, not incremental aggregation tables. Empty chart buckets mean no retained
 activity, not verified network inactivity. Coverage and ingestion status remain
 visible, and the connection indicator reads actual Jetstream state.
+
+`/collections` browses the retained collection inventory and recent records, including
+non-Bluesky schemas. Generic `/records/<encoded-at-uri>` pages show sanitized retained
+JSON. Account pages open on their repository inventory; Bluesky profiles and posts are
+optional views. Text/domain/collection search covers the last 24 hours; exact IDs
+search retained history. No claim of complete network coverage is made.
+
+## Independent deployments
+
+Production Compose runs three application services:
+
+- `ingester`: Jetstream, archive/checkpoint ownership, backfills, identity workers,
+  analytics materializations and private hot-state endpoints. No published host port.
+- `api`: durable queries and queue controls; explicitly proxies live state/SSE to
+  `INGESTER_URL`. It never starts collection or background workers.
+- `frontend`: static assets and the public reverse proxy on port 3000.
+
+The two Rust roles share ClickHouse and the archive's SQLite queues (WAL). Only the
+ingester writes stream segments/checkpoints. SQLite queue controls still need write
+access from the API. Keep these services on the same host/local filesystem.
+
+For subsequent web-only deployments:
+
+```bash
+docker compose build api frontend
+docker compose up -d --no-deps api frontend
+```
+
+Do **not** use an unrestricted `compose up --build` for web-only updates. That can
+recreate ingestion. Use `SERVICE_ROLE=all` for legacy local development; `api`
+requires an explicit private `INGESTER_URL`. An unavailable collector returns 502
+for live endpoints while retained-data pages remain usable. SSE forwards reconnect
+cursors and disables proxy buffering.
+
+For this host, preserve `ARCHIVE_ROOT=/mnt/storage/bsky-observatory/archive-deploy-a8a891f`.
+The historical ClickHouse container pins a different underlying mount from the
+current host path; do not recreate it until its live data is migrated and verified.
+Never restart the old stopped monolith alongside the ingester.
+
+Migration 009 creates a DID-keyed investigation mapping and snapshot storage.
+Existing detection history needs a one-time, bounded streaming backfill into
+`detection_accounts`; the materialized view covers new inserts. Re-running the
+backfill is safe because reads group by cluster and the table replaces duplicates.
+Prewarm summaries using `refresh_explorer` with the same ClickHouse environment
+before switching public traffic. No archive mount is needed for that command.
 
 Validate the overview against an isolated ClickHouse server with:
 

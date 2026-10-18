@@ -30,8 +30,7 @@ import { FIREHOSE_PAUSE_EVENT, type LiveConnection } from "./live";
 import type { FirehoseEvent, FirehoseFeed, RecordMediaResponse } from "./types";
 
 const recordUri = (event: FirehoseEvent) =>
-  ["post", "reply", "quote"].includes(event.kind) &&
-  event.at_uri?.includes("/app.bsky.feed.post/")
+  event.at_uri?.startsWith("at://")
     ? event.at_uri
     : undefined;
 const tones: Record<string, string> = {
@@ -247,7 +246,7 @@ export function FirehoseView({
                   ))}
                 </div>
               </div>
-              {uri && <MediaPreview uri={uri} />}
+              {uri?.includes('/app.bsky.feed.post/') && <MediaPreview uri={uri} />}
             </div>
           );
           return uri ? (
@@ -283,6 +282,7 @@ export function FirehoseView({
       return [
         event.actor_did,
         event.kind,
+        event.collection,
         event.text,
         event.at_uri,
         event.target,
@@ -336,7 +336,7 @@ export function FirehoseView({
             <input
               value={globalFilter}
               onChange={(event) => { setGlobalFilter(event.target.value); setPagination((value) => ({ ...value, pageIndex: 0 })); }}
-              placeholder="Filter text, DID, URL, or domain…"
+              placeholder="Filter collection, text, DID, URL…"
               className="w-full rounded-lg border border-white/10 bg-black py-2 pl-9 pr-3 text-sm outline-none focus:border-sky-400/60"
             />
           </div>
