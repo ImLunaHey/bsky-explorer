@@ -13,6 +13,7 @@ import type { RepositoryRecord } from './CollectionsPage'
 import { ContentCards } from './DiscoveryCards'
 import { appFor, topicFor } from './discovery'
 import { ProfileAnalytics } from './ProfileAnalytics'
+import { CoverageNote } from './CoverageNote'
 import { profileTabs as tabs, profileDays, type ProfileTab as Tab, type ProfileSearch, type ProfileTime } from './profileLocation'
 
 const count = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
@@ -55,7 +56,7 @@ function Profile({ did, tab = 'Overview', search = {} }: ProfileProps) {
         <div className="grid grid-cols-3 gap-3 text-xs text-dim">
           {([['followers', person?.followers_count], ['following', person?.follows_count], ['posts', person?.posts_count]] as const).map(([label, value]) => value != null && <span key={label}><b className="mb-1 block text-2xl font-semibold text-white">{count.format(value)}</b> {label}</span>)}
         </div>
-        <p className="mt-3 text-xs text-dim">Current Bluesky totals · Charts below show retained changes.</p>
+        <div className="mt-3"><CoverageNote kind="current">Bluesky profile snapshot. Charts measure separately observed changes, not lifetime totals.</CoverageNote></div>
         <details className="mt-5 text-xs text-dim"><summary className="cursor-pointer">Account identity & collection details</summary>
           <div className="mt-3 space-y-3"><div className="flex items-center gap-3"><code className="break-all">{did}</code><button aria-label="Copy DID" onClick={async () => { try { await navigator.clipboard.writeText(did); setCopied(true) } catch { setCopied(false) } }}><Copy className="size-4" />{copied && 'Copied'}</button></div>
           {account.data?.stored && <p>{account.data.stored.event_count.toLocaleString()} retained events · first seen {new Date(account.data.stored.first_seen_ms).toLocaleDateString()}</p>}

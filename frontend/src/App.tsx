@@ -1761,7 +1761,7 @@ export default function App({ route }: { route: AppRoute }) {
         )}
         </Suspense>
       </main>
-      <footer className="mx-auto flex max-w-[1600px] flex-wrap justify-between gap-4 border-t border-line px-6 py-5 text-xs text-dim"><p>Public ATProto data · Observed, not exhaustive.</p><div className="flex gap-5"><Link to="/coverage">Coverage & privacy</Link><Link to="/advanced">Research tools</Link><Link to="/admin">Administration</Link></div></footer>
+      <footer className="mx-auto flex max-w-[1600px] flex-wrap justify-between gap-4 border-t border-line px-6 py-5 text-xs text-dim"><p>Public ATProto data · Observed, not exhaustive.</p><div className="flex gap-5"><Link to="/coverage">Coverage & privacy</Link><Link to="/advanced">Research tools</Link><Link to="/admin">System</Link></div></footer>
     </>
   );
 }

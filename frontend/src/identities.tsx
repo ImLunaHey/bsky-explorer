@@ -3,6 +3,7 @@ import { useEffect, useMemo } from 'react'
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { identityQueryKey, identityQueryOptions, needsIdentityLookup } from './identityQueries'
+import { AccountPreview } from './AccountPreview'
 
 export const didFromValue = (value: string) => value.startsWith('at://')
   ? value.slice(5).split('/')[0] : value.startsWith('did:') ? value : undefined
@@ -48,7 +49,8 @@ export function IdentityName({ did, handle: supplied, compact = false, inline = 
 export function IdentityLink({ did, handle, compact, inline, className = '', onSelect }: IdentityProps & { onSelect?: (did: string) => void }) {
   const content = <IdentityName did={did} handle={handle} compact={compact} inline={inline} />
   const styles = `${inline ? 'inline' : 'block'} min-w-0 text-left text-cyan hover:text-white ${className}`
-  return onSelect
+  const link = onSelect
     ? <button type="button" onClick={() => onSelect(did)} className={styles}>{content}</button>
     : <Link to="/accounts/$did" params={{ did }} className={styles}>{content}</Link>
+  return <AccountPreview did={did}>{link}</AccountPreview>
 }
