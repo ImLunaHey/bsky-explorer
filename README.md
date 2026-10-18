@@ -16,9 +16,11 @@ Open <http://localhost:3000>. Prometheus metrics are at `/metrics`; JSON endpoin
 
 ## ATProto exploration
 
-### A discovery product, with advanced tools underneath
+### Discovery and network analytics
 
-The public navigation is **Discover, Explore, Apps, Search**:
+The desktop sidebar links directly to **Network, People & search, Discover, Music,
+Apps, Collections, Live activity, and Research tools**. On small screens it folds
+into a compact menu. Profiles and analytics use the available content width.
 
 - `/` shows actual selections of music, writing, films, upcoming events, saved links,
   stream announcements and game activity. Small/empty sections do not become empty dashboards.
@@ -35,16 +37,38 @@ The public navigation is **Discover, Explore, Apps, Search**:
   population separately. `/music/<entity-id>` shows song/album/artist listening history,
   source listening links and coverage. Recently shared details are retained for up to
   seven days (bounded to 1,000 previous entries plus current selections).
-- Profiles lead with cross-app highlights, writing and listening. Repository inventory
-  and investigations are collapsed under technical details. Profile lookups remain bounded.
+- Profiles open on Overview: audience/activity charts and cross-app highlights.
+  Audience, Activity, Posts, Writing, Listening, and Apps are first-class tabs.
+  Investigations remain under research details.
 - Search includes matches from current discovery selections and weekly music picks,
   alongside existing people/post search; it does not claim to index every song or article.
 
-`/advanced` retains collections, record inspection, network statistics, live events,
-experimental connection graphs and investigations. `/admin` groups operational tools.
+`/network` restores network statistics as a main destination. `/advanced` groups
+research tools, experimental connection graphs and investigations. `/admin` groups operational tools.
 **This is navigation separation, not authentication.** Existing administrative APIs
 retain their current access model; do not expose this installation publicly without
 an appropriate authorization boundary.
+
+### Profile audience and activity history
+
+`GET /api/accounts/{did}/history?days=1|7|30` returns 24 hourly or 7/30 daily
+UTC-aligned buckets including the current partial bucket. Charts distinguish gained
+follows, target-resolved losses, observed net, outgoing follows/unfollows, authored
+activity and incoming engagement. Exact values are available in accessible tables.
+Zero means no retained events, not proven inactivity. This is **not follower-total
+history**: target-less incoming unfollows cannot be attributed. Imported snapshots
+and updates are excluded; distinct event IDs prevent replay/backfill overlap from
+double-counting. Different IDs for repeated real actions still count separately.
+
+Migration `010_profile_history.sql` creates a narrow account-ordered index and a
+materialized view for new live inserts. Existing deployments must run
+`deploy/backfill-profile-history.sql` once **after** creating that view and before
+publishing historical charts. It indexes the last 31 days with two threads and a
+1 GB memory budget; concurrent overlap is intentionally deduplicated at query time.
+The collector needs no restart. Re-running the backfill is logically safe but adds
+duplicate physical rows; it is not a periodic job. History queries have a five-second,
+two-thread, 500 MB budget, and the browser caches each account/window for one minute.
+The index stores scalar event metadata only, never raw records or media.
 
 `GET /api/discover` reads a persisted selection built by the independent enrichment
 worker. Each topic considers at most 800 latest distinct records from seven days of

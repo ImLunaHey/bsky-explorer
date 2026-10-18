@@ -481,6 +481,7 @@ impl Storage {
             include_str!("../migrations/006_communities.sql"),
             include_str!("../migrations/007_event_media.sql"),
             include_str!("../migrations/009_explorer_performance.sql"),
+            include_str!("../migrations/010_profile_history.sql"),
         ]
         .join("\n")
         .split(';')

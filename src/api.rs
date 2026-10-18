@@ -120,6 +120,10 @@ pub fn router(s: AppState) -> Router {
         .route("/api/accounts/{did}/follows", get(account_follows))
         .route("/api/accounts/{did}/analytics", get(account_analytics))
         .route("/api/accounts/{did}/history", get(account_history))
+        .route(
+            "/api/accounts/{did}/history/events",
+            get(account_history_events),
+        )
         .route("/api/accounts/{did}/lexicons", get(account_lexicons))
         .route("/api/records", get(record))
         .route("/api/repository-record", get(repository_record))
@@ -1627,6 +1631,41 @@ async fn account_analytics(
 #[derive(Deserialize)]
 struct ProfileHistoryQuery {
     days: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct ProfileEventsQuery {
+    start: i64,
+    end: i64,
+    category: String,
+}
+
+async fn account_history_events(
+    State(s): State<AppState>,
+    Path(did): Path<String>,
+    Query(q): Query<ProfileEventsQuery>,
+) -> Result<Json<Vec<crate::storage::profile_history::ProfileHistoryEvent>>, (StatusCode, String)> {
+    let now = chrono::Utc::now().timestamp_millis();
+    if !did.starts_with("did:")
+        || q.start < now - 31 * 86_400_000
+        || q.start > now
+        || q.end <= q.start
+        || q.end > q.start + 86_400_000
+        || !matches!(
+            q.category.as_str(),
+            "audience" | "following" | "activity" | "response"
+        )
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Expected a recent hourly/daily bucket and valid category".into(),
+        ));
+    }
+    s.storage
+        .profile_history_events(&did, q.start, q.end.min(now + 1), &q.category)
+        .await
+        .map(Json)
+        .map_err(internal_error)
 }
 
 async fn account_history(

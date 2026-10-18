@@ -43,14 +43,17 @@ function Profile({ did }: { did: string }) {
           </div>
           <a href={`https://bsky.app/profile/${encodeURIComponent(did)}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-full border border-line px-4 py-2 text-xs hover:border-cyan">View on Bluesky <ArrowUpRight className="size-4" /></a>
         </div>
-        <h1 className="mt-5 break-words text-3xl font-semibold tracking-tight">{name}</h1>
+        <div className="mt-4 grid gap-5 lg:grid-cols-2"><div>
+        <h1 className="break-words text-3xl font-semibold tracking-tight">{name}</h1>
         <p className="mt-1 break-all text-sm text-cyan">{handle ? `@${handle}` : did}</p>
         {profile.isPending && <p className="mt-3 text-sm text-dim">Loading public profile…</p>}
         {profile.isError && <p className="mt-3 text-sm text-dim">No Bluesky profile available. This ATProto repository is still explorable.</p>}
         {person?.description && <><p className={`mt-4 max-w-2xl whitespace-pre-wrap break-words text-sm leading-7 text-white/85 ${expandedBio ? '' : 'line-clamp-4'}`}>{person.description}</p>{(person.description.length > 180 || person.description.split('\n').length > 4) && <button onClick={() => setExpandedBio(value => !value)} className="mt-2 text-xs text-cyan">{expandedBio ? 'Show less' : 'Read full bio'}</button>}</>}
-        <div className="mt-5 flex flex-wrap gap-x-6 gap-y-2 text-sm text-dim">
-          {([['followers', person?.followers_count], ['following', person?.follows_count], ['posts', person?.posts_count]] as const).map(([label, value]) => value != null && <span key={label}><b className="text-white">{count.format(value)}</b> {label}</span>)}
+        </div><div className="lg:border-l lg:border-line lg:pl-7">
+        <div className="grid grid-cols-3 gap-3 text-xs text-dim">
+          {([['followers', person?.followers_count], ['following', person?.follows_count], ['posts', person?.posts_count]] as const).map(([label, value]) => value != null && <span key={label}><b className="mb-1 block text-2xl font-semibold text-white">{count.format(value)}</b> {label}</span>)}
         </div>
+        <p className="mt-3 text-xs text-dim">Current Bluesky totals · Charts below show retained changes.</p>
         <details className="mt-5 text-xs text-dim"><summary className="cursor-pointer">Account identity & collection details</summary>
           <div className="mt-3 space-y-3"><div className="flex items-center gap-3"><code className="break-all">{did}</code><button aria-label="Copy DID" onClick={async () => { try { await navigator.clipboard.writeText(did); setCopied(true) } catch { setCopied(false) } }}><Copy className="size-4" />{copied && 'Copied'}</button></div>
           {account.data?.stored && <p>{account.data.stored.event_count.toLocaleString()} retained events · first seen {new Date(account.data.stored.first_seen_ms).toLocaleDateString()}</p>}
@@ -59,6 +62,7 @@ function Profile({ did }: { did: string }) {
           {person?.labels.length ? <p>Labels: {person.labels.join(', ')}</p> : null}
           <Link to="/backfills" className="text-cyan">Manage collection →</Link></div>
         </details>
+        </div></div>
       </div>
       <div className="flex overflow-x-auto border-t border-line px-3" role="tablist" aria-label="Profile sections">
         {tabs.map(value => <button key={value} role="tab" aria-selected={tab === value} aria-controls="profile-panel" id={`profile-tab-${value}`} onClick={() => setTab(value)} className={`shrink-0 border-b-2 px-4 py-4 text-sm font-medium transition ${tab === value ? 'border-cyan text-cyan' : 'border-transparent text-dim hover:text-white'}`}>{value}</button>)}

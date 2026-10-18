@@ -28,6 +28,15 @@ pub struct ProfileHistory {
     pub note: &'static str,
 }
 
+#[derive(Deserialize, Serialize, Row)]
+pub struct ProfileHistoryEvent {
+    pub timestamp_ms: i64,
+    pub event_id: String,
+    pub actor_did: String,
+    pub target_did: String,
+    pub kind: String,
+}
+
 pub fn history_window(days: u32, now: i64) -> (i64, i64, i64) {
     let days = match days {
         7 => 7,
@@ -40,6 +49,26 @@ pub fn history_window(days: u32, now: i64) -> (i64, i64, i64) {
 }
 
 impl Storage {
+    pub async fn profile_history_events(
+        &self,
+        did: &str,
+        start: i64,
+        end: i64,
+        category: &str,
+    ) -> Result<Vec<ProfileHistoryEvent>> {
+        let filter = match category {
+            "audience" => "target_did=account_did AND kind IN ('follow','unfollow')",
+            "following" => "actor_did=account_did AND kind IN ('follow','unfollow')",
+            "response" => {
+                "target_did=account_did AND actor_did!=account_did AND kind IN ('like','repost','reply')"
+            }
+            _ => "actor_did=account_did AND kind NOT IN ('follow','unfollow')",
+        };
+        self.client.clone().with_option("max_execution_time","3").with_option("max_threads","2")
+            .with_option("max_memory_usage","250000000")
+            .query(&format!("SELECT DISTINCT toUnixTimestamp64Milli(timestamp) AS timestamp_ms,event_id,actor_did,target_did,kind FROM account_history_events PREWHERE account_did=? AND timestamp>=fromUnixTimestamp64Milli(?) AND timestamp<fromUnixTimestamp64Milli(?) WHERE {filter} ORDER BY timestamp_ms DESC,event_id LIMIT 50"))
+            .bind(did).bind(start).bind(end).fetch_all::<ProfileHistoryEvent>().await.map_err(Into::into)
+    }
     pub async fn profile_history(&self, did: &str, days: u32) -> Result<ProfileHistory> {
         let now = Utc::now().timestamp_millis();
         let (start, end, bucket) = history_window(days, now);
@@ -66,9 +95,8 @@ impl Storage {
                 uniqExactIf(event_id, target_did=who AND actor_did!=who AND kind='like') AS likes_received,
                 uniqExactIf(event_id, target_did=who AND actor_did!=who AND kind='repost') AS reposts_received,
                 uniqExactIf(event_id, target_did=who AND actor_did!=who AND kind='reply') AS replies_received
-              FROM events
-              PREWHERE timestamp >= fromUnixTimestamp64Milli(?) AND timestamp <= fromUnixTimestamp64Milli(?)
-                AND (actor_did=who OR target_did=who)
+              FROM account_history_events
+              PREWHERE account_did=who AND timestamp >= fromUnixTimestamp64Milli(?) AND timestamp <= fromUnixTimestamp64Milli(?)
               WHERE operation IN ('create','delete')
               GROUP BY timestamp_ms ORDER BY timestamp_ms")
             .bind(did).bind(bucket).bind(start).bind(now)
@@ -113,6 +141,13 @@ mod tests {
             admin.query(statement).execute().await.unwrap();
         }
         let storage = Storage::new(&url, &db, "default", "");
+        for statement in include_str!("../../migrations/010_profile_history.sql")
+            .split(';')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            storage.client.query(statement).execute().await.unwrap();
+        }
         for (id, actor, target, kind, op) in [
             ("1", "other", "person", "follow", "create"),
             ("1", "other", "person", "follow", "create"),

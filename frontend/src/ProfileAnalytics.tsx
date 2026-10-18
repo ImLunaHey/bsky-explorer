@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from './api'
+import { Link } from '@tanstack/react-router'
+import { useIdentityMap } from './identities'
 
 type Bucket = { timestamp_ms: number; gained: number; lost: number; net: number; followed: number; unfollowed: number; unknown_unfollows: number; posts: number; replies: number; likes: number; reposts: number; other: number; likes_received: number; reposts_received: number; replies_received: number }
 type History = { start_ms: number; end_ms: number; bucket_ms: number; buckets: Bucket[]; note: string }
@@ -13,7 +15,13 @@ const following: Series[] = [{key:'followed',label:'Followed others',color:'#67e
 const number = new Intl.NumberFormat()
 const stamp = (ms:number, hourly:boolean) => new Date(ms).toLocaleString([], hourly ? {month:'short',day:'numeric',hour:'numeric'} : {month:'short',day:'numeric'})
 
-function HistoryChart({title,description,data,series,hourly}:{title:string;description:string;data:Bucket[];series:Series[];hourly:boolean}) {
+function BucketEvents({did,start,width,category}:{did:string;start:number;width:number;category:string}) {
+  const query=useQuery({queryKey:['profile-bucket-events',did,start,category],queryFn:()=>api<{timestamp_ms:number;event_id:string;actor_did:string;target_did:string;kind:string}[]>(`/api/accounts/${encodeURIComponent(did)}/history/events?start=${start}&end=${start+width}&category=${category}`),staleTime:60_000})
+  const handles=useIdentityMap((query.data||[]).flatMap(e=>[e.actor_did,e.target_did]).filter(Boolean))
+  return <div className="mt-4 border-t border-line pt-4"><h4 className="text-sm font-medium">Events behind this point</h4><p className="mt-1 text-xs text-dim">Latest 50 matching retained events in this bucket.</p>{query.isPending && <p role="status" className="py-4 text-xs text-dim">Loading events…</p>}{query.isError && <p role="alert" className="py-4 text-xs text-dim">Events couldn’t load. <button onClick={()=>void query.refetch()} className="text-cyan">Retry</button></p>}<div className="mt-3 max-h-72 overflow-y-auto">{query.data?.map(e=><div key={e.event_id} className="flex gap-3 border-t border-line py-3 text-xs"><span className="w-14 shrink-0 capitalize text-cyan">{e.kind}</span><div className="min-w-0 flex-1"><Link to="/accounts/$did" params={{did:e.actor_did}} className="break-all">{handles.get(e.actor_did)?`@${handles.get(e.actor_did)}`:e.actor_did}</Link>{e.target_did && <><span className="text-dim"> → </span><Link to="/accounts/$did" params={{did:e.target_did}} className="break-all text-cyan">{handles.get(e.target_did)?`@${handles.get(e.target_did)}`:e.target_did}</Link></>}<p className="mt-1 text-dim">{new Date(e.timestamp_ms).toLocaleString()}</p></div></div>)}</div>{query.isSuccess && !query.data.length && <p className="py-4 text-xs text-dim">No matching events retained in this bucket.</p>}</div>
+}
+
+function HistoryChart({did,category,title,description,data,series,hourly}:{did:string;category:string;title:string;description:string;data:Bucket[];series:Series[];hourly:boolean}) {
   const [selected,setSelected] = useState<number|null>(null)
   const maximum = Math.max(1,...data.flatMap(row=>series.map(s=>row[s.key])))
   const minimum = Math.min(0,...data.flatMap(row=>series.map(s=>row[s.key])))
@@ -33,6 +41,7 @@ function HistoryChart({title,description,data,series,hourly}:{title:string;descr
       <text x="45" y="202" fill="#94a3b8" fontSize="11">{stamp(data[0].timestamp_ms,hourly)}</text><text x="735" y="202" textAnchor="end" fill="#94a3b8" fontSize="11">{stamp(data.at(-1)!.timestamp_ms,hourly)}</text>
     </svg>
     <p aria-live="polite" className="min-h-10 text-xs leading-5 text-dim">{row ? `${stamp(row.timestamp_ms,hourly)} — ${series.map(s=>`${s.label}: ${number.format(row[s.key])}`).join(' · ')}` : 'Select a point to inspect that period, or expand the exact values below.'}</p>
+    {row && <BucketEvents did={did} start={row.timestamp_ms} width={hourly?3_600_000:86_400_000} category={category}/>}
     <details className="mt-2 text-xs"><summary className="cursor-pointer text-cyan">Exact values</summary><div className="mt-3 overflow-x-auto"><table className="w-full text-left"><thead><tr><th className="py-2">Period</th>{series.map(s=><th className="px-3" key={s.key}>{s.label}</th>)}</tr></thead><tbody>{data.map(row=><tr className="border-t border-line" key={row.timestamp_ms}><th className="whitespace-nowrap py-2 font-normal">{stamp(row.timestamp_ms,hourly)}</th>{series.map(s=><td key={s.key} className="px-3">{number.format(row[s.key])}</td>)}</tr>)}</tbody></table></div></details>
   </section>
 }
@@ -50,10 +59,10 @@ export function ProfileAnalytics({did,mode='overview'}:{did:string;mode?:'overvi
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">{(mode==='activity' ? [['Posts & replies',sum('posts')+sum('replies')],['Likes received',sum('likes_received')],['Reposts received',sum('reposts_received')],['Replies received',sum('replies_received')]] : [['Follows gained',sum('gained')],['Known losses',sum('lost')],['Observed net',sum('gained')-sum('lost')],['Posts & replies',sum('posts')+sum('replies')]]).map(([label,value])=><div className="panel p-4" key={label}><p className="text-xs text-dim">{label}</p><p className="mt-2 text-3xl font-semibold tabular-nums">{number.format(Number(value))}</p></div>)}</div>
       <p className="text-xs leading-6 text-dim">{data.note}</p>
       <div className="grid items-start gap-5 xl:grid-cols-2">
-        {mode!=='activity' && <HistoryChart key={`audience-${days}`} title="Followers gained & lost" description="Incoming follows and target-resolved unfollows—not total followers." data={data.buckets} series={audience} hourly={days===1}/>}
-        {mode!=='audience' && <HistoryChart key={`activity-${days}`} title="What they’re doing" description="Public actions made by this account. Follow changes are shown separately." data={data.buckets} series={activity} hourly={days===1}/>}
-        {mode==='audience' && <HistoryChart key={`following-${days}`} title="Who they’re following" description={`Outgoing follow changes. ${sum('unknown_unfollows')} removals have an unknown target.`} data={data.buckets} series={following} hourly={days===1}/>}
-        {mode==='activity' && <HistoryChart key={`engagement-${days}`} title="Response to their work" description="Incoming interactions with a known target account; excludes self-interactions." data={data.buckets} series={engagement} hourly={days===1}/>}
+        {mode!=='activity' && <HistoryChart did={did} category="audience" key={`audience-${days}`} title="Followers gained & lost" description="Incoming follows and target-resolved unfollows—not total followers." data={data.buckets} series={audience} hourly={days===1}/>}
+        {mode!=='audience' && <HistoryChart did={did} category="activity" key={`activity-${days}`} title="What they’re doing" description="Public actions made by this account. Follow changes are shown separately." data={data.buckets} series={activity} hourly={days===1}/>}
+        {mode==='audience' && <HistoryChart did={did} category="following" key={`following-${days}`} title="Who they’re following" description={`Outgoing follow changes. ${sum('unknown_unfollows')} removals have an unknown target.`} data={data.buckets} series={following} hourly={days===1}/>}
+        {mode==='activity' && <HistoryChart did={did} category="response" key={`engagement-${days}`} title="Response to their work" description="Incoming interactions with a known target account; excludes self-interactions." data={data.buckets} series={engagement} hourly={days===1}/>}
       </div>
       <p className="text-xs text-dim">Through {new Date(data.end_ms).toLocaleString()} · {days===1?'Hourly':'Daily'} buckets · Counts are events, not unique people. <a href="/coverage" className="text-cyan">About coverage →</a></p>
     </>}
