@@ -57,7 +57,7 @@ export function IdentityLink({
       to="/accounts/$did"
       params={{ did }}
       title={`${handle ? `@${handle} · ` : ""}${did}`}
-      className={`block min-w-0 text-left text-orange-300 hover:text-orange-200 ${className}`}
+      className={`block min-w-0 text-left text-sky-300 hover:text-sky-200 ${className}`}
     >
       <span className="block break-all font-medium">
         {handle ? `@${handle}` : did}

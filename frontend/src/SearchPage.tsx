@@ -38,7 +38,7 @@ function Result({ item }: { item: SearchResult }) {
       to="/accounts/$did"
       params={{ did: item.did }}
       title={`${handle ? `@${handle} · ` : ""}${item.did}`}
-      className="block min-w-0 text-orange-300 hover:text-orange-200"
+      className="block min-w-0 text-sky-300 hover:text-sky-200"
     >
       <span className="block break-all font-medium">
         {handle ? `@${handle}` : item.did}
@@ -54,8 +54,8 @@ function Result({ item }: { item: SearchResult }) {
     return (
       <article className="rounded-xl border border-line bg-panel p-5">
         <div className="flex items-start gap-3">
-          <div className="grid size-10 shrink-0 place-items-center rounded-xl border border-orange-500/20 bg-orange-500/10">
-            <UserRound className="size-5 text-orange-400" />
+          <div className="grid size-10 shrink-0 place-items-center rounded-xl border border-sky-500/20 bg-sky-500/10">
+            <UserRound className="size-5 text-sky-400" />
           </div>
           <div className="min-w-0">
             <h2 className="font-medium">{account}</h2>
@@ -68,9 +68,9 @@ function Result({ item }: { item: SearchResult }) {
     );
   const canOpen = Boolean(item.at_uri?.includes("/app.bsky.feed.post/"));
   return (
-    <article className="rounded-xl border border-line bg-panel p-5 transition hover:border-orange-500/30">
+    <article className="rounded-xl border border-line bg-panel p-5 transition hover:border-sky-500/30">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-        <span className="rounded-md bg-orange-500/10 px-2 py-1 uppercase tracking-wide text-orange-300">
+        <span className="rounded-md bg-sky-500/10 px-2 py-1 uppercase tracking-wide text-sky-300">
           {item.event_type || item.operation || item.result_type}
         </span>
         {item.collection && (
@@ -98,7 +98,7 @@ function Result({ item }: { item: SearchResult }) {
       )}
       {item.record_json && (
         <details className="mt-4">
-          <summary className="cursor-pointer text-xs text-orange-300">
+          <summary className="cursor-pointer text-xs text-sky-300">
             Show complete record data
           </summary>
           <pre className="scrollbar mt-3 max-h-80 overflow-auto rounded-lg bg-black p-4 text-[11px] leading-5 text-white/70">
@@ -111,7 +111,7 @@ function Result({ item }: { item: SearchResult }) {
           <Link
             to="/records/$uri"
             params={{ uri: item.at_uri! }}
-            className="text-xs font-medium text-orange-300 hover:text-orange-200"
+            className="text-xs font-medium text-sky-300 hover:text-sky-200"
           >
             View full record →
           </Link>
@@ -169,7 +169,7 @@ function BackfillState({
     return (
       <div className="flex min-w-0 items-center gap-3">
         <span
-          className={`size-2 shrink-0 rounded-full ${activeStatuses.has(job.status) ? "animate-pulse bg-orange-400" : job.status === "completed" ? "bg-emerald-400" : "bg-red-400"}`}
+          className={`size-2 shrink-0 rounded-full ${activeStatuses.has(job.status) ? "animate-pulse bg-sky-400" : job.status === "completed" ? "bg-emerald-400" : "bg-red-400"}`}
         />
         <span className="min-w-0 flex-1 break-all">
           {job.handle ? <><span className="block">@{job.handle}</span>{job.did&&<span className="block font-mono text-[9px] text-dim">{job.did}</span>}</> : job.did || job.query}
@@ -178,7 +178,7 @@ function BackfillState({
           {job.job_type}
         </span>
         <span className="shrink-0 uppercase text-dim">{label}</span>
-        <span className="shrink-0 font-mono text-orange-300">
+        <span className="shrink-0 font-mono text-sky-300">
           {job.records_written} records
         </span>
       </div>
@@ -212,11 +212,11 @@ function BackfillState({
             ? "The public records collected by this job are now available to search."
             : "This job is fetching public data now.";
   return (
-    <section className="rounded-xl border border-orange-500/30 bg-orange-500/[.06] p-5">
+    <section className="rounded-xl border border-sky-500/30 bg-sky-500/[.06] p-5">
       <div className="flex flex-wrap items-start gap-4">
-        <div className="grid size-10 place-items-center rounded-xl bg-orange-500/10">
+        <div className="grid size-10 place-items-center rounded-xl bg-sky-500/10">
           <DatabaseZap
-            className={`size-5 text-orange-400 ${activeStatuses.has(job.status) ? "animate-pulse" : ""}`}
+            className={`size-5 text-sky-400 ${activeStatuses.has(job.status) ? "animate-pulse" : ""}`}
           />
         </div>
         <div className="min-w-0 flex-1">
@@ -224,7 +224,7 @@ function BackfillState({
             <h2 className="font-medium">
               {heading}
             </h2>
-            <span className="rounded-md border border-orange-500/20 px-2 py-0.5 text-[10px] uppercase tracking-wide text-orange-300">
+            <span className="rounded-md border border-sky-500/20 px-2 py-0.5 text-[10px] uppercase tracking-wide text-sky-300">
               {label}
             </span>
           </div>
@@ -234,12 +234,12 @@ function BackfillState({
                 <Link
                   to="/accounts/$did"
                   params={{ did: job.did }}
-                  className="text-sm text-orange-300 hover:text-orange-200"
+                  className="text-sm text-sky-300 hover:text-sky-200"
                 >
                   {job.handle ? <><span className="block">@{job.handle}</span><span className="block break-all font-mono text-[9px] text-dim">{job.did}</span></> : <>{job.did} <span className="text-[9px] text-dim">resolving…</span></>} →
                 </Link>
               ) : (
-                <span className="text-sm text-orange-300">@{job.handle}</span>
+                <span className="text-sm text-sky-300">@{job.handle}</span>
               )}
             </div>
           )}
@@ -258,7 +258,7 @@ function BackfillState({
             )}
             {job.retry_count > 0 && <span>{job.retry_count} retries</span>}
             {waiting && (
-              <span className="inline-flex items-center gap-1 text-orange-200">
+              <span className="inline-flex items-center gap-1 text-sky-200">
                 <Clock3 className="size-3" />
                 Rate limited · resumes {retryAt.toLocaleTimeString()}
               </span>
@@ -327,10 +327,10 @@ export function SearchPage({
     <section className="mx-auto max-w-5xl">
       <div className="mb-7">
         <p className="eyebrow">Retained public data</p>
-        <h1 className="mt-2 text-2xl font-semibold">Search the observatory</h1>
+        <h1 className="mt-2 text-3xl font-semibold tracking-tight">Find your corner of Bluesky</h1>
         <p className="mt-2 text-sm text-dim">
-          Find accounts, posts, and interactions collected since this
-          observatory started.
+          Find a person by handle or DID, open a post by its AT URI, or search
+          recently retained public posts. This is an explorer of collected data—not a complete index of Bluesky.
         </p>
       </div>
       <form
@@ -347,10 +347,10 @@ export function SearchPage({
             value={input}
             onChange={(event) => setInput(event.target.value)}
             placeholder="Search handles, DIDs, post text, URLs, or AT URIs…"
-            className="h-12 w-full rounded-xl border border-line bg-panel pl-11 pr-4 text-sm outline-none focus:border-orange-500/60"
+            className="h-12 w-full rounded-xl border border-line bg-panel pl-11 pr-4 text-sm outline-none focus:border-sky-500/60"
           />
         </label>
-        <button className="rounded-xl bg-orange-500 px-5 text-sm font-semibold text-black hover:bg-orange-400">
+        <button className="rounded-xl bg-sky-500 px-5 text-sm font-semibold text-black hover:bg-sky-400">
           Search
         </button>
       </form>
@@ -359,7 +359,7 @@ export function SearchPage({
           <button
             key={kind.value}
             onClick={() => go({ type: kind.value, offset: 0 })}
-            className={`rounded-lg border px-3 py-1.5 text-xs ${initialType === kind.value ? "border-orange-500 bg-orange-500/15 text-orange-300" : "border-line text-dim hover:text-white"}`}
+            className={`rounded-lg border px-3 py-1.5 text-xs ${initialType === kind.value ? "border-sky-500 bg-sky-500/15 text-sky-300" : "border-line text-dim hover:text-white"}`}
           >
             {kind.label}
           </button>
@@ -369,8 +369,12 @@ export function SearchPage({
         className={`mt-7 space-y-3 transition-opacity ${results.isPlaceholderData ? "opacity-50" : ""}`}
       >
         {!query && (
-          <div className="panel flex min-h-56 items-center justify-center text-sm text-dim">
-            Enter a search above to explore retained data.
+          <div className="grid gap-4 sm:grid-cols-3">
+            {[
+              ['People', 'Enter a handle such as bsky.app, or paste a DID.', 'bsky.app', 'account'],
+              ['Conversations', 'Find recent public posts containing a word or phrase.', 'hello', 'record'],
+              ['Links', 'See what people are sharing from a particular domain.', 'wikipedia.org', 'record'],
+            ].map(([title, description, q, type]) => <button key={title} onClick={() => { setInput(q); go({ q, type: type as SearchKind }) }} className="panel p-6 text-left transition hover:border-cyan/50"><h2 className="font-medium text-white">{title} →</h2><p className="mt-3 text-sm leading-6 text-dim">{description}</p></button>)}
           </div>
         )}
         {results.isLoading && (
@@ -380,7 +384,7 @@ export function SearchPage({
         )}
         {results.isError && (
           <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-5 text-sm text-red-200">
-            Search is temporarily unavailable.
+            This search couldn’t finish. Try an exact handle, DID, post URI or more specific phrase. <button onClick={() => void results.refetch()} className="ml-2 underline">Retry</button>
           </div>
         )}
         {results.data?.backfill_job && (

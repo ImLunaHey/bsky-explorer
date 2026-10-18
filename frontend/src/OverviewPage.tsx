@@ -88,7 +88,7 @@ function History({ data }: { data: Overview }) {
   const definition = useMemo(
     () =>
       defineChart({
-        marks: [lineY(rows, { x: "bucket", y: "value", stroke: "#ff8a1f" })],
+        marks: [lineY(rows, { x: "bucket", y: "value", stroke: "#58b8ff" })],
         scales: {
           x: {
             scale: scaleLinear,
@@ -144,7 +144,7 @@ function History({ data }: { data: Overview }) {
               key={value}
               aria-pressed={metric === value}
               onClick={() => setMetric(value)}
-              className={`rounded-lg px-3 py-2 text-xs capitalize ${metric === value ? "bg-orange-500/15 text-orange-300" : "text-dim"}`}
+              className={`rounded-lg px-3 py-2 text-xs capitalize ${metric === value ? "bg-sky-500/15 text-sky-300" : "text-dim"}`}
             >
               {value === "actors" ? "Active people" : value}
             </button>
@@ -178,6 +178,11 @@ function RisingList({
         <h2 className="font-semibold">{title}</h2>
         <p className="mt-1 text-xs leading-relaxed text-dim">{note}</p>
       </header>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Link to="/search" search={{q:'',type:'account',offset:0}} className="panel p-5 transition hover:border-cyan/50"><h2 className="font-medium">Find your corner of Bluesky ↗</h2><p className="mt-2 text-xs leading-5 text-dim">Look up people, search posts, and explore their public activity.</p></Link>
+        <Link to="/firehose" className="panel p-5 transition hover:border-cyan/50"><h2 className="font-medium">Watch it happen ↗</h2><p className="mt-2 text-xs leading-5 text-dim">A live, filterable stream of public network activity.</p></Link>
+        <Link to="/communities" className="panel p-5 transition hover:border-cyan/50"><h2 className="font-medium">Explore connected circles ↗</h2><p className="mt-2 text-xs leading-5 text-dim">Discover accounts interacting with one another.</p></Link>
+      </div>
       <div className="divide-y divide-line">
         {rows.length ? (
           rows.map((row, index) => (
@@ -193,7 +198,7 @@ function RisingList({
                     compact
                   />
                 </div>
-                <span className="shrink-0 rounded-full bg-orange-500/10 px-2 py-1 text-xs text-orange-300">
+                <span className="shrink-0 rounded-full bg-sky-500/10 px-2 py-1 text-xs text-sky-300">
                   {row.growth > 0 ? "+" : ""}
                   {number.format(row.growth)}
                 </span>
@@ -201,7 +206,7 @@ function RisingList({
               <Link
                 to="/records/$uri"
                 params={{ uri: row.uri }}
-                className="mt-3 block text-sm leading-relaxed hover:text-orange-200"
+                className="mt-3 block text-sm leading-relaxed hover:text-sky-200"
               >
                 <span className="line-clamp-3">
                   {row.text ||
@@ -250,7 +255,7 @@ export function OverviewPage() {
         <div>
           <p className="eyebrow">A window into the public network</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl">
-            Bluesky now<span className="text-orange-400">.</span>
+            Bluesky now<span className="text-sky-400">.</span>
           </h1>
           <p className="mt-3 max-w-2xl text-sm leading-relaxed text-dim">
             Who’s here, what’s gathering attention, and how the conversation is
@@ -296,7 +301,7 @@ export function OverviewPage() {
           role="alert"
           className="rounded-xl border border-red-500/30 bg-red-500/5 p-5 text-sm text-red-200"
         >
-          Couldn’t load this period. Try refreshing or choosing a shorter range.
+          This summary is being prepared or is temporarily unavailable. Try again shortly; the live stream is still available.
           {data && " Showing the last successful result."}
         </div>
       )}
@@ -305,19 +310,18 @@ export function OverviewPage() {
           role="status"
           className="panel grid min-h-80 place-items-center p-8 text-dim"
         >
-          Reading retained network activity… Day and week ranges can take a few
-          minutes on first load.
+          Loading the latest network summary…
         </div>
       )}
       {data && (
         <>
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-dim">
             <span>
-              {date(data.start)} — {date(data.end)} · estimated counts
+              {date(data.start)} — {date(data.end)} · estimated counts · refreshed in the background
             </span>
             <Link
               to="/coverage"
-              className="inline-flex items-center gap-1 hover:text-orange-300"
+              className="inline-flex items-center gap-1 hover:text-sky-300"
             >
               What do these numbers cover? <ArrowUpRight className="size-3" />
             </Link>
@@ -352,7 +356,7 @@ export function OverviewPage() {
                 <p className="mt-3 text-3xl font-semibold tabular-nums">
                   {number.format(current?.[stat.key] ?? 0)}
                 </p>
-                <p className="mt-2 text-xs text-orange-200">
+                <p className="mt-2 text-xs text-sky-200">
                   {change(current?.[stat.key] ?? 0, previous?.[stat.key] ?? 0)}
                 </p>
                 <p className="mt-2 text-xs text-dim">{stat.note}</p>
@@ -390,7 +394,7 @@ export function OverviewPage() {
                     </div>
                     <div className="h-1.5 rounded bg-white/5">
                       <div
-                        className="h-full rounded bg-orange-400"
+                        className="h-full rounded bg-sky-400"
                         style={{
                           width: `${(item.count / Math.max(1, data.languages[0]?.count ?? 1)) * 100}%`,
                         }}
@@ -432,7 +436,7 @@ export function OverviewPage() {
           </div>
           <Link
             to="/communities"
-            className="panel flex items-center justify-between gap-4 p-6 hover:border-orange-500/50"
+            className="panel flex items-center justify-between gap-4 p-6 hover:border-sky-500/50"
           >
             <div>
               <p className="eyebrow">Go beyond the global view</p>
@@ -445,7 +449,7 @@ export function OverviewPage() {
                 range.
               </p>
             </div>
-            <ArrowUpRight className="size-6 shrink-0 text-orange-300" />
+            <ArrowUpRight className="size-6 shrink-0 text-sky-300" />
           </Link>
           <aside className="rounded-xl border border-line p-4 text-xs leading-relaxed text-dim">
             Rankings compare the 1,000 most active candidate posts or threads in

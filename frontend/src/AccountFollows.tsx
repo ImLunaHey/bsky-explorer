@@ -97,7 +97,7 @@ function FollowEventTable({
                       <button
                         onClick={() => onAccount(other)}
                         title={other}
-                        className="block max-w-72 text-left text-orange-300 hover:text-orange-200"
+                        className="block max-w-72 text-left text-sky-300 hover:text-sky-200"
                       >
                         <b className="block break-all">
                           {handle ? `@${handle}` : other}

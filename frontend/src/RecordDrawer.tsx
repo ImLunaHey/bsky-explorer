@@ -69,8 +69,8 @@ function RecordSummary({
           {item.text}
         </p>
       ) : media && media.media.length === 0 ? (
-        <div className="mt-4 rounded-lg border border-orange-400/20 bg-orange-400/5 p-4 text-sm text-dim">
-          <p className="font-medium text-orange-200">
+        <div className="mt-4 rounded-lg border border-sky-400/20 bg-sky-400/5 p-4 text-sm text-dim">
+          <p className="font-medium text-sky-200">
             No textual or available media content
           </p>
           <p className="mt-1">
@@ -190,7 +190,13 @@ export function RecordPage({
   const detail = useQuery({
     queryKey: ["record", uri],
     queryFn: () =>
-      api<RecordDetail>(`/api/records?uri=${encodeURIComponent(uri)}`),
+      api<RecordDetail>(`/api/records?uri=${encodeURIComponent(uri)}&summary=true`),
+  });
+  const context = useQuery({
+    queryKey: ['record-context', uri],
+    queryFn: () => api<RecordDetail>(`/api/records?uri=${encodeURIComponent(uri)}`),
+    enabled: !!detail.data,
+    staleTime: 60_000,
   });
   const media = useQuery({
     queryKey: ["record-media", uri],
@@ -207,14 +213,13 @@ export function RecordPage({
       detail.data
         ? [
             detail.data.record.actor_did,
-            ...detail.data.conversation.map((x) => x.actor_did),
-            ...detail.data.recent_interactions.map((x) => x.actor_did),
+            ...(context.data?.conversation || []).map((x) => x.actor_did),
           ]
         : [],
     ),
   ];
   const handles = useIdentityMap(dids),
-    d = detail.data;
+    d = context.data || detail.data;
   return (
     <section className="panel mx-auto max-w-4xl p-6">
       <p className="eyebrow">Record detail</p>
@@ -225,7 +230,7 @@ export function RecordPage({
       )}
       {detail.isError && (
         <div className="mt-8 rounded-xl border border-amber-300/20 bg-amber-300/5 p-4 text-sm text-amber-200">
-          This record is not available in retained data.
+          This post couldn’t be loaded. It may be unavailable, or the archive request may have timed out.
         </div>
       )}
       {d && (
@@ -264,11 +269,12 @@ export function RecordPage({
                 className="rounded-xl border border-line p-3 text-center"
               >
                 <Icon className="mx-auto size-4 text-mint" />
-                <b className="mt-2 block">{value}</b>
+                <b className="mt-2 block">{context.data ? value : '—'}</b>
                 <span className="text-[10px] uppercase text-dim">{label}</span>
               </div>
             ))}
           </div>
+          <p className="mt-3 text-xs text-dim">{context.isPending ? 'Loading retained interactions separately…' : context.isError ? 'Interaction history temporarily unavailable. The post remains readable.' : 'Counts reflect retained interactions, not current Bluesky totals.'}</p>
           {d.conversation.length > 0 && (
             <>
               <h3 className="eyebrow mt-8 mb-3">Conversation context</h3>

@@ -43,7 +43,7 @@ const statuses: ("all" | BackfillStatus)[] = [
 const fmt = (value: string) => new Date(value).toLocaleString();
 const statusTone = (status: BackfillStatus) =>
   active.has(status)
-    ? "bg-orange-400"
+    ? "bg-sky-400"
     : status === "paused"
       ? "bg-amber-400"
     : status === "completed"
@@ -61,7 +61,7 @@ const columns = [
       const job = x.row.original;
       return (
         <div className="max-w-64">
-          <span className="block break-all font-medium text-orange-300">
+          <span className="block break-all font-medium text-sky-300">
             {job.handle
               ? `@${job.handle}`
               : job.did
@@ -202,7 +202,7 @@ export function BackfillsPage() {
               value={filter}
               onChange={(event) => setFilter(event.target.value)}
               placeholder="Filter DID, handle, job, or error…"
-              className="h-10 w-full rounded-lg border border-line bg-black pl-9 pr-3 text-sm outline-none focus:border-orange-500/60"
+              className="h-10 w-full rounded-lg border border-line bg-black pl-9 pr-3 text-sm outline-none focus:border-sky-500/60"
             />
           </label>
           <select
@@ -327,7 +327,7 @@ function JobRow({
         {cells.map((cell) => (
           <td key={cell.id} className="px-3 py-3">
             {cell.column.id === "expand" ? (
-              <Link to="/backfills/$jobId" params={{jobId:job.id}} aria-label={`Open job ${job.id}`} className="block p-2 text-dim hover:text-orange-300">
+              <Link to="/backfills/$jobId" params={{jobId:job.id}} aria-label={`Open job ${job.id}`} className="block p-2 text-dim hover:text-sky-300">
                 <ChevronRight className="size-4" />
               </Link>
             ) : (
@@ -362,10 +362,10 @@ export function BackfillDetailPage({jobId}:{jobId:string}) {
   const eventHandles=useIdentityMap((imported.data?.events||[]).map(event=>event.actor_did));
   const eventColumns=useMemo(()=>[
     eventHelper.accessor("timestamp_ms",{header:"Observed",cell:x=><time className="whitespace-nowrap text-dim">{new Date(x.getValue()).toLocaleString()}</time>}),
-    eventHelper.accessor("kind",{header:"Kind",cell:x=><span className="uppercase text-orange-300">{x.getValue()}</span>}),
-    eventHelper.accessor("actor_did",{header:"Actor",cell:x=>{const actor=x.getValue(),actorHandle=eventHandles.get(actor);return <Link to="/accounts/$did" params={{did:actor}} className="block max-w-56 text-orange-300" title={actor}><b className="block truncate">{actorHandle?`@${actorHandle}`:actor}</b>{actorHandle&&<span className="block truncate font-mono text-[9px] text-dim">{actor}</span>}</Link>}}),
+    eventHelper.accessor("kind",{header:"Kind",cell:x=><span className="uppercase text-sky-300">{x.getValue()}</span>}),
+    eventHelper.accessor("actor_did",{header:"Actor",cell:x=>{const actor=x.getValue(),actorHandle=eventHandles.get(actor);return <Link to="/accounts/$did" params={{did:actor}} className="block max-w-56 text-sky-300" title={actor}><b className="block truncate">{actorHandle?`@${actorHandle}`:actor}</b>{actorHandle&&<span className="block truncate font-mono text-[9px] text-dim">{actor}</span>}</Link>}}),
     eventHelper.accessor("collection",{header:"Collection",cell:x=><span className="block max-w-64 truncate" title={x.getValue()}>{x.getValue()}</span>}),
-    eventHelper.accessor(x=>x.at_uri||x.target,{id:"record",header:"Record / target",cell:x=>{const uri=x.getValue();return uri?<Link to="/records/$uri" params={{uri}} className="block max-w-80 truncate text-orange-300" title={uri}>{uri}</Link>:"—"}}),
+    eventHelper.accessor(x=>x.at_uri||x.target,{id:"record",header:"Record / target",cell:x=>{const uri=x.getValue();return uri?<Link to="/records/$uri" params={{uri}} className="block max-w-80 truncate text-sky-300" title={uri}>{uri}</Link>:"—"}}),
   ],[eventHandles]);
   const eventData=useMemo(()=>{const needle=eventSearch.trim().toLowerCase();return (imported.data?.events||[]).filter(event=>!needle||`${event.actor_did} ${event.kind} ${event.collection} ${event.at_uri} ${event.target}`.toLowerCase().includes(needle))},[eventSearch,imported.data]);
   const eventTable=useReactTable({data:eventData,columns:eventColumns,state:{sorting:eventSorting},onSortingChange:setEventSorting,getCoreRowModel:getCoreRowModel(),getSortedRowModel:getSortedRowModel()});
@@ -375,7 +375,7 @@ export function BackfillDetailPage({jobId}:{jobId:string}) {
   const handle=value.handle||resolved;
   const progress=value.progress;
   return <section>
-    <Link to="/backfills" className="inline-flex items-center gap-2 text-sm text-dim hover:text-orange-300"><ChevronLeft className="size-4"/>Backfill jobs</Link>
+    <Link to="/backfills" className="inline-flex items-center gap-2 text-sm text-dim hover:text-sky-300"><ChevronLeft className="size-4"/>Backfill jobs</Link>
     <div className="mt-5 flex flex-wrap items-start justify-between gap-4">
       <div><p className="eyebrow">Durable collection job</p><h1 className="mt-2 break-all text-2xl font-semibold">{handle?`@${handle}`:value.did||value.query}</h1>{value.did&&<p className="mt-1 break-all font-mono text-xs text-dim">{value.did}</p>}<p className="mt-2 break-all font-mono text-xs text-dim">{value.id}</p></div>
       <span className="inline-flex items-center gap-2 rounded-full border border-line px-3 py-2 text-xs uppercase"><i className={`size-2 rounded-full ${statusTone(value.status)}`}/>{value.status.replace("_"," ")}</span>
@@ -388,8 +388,8 @@ export function BackfillDetailPage({jobId}:{jobId:string}) {
       </div>
       {progress&&<><h2 className="eyebrow mb-4 mt-8">Live checkpoint · {fmt(progress.updated_at)}</h2><div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4"><Detail label="Current collection" value={progress.current_collection||"—"}/><Detail label="Collection index" value={progress.collection_index?.toLocaleString()||"—"}/><Detail label="Posts processed" value={progress.posts_total!=null?`${(progress.posts_processed||0).toLocaleString()} / ${progress.posts_total.toLocaleString()}`:(progress.posts_processed?.toLocaleString()||"—")}/><Detail label="Remaining" value={progress.posts_remaining?.toLocaleString()||"—"}/><Detail label="Successful posts" value={progress.posts_completed?.toLocaleString()||"—"}/><Detail label="Requests" value={progress.requests?.toLocaleString()||"—"}/><Detail label="Likes / reposts" value={`${(progress.likes||0).toLocaleString()} / ${(progress.reposts||0).toLocaleString()}`}/><Detail label="Quotes / replies" value={`${(progress.quotes||0).toLocaleString()} / ${(progress.replies||0).toLocaleString()}`}/><Detail label="Errors" value={progress.errors?.toLocaleString()||"0"}/><Detail label="Rate" value={progress.rate_per_second!=null?`${progress.rate_per_second.toFixed(2)} / sec`:"—"}/><Detail label="ETA" value={progress.eta_seconds!=null?friendlyDuration(progress.eta_seconds):"—"}/></div></>}
       <div className="mt-6 flex flex-wrap gap-3">
-        {value.did&&<Link to="/accounts/$did" params={{did:value.did}} className="rounded-lg border border-orange-500/40 px-4 py-2 text-sm text-orange-300 hover:bg-orange-500/10">Open account</Link>}
-        {value.depends_on_job_id&&<Link to="/backfills/$jobId" params={{jobId:value.depends_on_job_id}} className="rounded-lg border border-line px-4 py-2 text-sm text-white hover:border-orange-500/40">Open dependency</Link>}
+        {value.did&&<Link to="/accounts/$did" params={{did:value.did}} className="rounded-lg border border-sky-500/40 px-4 py-2 text-sm text-sky-300 hover:bg-sky-500/10">Open account</Link>}
+        {value.depends_on_job_id&&<Link to="/backfills/$jobId" params={{jobId:value.depends_on_job_id}} className="rounded-lg border border-line px-4 py-2 text-sm text-white hover:border-sky-500/40">Open dependency</Link>}
       </div>
     </div>
     <section className="panel mt-6 overflow-hidden"><div className="flex flex-wrap items-end justify-between gap-3 border-b border-line p-5"><div><h2 className="font-semibold">Imported records and interactions</h2><p className="mt-1 text-xs text-dim">Strictly matched to this job's DID and import source.</p></div><input value={eventSearch} onChange={event=>setEventSearch(event.target.value)} placeholder="Filter this page…" className="rounded-lg border border-line bg-black px-3 py-2 text-sm"/></div>

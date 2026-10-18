@@ -70,7 +70,7 @@ const relative = (value?: string | null) => {
 };
 const statusTone: Record<IdentityQueueStatus, string> = {
   queued: "border-white/15 text-white/70",
-  running: "border-orange-400/40 bg-orange-500/10 text-orange-300",
+  running: "border-sky-400/40 bg-sky-500/10 text-sky-300",
   retrying: "border-amber-400/40 bg-amber-500/10 text-amber-300",
   resolved: "border-emerald-400/30 bg-emerald-500/10 text-emerald-300",
   negative: "border-zinc-400/30 text-zinc-300",
@@ -100,7 +100,7 @@ function QueueChart({ analytics }: { analytics: IdentityQueueAnalytics }) {
     () =>
       defineChart({
         marks: [
-          lineY(rows, { id: "Resolved", x: "time", y: "resolved", stroke: "#ff8a1f", points: true }),
+          lineY(rows, { id: "Resolved", x: "time", y: "resolved", stroke: "#58b8ff", points: true }),
           lineY(rows, { id: "Negative", x: "time", y: "negative", stroke: "#ffbf69", points: true }),
           lineY(rows, { id: "Failures", x: "time", y: "failures", stroke: "#ef4444", points: true }),
         ],
@@ -127,7 +127,7 @@ function QueueChart({ analytics }: { analytics: IdentityQueueAnalytics }) {
   const latency = useMemo(
     () =>
       defineChart({
-        marks: [lineY(latencyRows, { id: "Average latency", x: "time", y: "avg_duration_ms", stroke: "#ff8a1f", points: true })],
+        marks: [lineY(latencyRows, { id: "Average latency", x: "time", y: "avg_duration_ms", stroke: "#58b8ff", points: true })],
         scales: {
           x: { scale: scaleLinear, axis: { label: "Local time", ticks: { format: (value: number) => localTime(value) } } },
           y: { scale: scaleLinear, axis: { label: "Resolution latency", ticks: { format: (value: number) => duration(value) } } },
@@ -153,7 +153,7 @@ function QueueChart({ analytics }: { analytics: IdentityQueueAnalytics }) {
           {rows.length > 1 ? <Chart definition={throughput} height={210} ariaLabel="Identity resolution outcomes" /> : <p className="grid h-52 place-items-center text-sm text-dim">Collecting queue history…</p>}
         </div>
         <div className="mt-2 flex justify-center gap-5 text-[10px] uppercase tracking-wide text-dim">
-          <span className="text-orange-400">● Resolved</span><span className="text-orange-200">● Negative</span><span className="text-red-400">● Failures</span>
+          <span className="text-sky-400">● Resolved</span><span className="text-sky-200">● Negative</span><span className="text-red-400">● Failures</span>
         </div>
       </section>
       <section className="rounded-xl border border-line bg-panel/70 p-5">
@@ -203,11 +203,11 @@ export function IdentitiesPage() {
         enableSorting: false,
         cell: ({ row }) => (
           <div className="max-w-80">
-            <Link to="/accounts/$did" params={{ did: row.original.did }} className="block hover:text-orange-300">
+            <Link to="/accounts/$did" params={{ did: row.original.did }} className="block hover:text-sky-300">
               {row.original.handle && <b className="block truncate text-sm">@{row.original.handle}</b>}
               <span className="block break-all font-mono text-[10px] text-dim">{row.original.did}</span>
             </Link>
-            <Link to="/identities/$jobId" params={{ jobId: row.original.id }} className="mt-1 inline-block font-mono text-[9px] text-orange-400 hover:text-orange-300">{row.original.id}</Link>
+            <Link to="/identities/$jobId" params={{ jobId: row.original.id }} className="mt-1 inline-block font-mono text-[9px] text-sky-400 hover:text-sky-300">{row.original.id}</Link>
           </div>
         ),
       }),
@@ -268,7 +268,7 @@ export function IdentitiesPage() {
           <div className="flex flex-col gap-2 sm:flex-row">
             <form className="relative" onSubmit={(event) => { event.preventDefault(); setQuery(search.trim()); setPage(0); }}>
               <Search className="absolute left-3 top-2.5 size-4 text-dim" />
-              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="DID or handle" aria-label="Search identity jobs" className="h-9 w-full rounded-lg border border-line bg-black pl-9 pr-3 text-xs outline-none focus:border-orange-500 sm:w-64" />
+              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="DID or handle" aria-label="Search identity jobs" className="h-9 w-full rounded-lg border border-line bg-black pl-9 pr-3 text-xs outline-none focus:border-sky-500 sm:w-64" />
             </form>
             <select value={status} onChange={(event) => { setStatus(event.target.value as IdentityQueueStatus | "all"); setPage(0); }} aria-label="Filter by identity status" className="h-9 rounded-lg border border-line bg-black px-3 text-xs">
               <option value="all">All statuses</option>
@@ -307,13 +307,13 @@ export function IdentityDetailPage({ jobId }: { jobId: string }) {
   ];
   return (
     <div className="mx-auto max-w-4xl space-y-5">
-      <Link to="/identities" className="text-xs text-orange-300 hover:text-orange-200">← Identity operations</Link>
+      <Link to="/identities" className="text-xs text-sky-300 hover:text-sky-200">← Identity operations</Link>
       <section className="rounded-xl border border-line bg-panel/70 p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="eyebrow">Identity job</p>
             {item.handle && <h1 className="mt-2 text-2xl font-semibold">@{item.handle}</h1>}
-            <Link to="/accounts/$did" params={{ did: item.did }} className="mt-2 block break-all font-mono text-xs text-orange-300 hover:text-orange-200">{item.did}</Link>
+            <Link to="/accounts/$did" params={{ did: item.did }} className="mt-2 block break-all font-mono text-xs text-sky-300 hover:text-sky-200">{item.did}</Link>
           </div>
           <span className={`rounded-full border px-3 py-1 text-xs uppercase tracking-wide ${statusTone[item.status]}`}>{item.status.replace("_", " ")}</span>
         </div>

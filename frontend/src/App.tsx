@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   createColumnHelper,
@@ -27,19 +27,20 @@ import { defineChart, lineY } from "@tanstack/charts";
 import { scaleLinear } from "@tanstack/charts/scales/linear";
 import { tooltip } from "@tanstack/charts/tooltip";
 import { api } from "./api";
-import { RecordPage } from "./RecordDrawer";
+import { LiveUpdates } from "./live";
+const RecordPage = lazy(() => import('./RecordDrawer').then(m => ({ default: m.RecordPage })));
 import { FirehoseView } from "./FirehoseView";
-import { FirehoseImagesPage } from "./FirehoseImagesPage";
-import { TrendPage } from "./TrendPage";
+const FirehoseImagesPage = lazy(() => import('./FirehoseImagesPage').then(m => ({ default: m.FirehoseImagesPage })));
+const TrendPage = lazy(() => import('./TrendPage').then(m => ({ default: m.TrendPage })));
 import { CommandPalette } from "./CommandPalette";
-import { SearchPage } from "./SearchPage";
-import { AccountPage } from "./AccountPage";
+const SearchPage = lazy(() => import('./SearchPage').then(m => ({ default: m.SearchPage })));
+const AccountPage = lazy(() => import('./AccountPage').then(m => ({ default: m.AccountPage })));
 import { TopAccounts } from "./TopAccounts";
 import { OverviewPage } from "./OverviewPage";
 import { BackfillDetailPage, BackfillsPage } from "./BackfillsPage";
 import { IdentitiesPage, IdentityDetailPage } from "./IdentitiesPage";
 import { CrawlDetailPage } from "./CrawlsPage";
-import { CoveragePage } from "./CoveragePage";
+const CoveragePage = lazy(() => import('./CoveragePage').then(m => ({ default: m.CoveragePage })));
 import { CommunitiesPage, CommunityDetailPage } from "./CommunitiesPage";
 import type {
   Anomalies,
@@ -314,7 +315,7 @@ function InteractionGraph({
             markerHeight="5"
             orient="auto-start-reverse"
           >
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="#ff8a1f" />
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#58b8ff" />
           </marker>
         </defs>
         <g>
@@ -331,7 +332,7 @@ function InteractionGraph({
                 y1={source.y}
                 x2={target.x}
                 y2={target.y}
-                stroke="#ff8a1f"
+                stroke="#58b8ff"
                 strokeWidth={1 + (5 * edge.event_count) / maxEdge}
                 strokeOpacity={selected ? 0.72 : 0.09}
                 markerEnd="url(#graph-arrow)"
@@ -375,8 +376,8 @@ function InteractionGraph({
                 <circle r={size + 7} fill="transparent" />
                 <circle
                   r={size}
-                  fill={selected ? "#ffb15c" : "#160d06"}
-                  stroke={selected ? "#fff2e5" : "#ff8a1f"}
+                  fill={selected ? "#8dd1ff" : "#160d06"}
+                  stroke={selected ? "#fff2e5" : "#58b8ff"}
                   strokeWidth={selected ? 3 : 2}
                 />
                 <text
@@ -496,7 +497,7 @@ function RateChart({ rates }: { rates: Rates }) {
           id: "Event rate",
           x: "window",
           y: "rate",
-          stroke: "#ff8a1f",
+          stroke: "#58b8ff",
           points: true,
         }),
       ],
@@ -561,7 +562,7 @@ function RankList({
               {String(i + 1).padStart(2, "0")}
             </span>
             <span
-              className="min-w-0 flex-1 truncate hover:text-orange-300"
+              className="min-w-0 flex-1 truncate hover:text-sky-300"
               title={item.key}
             >
               {item.sample || item.key}
@@ -600,13 +601,13 @@ function ConversationList({
             type="button"
             key={item.key}
             onClick={() => onRecord(uri)}
-            className="min-w-0 rounded-xl border border-line bg-black p-4 text-left transition hover:border-orange-500/40"
+            className="min-w-0 rounded-xl border border-line bg-black p-4 text-left transition hover:border-sky-500/40"
           >
             <div className="flex items-center gap-2 text-xs">
-              <span className="min-w-0 flex-1 break-all font-medium text-orange-300">
+              <span className="min-w-0 flex-1 break-all font-medium text-sky-300">
                 {item.handle ? <><span className="block">@{item.handle}</span>{record&&<span className="block break-all font-mono text-[9px] text-dim">{record.actor_did}</span>}</> : record ? <>{record.actor_did}<span className="ml-2 text-[9px] text-dim">resolving…</span></> : "Observed conversation"}
               </span>
-              <span className="shrink-0 rounded-md bg-orange-500/10 px-2 py-1 font-mono text-orange-300">
+              <span className="shrink-0 rounded-md bg-sky-500/10 px-2 py-1 font-mono text-sky-300">
                 {compact.format(item.count)} replies
               </span>
             </div>
@@ -621,7 +622,7 @@ function ConversationList({
               ) : (
                 <span>Retained conversation</span>
               )}
-              <span className="truncate text-orange-300">
+              <span className="truncate text-sky-300">
                 View conversation →
               </span>
             </div>
@@ -1013,7 +1014,7 @@ function SystemHistoryChart({ history }: { history: SystemSample[] }) {
           id: "Event throughput",
           x: "time",
           y: "rate",
-          stroke: "#ffb15c",
+          stroke: "#8dd1ff",
           points: true,
         }),
       ],
@@ -1079,21 +1080,21 @@ function CpuHistoryChart({ history }: { history: SystemSample[] }) {
           id: "Host CPU",
           x: "time",
           y: "host",
-          stroke: "#ff8a1f",
+          stroke: "#58b8ff",
           points: true,
         }),
         lineY(rows, {
           id: "Container CPU",
           x: "time",
           y: "container",
-          stroke: "#ffb15c",
+          stroke: "#8dd1ff",
           points: true,
         }),
         lineY(rows, {
           id: "Rust process CPU",
           x: "time",
           y: "process",
-          stroke: "#ffd0a3",
+          stroke: "#c4e6ff",
           points: true,
         }),
       ],
@@ -1142,9 +1143,9 @@ function CpuHistoryChart({ history }: { history: SystemSample[] }) {
       />
       <Legend
         labels={[
-          ["Host", "#ff8a1f"],
-          ["Container", "#ffb15c"],
-          ["Process", "#ffd0a3"],
+          ["Host", "#58b8ff"],
+          ["Container", "#8dd1ff"],
+          ["Process", "#c4e6ff"],
         ]}
       />
     </>
@@ -1166,14 +1167,14 @@ function MemoryHistoryChart({ history }: { history: SystemSample[] }) {
           id: "Container memory",
           x: "time",
           y: "container",
-          stroke: "#ffb15c",
+          stroke: "#8dd1ff",
           points: true,
         }),
         lineY(rows, {
           id: "Process resident memory",
           x: "time",
           y: "process",
-          stroke: "#ffd0a3",
+          stroke: "#c4e6ff",
           points: true,
         }),
       ],
@@ -1218,8 +1219,8 @@ function MemoryHistoryChart({ history }: { history: SystemSample[] }) {
       />
       <Legend
         labels={[
-          ["Container memory", "#ffb15c"],
-          ["Process resident memory", "#ffd0a3"],
+          ["Container memory", "#8dd1ff"],
+          ["Process resident memory", "#c4e6ff"],
         ]}
       />
     </>
@@ -1470,6 +1471,7 @@ export default function App({ route }: { route: AppRoute }) {
     }));
   return (
     <>
+      {(route.view === 'firehose' || route.view === 'firehose-images') && <LiveUpdates />}
       <header className="sticky top-0 z-30 border-b border-line/80 bg-ink/90 backdrop-blur-xl">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4">
           <div className="flex items-center gap-3">
@@ -1478,10 +1480,10 @@ export default function App({ route }: { route: AppRoute }) {
             </div>
             <div>
               <h1 className="text-sm font-semibold tracking-tight">
-                Bluesky Observatory
+                Bluesky Explorer
               </h1>
               <p className="text-[10px] uppercase tracking-[.16em] text-dim">
-                Explore the public conversation
+                A window into the public network
               </p>
             </div>
           </div>
@@ -1496,14 +1498,15 @@ export default function App({ route }: { route: AppRoute }) {
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-7xl px-5 py-7">
+      <main className="mx-auto max-w-7xl px-4 py-6 sm:px-8 sm:py-8">
+        <Suspense fallback={<div role="status" className="panel p-10 text-sm text-dim">Opening explorer…</div>}>
         <nav className="mb-7 flex gap-1 overflow-x-auto rounded-xl border border-line bg-panel/70 p-1 sm:w-fit">
           {(
             [
               ["/", "Bluesky now", "network"],
-              ["/firehose", "Firehose", "firehose"],
+              ["/firehose", "Live stream", "firehose"],
               ["/search", "Search", "search"],
-              ["/coverage", "Coverage", "coverage"],
+              ["/coverage", "Our dataset", "coverage"],
               ["/communities", "Communities", "communities"],
             ] as const
           ).map(([to, label, id]) => (
@@ -1784,6 +1787,7 @@ export default function App({ route }: { route: AppRoute }) {
         {route.view === "trend" && (
           <TrendPage dimension={route.dimension} trendKey={route.trendKey} />
         )}
+        </Suspense>
       </main>
     </>
   );

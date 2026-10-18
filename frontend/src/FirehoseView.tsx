@@ -35,14 +35,14 @@ const recordUri = (event: FirehoseEvent) =>
     ? event.at_uri
     : undefined;
 const tones: Record<string, string> = {
-  post: "bg-orange-400/10 text-orange-300",
-  reply: "bg-orange-400/10 text-orange-300",
+  post: "bg-sky-400/10 text-sky-300",
+  reply: "bg-sky-400/10 text-sky-300",
   like: "bg-pink-300/10 text-pink-300",
   repost: "bg-violet-300/10 text-violet-300",
-  follow: "bg-orange-300/10 text-orange-300",
+  follow: "bg-sky-300/10 text-sky-300",
   unfollow: "bg-amber-300/10 text-amber-300",
   delete: "bg-red-300/10 text-red-300",
-  quote: "bg-orange-300/10 text-orange-300",
+  quote: "bg-sky-300/10 text-sky-300",
 };
 
 function MediaPreview({ uri }: { uri: string }) {
@@ -189,7 +189,7 @@ export function FirehoseView({
                 type="button"
                 onClick={() => onAccount(did)}
                 title={handle ? `@${handle}\n${did}` : did}
-                className="min-w-0 flex-1 text-left text-xs text-orange-300 hover:text-orange-200"
+                className="min-w-0 flex-1 text-left text-xs text-sky-300 hover:text-sky-200"
               >
               <b className={`block font-medium ${handle ? "truncate" : "break-all font-mono text-[10px] leading-tight"}`}>
                 {handle ? `@${handle}` : did}
@@ -202,7 +202,7 @@ export function FirehoseView({
                 <span className="block pt-0.5 text-[9px] text-dim">resolving…</span>
               )}
               </button>
-              <button type="button" onClick={() => void navigator.clipboard.writeText(did)} title={`Copy full DID: ${did}`} aria-label={`Copy full DID ${did}`} className="shrink-0 rounded p-1 text-white/25 opacity-60 hover:bg-white/5 hover:text-orange-300 focus:opacity-100 sm:opacity-0 sm:group-hover/account:opacity-100"><Copy className="size-3" /></button>
+              <button type="button" onClick={() => void navigator.clipboard.writeText(did)} title={`Copy full DID: ${did}`} aria-label={`Copy full DID ${did}`} className="shrink-0 rounded p-1 text-white/25 opacity-60 hover:bg-white/5 hover:text-sky-300 focus:opacity-100 sm:opacity-0 sm:group-hover/account:opacity-100"><Copy className="size-3" /></button>
             </div>
           );
         },
@@ -240,7 +240,7 @@ export function FirehoseView({
                   {event.domains?.map((domain) => (
                     <span
                       key={domain}
-                      className="rounded bg-orange-400/5 px-1.5 py-0.5 text-[10px] text-orange-300"
+                      className="rounded bg-sky-400/5 px-1.5 py-0.5 text-[10px] text-sky-300"
                     >
                       {domain}
                     </span>
@@ -255,7 +255,7 @@ export function FirehoseView({
               type="button"
               onClick={() => onRecord(uri)}
               title="Open record detail"
-              className="block w-full rounded-md outline-none hover:bg-white/[.025] focus-visible:ring-1 focus-visible:ring-orange-400/70"
+              className="block w-full rounded-md outline-none hover:bg-white/[.025] focus-visible:ring-1 focus-visible:ring-sky-400/70"
             >
               {content}
             </button>
@@ -295,8 +295,8 @@ export function FirehoseView({
   return (
     <div className="space-y-5">
       <div className="flex w-fit rounded-lg border border-white/10 bg-white/[.02] p-1 text-xs">
-        <Link to="/firehose" className="rounded-md bg-orange-400 px-3 py-1.5 font-semibold text-black">Events</Link>
-        <Link to="/firehose/images" className="rounded-md px-3 py-1.5 text-white/55 hover:text-orange-300">Images</Link>
+        <Link to="/firehose" className="rounded-md bg-sky-400 px-3 py-1.5 font-semibold text-black">Events</Link>
+        <Link to="/firehose/images" className="rounded-md px-3 py-1.5 text-white/55 hover:text-sky-300">Images</Link>
       </div>
       <section className="panel overflow-hidden">
         <div className="flex flex-col gap-4 border-b border-white/10 p-5 lg:flex-row lg:items-center lg:justify-between">
@@ -304,7 +304,7 @@ export function FirehoseView({
             <div className="flex items-center gap-2">
               <h2 className="font-semibold">Live firehose</h2>
               <span
-                className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${paused ? "bg-amber-400/10 text-amber-300" : live ? "bg-orange-400/10 text-orange-300" : "bg-red-300/10 text-red-300"}`}
+                className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${paused ? "bg-amber-400/10 text-amber-300" : live ? "bg-sky-400/10 text-sky-300" : "bg-red-300/10 text-red-300"}`}
               >
                 {live ? (
                   <Wifi className="size-3" />
@@ -324,7 +324,7 @@ export function FirehoseView({
               {table.getFilteredRowModel().rows.length.toLocaleString()} events
               cached
             </span>
-            <button type="button" onClick={togglePaused} className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-2 font-medium text-white/70 hover:border-orange-400/40 hover:text-orange-300">
+            <button type="button" onClick={togglePaused} className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-2 font-medium text-white/70 hover:border-sky-400/40 hover:text-sky-300">
               {paused ? <Play className="size-3" /> : <Pause className="size-3" />}
               {paused ? "Resume" : "Pause"}
             </button>
@@ -337,7 +337,7 @@ export function FirehoseView({
               value={globalFilter}
               onChange={(event) => { setGlobalFilter(event.target.value); setPagination((value) => ({ ...value, pageIndex: 0 })); }}
               placeholder="Filter text, DID, URL, or domain…"
-              className="w-full rounded-lg border border-white/10 bg-black py-2 pl-9 pr-3 text-sm outline-none focus:border-orange-400/60"
+              className="w-full rounded-lg border border-white/10 bg-black py-2 pl-9 pr-3 text-sm outline-none focus:border-sky-400/60"
             />
           </div>
           <select

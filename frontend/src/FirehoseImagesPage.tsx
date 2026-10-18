@@ -72,13 +72,13 @@ type ResolvedImage = { event: FirehoseEvent; image: RecordMedia; handle?: string
 function ImageCard({ item, onOpen, concealed, reveal }: { item?: ResolvedImage; onOpen: () => void; concealed?: boolean; reveal: () => void }) {
   if (!item) return <div className="aspect-square animate-pulse rounded-xl border border-white/[.07] bg-white/[.025]" />;
   return (
-    <button type="button" onClick={concealed ? reveal : onOpen} className="group relative block min-w-0 overflow-hidden rounded-xl border border-white/10 bg-white/[.025] text-left transition hover:border-orange-400/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400">
+    <button type="button" onClick={concealed ? reveal : onOpen} className="group relative block min-w-0 overflow-hidden rounded-xl border border-white/10 bg-white/[.025] text-left transition hover:border-sky-400/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400">
       <div className="aspect-square overflow-hidden bg-white/[.02]">
         <img src={item.image.thumbnail_url || item.image.url} alt={item.image.alt || item.event.text || "Bluesky post image"} loading="lazy" referrerPolicy="no-referrer" className={`h-full w-full object-cover transition duration-300 group-hover:scale-[1.02] ${concealed ? "scale-110 blur-2xl" : ""}`} />
       </div>
       {concealed && <span className="absolute inset-x-3 top-1/3 rounded-lg bg-black/80 px-3 py-2 text-center text-xs font-semibold text-white">Potentially sensitive · Reveal</span>}
       <div className="space-y-1.5 p-3">
-        <div className="min-w-0 text-xs text-orange-300"><Author event={item.event} handle={item.handle} /></div>
+        <div className="min-w-0 text-xs text-sky-300"><Author event={item.event} handle={item.handle} /></div>
         {item.event.text && <p className="line-clamp-2 text-xs leading-relaxed text-white/70">{item.event.text}</p>}
         <time className="block text-[10px] text-white/35" dateTime={item.event.timestamp}>{new Date(item.event.time_us / 1_000).toLocaleString()}</time>
       </div>
@@ -120,17 +120,17 @@ function Lightbox({ items, index, setIndex, close, onRecord, concealed, reveal }
       <div ref={dialog} role="dialog" aria-modal="true" aria-label="Firehose image preview" tabIndex={-1} onKeyDown={handleKey} className="m-auto flex h-full max-h-[calc(100vh-1rem)] w-full max-w-7xl flex-col overflow-hidden rounded-xl border border-white/15 bg-black outline-none sm:max-h-[calc(100vh-2.5rem)] lg:flex-row">
         <div className="relative flex min-h-0 flex-1 items-center justify-center bg-black">
           <img src={item.image.url} alt={item.image.alt || item.event.text || "Bluesky post image"} referrerPolicy="no-referrer" className={`max-h-full max-w-full object-contain ${concealed ? "scale-105 blur-3xl" : ""}`} />
-          {concealed && <button type="button" onClick={reveal} className="absolute rounded-lg bg-black/85 px-5 py-3 text-sm font-semibold text-white hover:text-orange-300">Potentially sensitive · Reveal image</button>}
+          {concealed && <button type="button" onClick={reveal} className="absolute rounded-lg bg-black/85 px-5 py-3 text-sm font-semibold text-white hover:text-sky-300">Potentially sensitive · Reveal image</button>}
           <button type="button" aria-label="Previous image" disabled={index === 0} onClick={() => setIndex(index - 1)} className="absolute left-2 rounded-full bg-black/75 p-2 text-white disabled:invisible"><ChevronLeft /></button>
           <button type="button" aria-label="Next image" disabled={index + 1 >= items.length} onClick={() => setIndex(index + 1)} className="absolute right-2 rounded-full bg-black/75 p-2 text-white disabled:invisible"><ChevronRight /></button>
-          <button type="button" aria-label="Close image preview" onClick={close} className="absolute right-2 top-2 rounded-full bg-black/75 p-2 text-white hover:text-orange-300"><X /></button>
+          <button type="button" aria-label="Close image preview" onClick={close} className="absolute right-2 top-2 rounded-full bg-black/75 p-2 text-white hover:text-sky-300"><X /></button>
         </div>
         <aside className="max-h-56 shrink-0 overflow-y-auto border-t border-white/10 p-4 lg:max-h-none lg:w-80 lg:border-l lg:border-t-0">
-          <div className="text-sm text-orange-300"><Author event={item.event} handle={item.handle} /></div>
+          <div className="text-sm text-sky-300"><Author event={item.event} handle={item.handle} /></div>
           {item.event.text && <p className="mt-4 whitespace-pre-wrap text-sm leading-relaxed text-white/75">{item.event.text}</p>}
           {item.image.alt && <p className="mt-3 text-xs text-white/45">Alt: {item.image.alt}</p>}
           <time className="mt-3 block text-xs text-white/40" dateTime={item.event.timestamp}>{new Date(item.event.time_us / 1_000).toLocaleString()}</time>
-          <button type="button" onClick={() => { close(); onRecord(item.event.at_uri); }} className="mt-5 inline-flex items-center gap-2 rounded-lg bg-orange-400 px-4 py-2 text-sm font-semibold text-black hover:bg-orange-300">Open post <ExternalLink className="size-4" /></button>
+          <button type="button" onClick={() => { close(); onRecord(item.event.at_uri); }} className="mt-5 inline-flex items-center gap-2 rounded-lg bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300">Open post <ExternalLink className="size-4" /></button>
           <p className="mt-4 text-[10px] text-white/30">{index + 1} of {items.length} · Use arrow keys to navigate</p>
         </aside>
       </div>
@@ -231,11 +231,11 @@ export function FirehoseImagesPage({ onRecord }: { onRecord: (uri: string) => vo
   const togglePaused = () => setPaused((value) => !value);
   return (
     <div className="space-y-5">
-      <div className="flex w-fit rounded-lg border border-white/10 bg-white/[.02] p-1 text-xs"><Link to="/firehose" className="rounded-md px-3 py-1.5 text-white/55 hover:text-orange-300">Events</Link><Link to="/firehose/images" className="rounded-md bg-orange-400 px-3 py-1.5 font-semibold text-black">Images</Link></div>
+      <div className="flex w-fit rounded-lg border border-white/10 bg-white/[.02] p-1 text-xs"><Link to="/firehose" className="rounded-md px-3 py-1.5 text-white/55 hover:text-sky-300">Events</Link><Link to="/firehose/images" className="rounded-md bg-sky-400 px-3 py-1.5 font-semibold text-black">Images</Link></div>
       <section className="panel p-4 sm:p-5">
         <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div><div className="flex items-center gap-2"><h1 className="font-semibold">Live firehose images</h1><span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-semibold uppercase ${paused ? "bg-amber-400/10 text-amber-300" : live ? "bg-orange-400/10 text-orange-300" : "bg-red-400/10 text-red-300"}`}>{live ? <Wifi className="size-3" /> : <WifiOff className="size-3" />}{paused ? "Paused" : live ? "Streaming" : "Connecting"}</span></div><p className="mt-1 text-xs text-white/45">Public post images are fetched ephemerally in batches and are never retained by the observatory.</p></div>
-          <button type="button" onClick={togglePaused} className="inline-flex w-fit items-center gap-1.5 rounded-lg border border-white/10 px-3 py-2 text-xs font-medium text-white/70 hover:border-orange-400/40 hover:text-orange-300">{paused ? <Play className="size-3" /> : <Pause className="size-3" />}{paused ? "Resume" : "Pause"}</button>
+          <div><div className="flex items-center gap-2"><h1 className="font-semibold">Live firehose images</h1><span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-semibold uppercase ${paused ? "bg-amber-400/10 text-amber-300" : live ? "bg-sky-400/10 text-sky-300" : "bg-red-400/10 text-red-300"}`}>{live ? <Wifi className="size-3" /> : <WifiOff className="size-3" />}{paused ? "Paused" : live ? "Streaming" : "Connecting"}</span></div><p className="mt-1 text-xs text-white/45">Public post images are fetched ephemerally in batches and are never retained by the observatory.</p></div>
+          <button type="button" onClick={togglePaused} className="inline-flex w-fit items-center gap-1.5 rounded-lg border border-white/10 px-3 py-2 text-xs font-medium text-white/70 hover:border-sky-400/40 hover:text-sky-300">{paused ? <Play className="size-3" /> : <Pause className="size-3" />}{paused ? "Resume" : "Pause"}</button>
         </div>
         <div className="mb-5 flex flex-wrap items-center gap-3 rounded-lg border border-white/10 bg-white/[.02] p-3 text-xs">
           <label className="flex items-center gap-2 text-white/55">Local safety filter
@@ -244,7 +244,7 @@ export function FirehoseImagesPage({ onRecord }: { onRecord: (uri: string) => vo
             </select>
           </label>
           {safetyMode !== "off" && <>
-            <label className="flex items-center gap-2 text-white/55">Threshold <input aria-label="Safety threshold" type="range" min="0.4" max="0.95" step="0.05" value={safetyThreshold} onChange={(event) => setSafetyThreshold(Number(event.target.value))} className="accent-orange-400" /><span className="font-mono text-white/75">{Math.round(safetyThreshold * 100)}%</span></label>
+            <label className="flex items-center gap-2 text-white/55">Threshold <input aria-label="Safety threshold" type="range" min="0.4" max="0.95" step="0.05" value={safetyThreshold} onChange={(event) => setSafetyThreshold(Number(event.target.value))} className="accent-sky-400" /><span className="font-mono text-white/75">{Math.round(safetyThreshold * 100)}%</span></label>
             <span className="text-white/40">{modelState === "loading" ? "Loading/scanning locally…" : modelState === "error" ? "Model unavailable — images remain unfiltered" : `${flaggedCount} flagged · ${classifiedCount} scanned · ${unknownCount} unknown`}</span>
           </>}
           <span className="basis-full text-[10px] text-white/30 sm:basis-auto">Opt-in classification runs only in this browser. Images and scores are never sent to or stored by the observatory.</span>

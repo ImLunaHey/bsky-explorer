@@ -3,7 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Search } from "lucide-react";
 
 const destinations = [
-  { label: "Network overview", hint: "Live rates and trends", to: "/" },
+  { label: "Bluesky now", hint: "People, posts and conversations", to: "/" },
   { label: "Firehose", hint: "Newest public ATProto events", to: "/firehose" },
   { label: "Firehose images", hint: "Live public image posts", to: "/firehose/images" },
   { label: "Search", hint: "Find accounts, posts, and events", to: "/search" },
@@ -79,11 +79,11 @@ export function CommandPalette() {
         type="button"
         onClick={() => setOpen(true)}
         aria-label="Open command palette"
-        className="hidden items-center gap-2 rounded-lg border border-line px-3 py-2 text-xs text-dim hover:border-orange-500/50 hover:text-white sm:inline-flex"
+        className="inline-flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-xs text-dim hover:border-sky-500/50 hover:text-white"
       >
         <Search className="size-3.5" />
-        Go to…{" "}
-        <kbd className="rounded border border-line px-1.5 py-0.5 font-mono text-[9px]">
+        <span className="hidden sm:inline">Search & navigate</span>
+        <kbd className="hidden rounded border border-line px-1.5 py-0.5 font-mono text-[9px] sm:inline">
           ⌘K
         </kbd>
       </button>
@@ -98,10 +98,10 @@ export function CommandPalette() {
             role="dialog"
             aria-modal="true"
             aria-label="Navigate the observatory"
-            className="w-full max-w-xl overflow-hidden rounded-2xl border border-orange-500/30 bg-black shadow-2xl shadow-orange-950/30"
+            className="w-full max-w-xl overflow-hidden rounded-2xl border border-sky-500/30 bg-black shadow-2xl shadow-sky-950/30"
           >
             <div className="flex items-center gap-3 border-b border-line px-4">
-              <Search className="size-5 text-orange-400" />
+              <Search className="size-5 text-sky-400" />
               <input
                 ref={input}
                 value={value}
@@ -120,10 +120,10 @@ export function CommandPalette() {
                 <button
                   autoFocus={false}
                   onClick={go}
-                  className="flex w-full items-center justify-between rounded-xl px-3 py-3 text-left hover:bg-orange-500/10"
+                  className="flex w-full items-center justify-between rounded-xl px-3 py-3 text-left hover:bg-sky-500/10"
                 >
                   <span>
-                    <b className="block text-sm text-orange-300">
+                    <b className="block text-sm text-sky-300">
                       {isDid ? "Open account" : "Open record"}
                     </b>
                     <span className="block max-w-md break-all font-mono text-[10px] text-dim">
@@ -140,7 +140,7 @@ export function CommandPalette() {
                     navigate({ to: item.to });
                     setOpen(false);
                   }}
-                  className="block w-full rounded-xl px-3 py-3 text-left hover:bg-orange-500/10"
+                  className="block w-full rounded-xl px-3 py-3 text-left hover:bg-sky-500/10"
                 >
                   <b className="block text-sm">{item.label}</b>
                   <span className="text-xs text-dim">{item.hint}</span>
@@ -149,10 +149,10 @@ export function CommandPalette() {
               {!matches.length && !isDid && !isRecord && direct && (
                 <button
                   onClick={go}
-                  className="flex w-full items-center justify-between rounded-xl px-3 py-3 text-left hover:bg-orange-500/10"
+                  className="flex w-full items-center justify-between rounded-xl px-3 py-3 text-left hover:bg-sky-500/10"
                 >
                   <span>
-                    <b className="block text-sm text-orange-300">
+                    <b className="block text-sm text-sky-300">
                       Search retained data
                     </b>
                     <span className="block max-w-md break-all text-xs text-dim">
