@@ -21,6 +21,7 @@ function Profile({ did }: { did: string }) {
   const [tab, setTab] = useState<Tab>('Repository')
   const [copied, setCopied] = useState(false)
   const [avatarFailed, setAvatarFailed] = useState(false)
+  const [expandedBio, setExpandedBio] = useState(false)
   const profile = useQuery({ queryKey: ['account-profile', did], queryFn: () => api<AccountProfile>(`/api/accounts/${encodeURIComponent(did)}/profile`), staleTime: 300_000 })
   const account = useQuery({ queryKey: ['account', did], queryFn: () => api<AccountDetail>(`/api/accounts/${encodeURIComponent(did)}`), staleTime: 60_000 })
   const person = profile.data
@@ -41,7 +42,7 @@ function Profile({ did }: { did: string }) {
         <p className="mt-1 break-all text-sm text-cyan">{handle ? `@${handle}` : did}</p>
         {profile.isPending && <p className="mt-3 text-sm text-dim">Loading public profile…</p>}
         {profile.isError && <p className="mt-3 text-sm text-dim">No Bluesky profile available. This ATProto repository is still explorable.</p>}
-        {person?.description && <p className="mt-4 max-w-2xl whitespace-pre-wrap break-words text-sm leading-7 text-white/85">{person.description}</p>}
+        {person?.description && <><p className={`mt-4 max-w-2xl whitespace-pre-wrap break-words text-sm leading-7 text-white/85 ${expandedBio ? '' : 'line-clamp-4'}`}>{person.description}</p>{(person.description.length > 180 || person.description.split('\n').length > 4) && <button onClick={() => setExpandedBio(value => !value)} className="mt-2 text-xs text-cyan">{expandedBio ? 'Show less' : 'Read full bio'}</button>}</>}
         <div className="mt-5 flex flex-wrap gap-x-6 gap-y-2 text-sm text-dim">
           {([['followers', person?.followers_count], ['following', person?.follows_count], ['posts', person?.posts_count]] as const).map(([label, value]) => value != null && <span key={label}><b className="text-white">{count.format(value)}</b> {label}</span>)}
         </div>
