@@ -119,6 +119,7 @@ pub fn router(s: AppState) -> Router {
         )
         .route("/api/accounts/{did}/follows", get(account_follows))
         .route("/api/accounts/{did}/analytics", get(account_analytics))
+        .route("/api/accounts/{did}/history", get(account_history))
         .route("/api/accounts/{did}/lexicons", get(account_lexicons))
         .route("/api/records", get(record))
         .route("/api/repository-record", get(repository_record))
@@ -1618,6 +1619,29 @@ async fn account_analytics(
     }
     s.storage
         .account_analytics(&did)
+        .await
+        .map(Json)
+        .map_err(internal_error)
+}
+
+#[derive(Deserialize)]
+struct ProfileHistoryQuery {
+    days: Option<u32>,
+}
+
+async fn account_history(
+    State(s): State<AppState>,
+    Path(did): Path<String>,
+    Query(q): Query<ProfileHistoryQuery>,
+) -> Result<Json<crate::storage::profile_history::ProfileHistory>, (StatusCode, String)> {
+    if !did.starts_with("did:") || !matches!(q.days.unwrap_or(1), 1 | 7 | 30) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Expected a DID and days=1, 7 or 30".into(),
+        ));
+    }
+    s.storage
+        .profile_history(&did, q.days.unwrap_or(1))
         .await
         .map(Json)
         .map_err(internal_error)

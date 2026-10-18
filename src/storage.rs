@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 pub mod discovery;
 pub mod music;
 pub mod overview;
+pub mod profile_history;
 pub mod snapshots;
 
 // Expensive materializations share one permit; interactive lookups and inserts
