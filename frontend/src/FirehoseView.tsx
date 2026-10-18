@@ -25,7 +25,7 @@ import {
   WifiOff,
 } from "lucide-react";
 import { api } from "./api";
-import { useIdentityMap } from "./identities";
+import { IdentityLink } from "./identities";
 import { FIREHOSE_PAUSE_EVENT, type LiveConnection } from "./live";
 import type { FirehoseEvent, FirehoseFeed, RecordMediaResponse } from "./types";
 
@@ -157,11 +157,6 @@ export function FirehoseView({
       setPaused(true);
     }
   };
-  const roughPage = shown.slice(
-    pagination.pageIndex * pagination.pageSize,
-    (pagination.pageIndex + 1) * pagination.pageSize,
-  );
-  const handles = useIdentityMap(roughPage.map((event) => event.actor_did));
   const kinds = useMemo(
     () => [...new Set(shown.map((event) => event.kind))].sort(),
     [shown],
@@ -180,27 +175,10 @@ export function FirehoseView({
       columnHelper.accessor("actor_did", {
         header: "Account",
         cell: (info) => {
-          const did = info.getValue(),
-            handle = handles.get(did);
+          const did = info.getValue();
           return (
             <div className="group/account flex min-w-0 max-w-60 items-start gap-1">
-              <button
-                type="button"
-                onClick={() => onAccount(did)}
-                title={handle ? `@${handle}\n${did}` : did}
-                className="min-w-0 flex-1 text-left text-xs text-sky-300 hover:text-sky-200"
-              >
-              <b className={`block font-medium ${handle ? "truncate" : "break-all font-mono text-[10px] leading-tight"}`}>
-                {handle ? `@${handle}` : did}
-              </b>
-              {handle ? (
-                <span className="block break-all font-mono text-[9px] leading-tight text-white/35">
-                  {did}
-                </span>
-              ) : (
-                <span className="block pt-0.5 text-[9px] text-dim">resolving…</span>
-              )}
-              </button>
+              <IdentityLink did={did} onSelect={onAccount} compact className="flex-1 text-xs" />
               <button type="button" onClick={() => void navigator.clipboard.writeText(did)} title={`Copy full DID: ${did}`} aria-label={`Copy full DID ${did}`} className="shrink-0 rounded p-1 text-white/25 opacity-60 hover:bg-white/5 hover:text-sky-300 focus:opacity-100 sm:opacity-0 sm:group-hover/account:opacity-100"><Copy className="size-3" /></button>
             </div>
           );
@@ -262,7 +240,7 @@ export function FirehoseView({
         },
       }),
     ],
-    [handles, onAccount, onRecord],
+    [onAccount, onRecord],
   );
   const table = useReactTable({
     data: shown,
