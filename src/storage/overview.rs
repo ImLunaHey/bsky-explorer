@@ -125,7 +125,7 @@ impl Storage {
                 .collect();
             let minimum_people = if conversations { 2 } else { 1 };
             let query = format!(
-                "SELECT {target} AS uri, uniqCombined64If(event_id, timestamp >= fromUnixTimestamp({start})) AS current, uniqCombined64If(event_id, timestamp < fromUnixTimestamp({start})) AS previous, toInt64(current)-toInt64(previous) AS growth, uniqCombined64If(actor_did, timestamp >= fromUnixTimestamp({start})) AS participants, '' AS text, '' AS actor FROM events WHERE {bounds} AND {kinds} AND operation='create' AND {target} IN ? GROUP BY uri HAVING current > 0 AND growth > 0 AND participants >= {minimum_people} ORDER BY growth DESC, participants DESC, uri ASC LIMIT 8"
+                "SELECT {target} AS uri, uniqCombined64If(14)(event_id, timestamp >= fromUnixTimestamp({start})) AS current, uniqCombined64If(14)(event_id, timestamp < fromUnixTimestamp({start})) AS previous, toInt64(current)-toInt64(previous) AS growth, uniqCombined64If(14)(actor_did, timestamp >= fromUnixTimestamp({start})) AS participants, '' AS text, '' AS actor FROM events WHERE {bounds} AND {kinds} AND operation='create' AND {target} IN ? GROUP BY uri HAVING current > 0 AND growth > 0 AND participants >= {minimum_people} ORDER BY growth DESC, participants DESC, uri ASC LIMIT 8"
             );
             let mut rows = client
                 .query(&query)

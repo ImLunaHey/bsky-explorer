@@ -39,6 +39,10 @@ exhaustive ranking of every thread. Post previews come from the comparison windo
 older roots remain clickable even when their text is unavailable in the overview.
 Record drilldowns show available history, not time-filtered dashboard totals.
 
+Ranking distinct counts use precision-14 sketches (roughly 0.8% typical relative
+error), keeping thousands of candidate aggregation states within the worker memory
+budget. They are estimates, not exact engagement counts.
+
 Queries have memory, thread, and execution limits. A serial background worker
 refreshes persisted snapshots (target intervals: 60/300/900 seconds; actual refresh
 can be later under load). HTTP requests read only small saved responses. Last-good
@@ -81,6 +85,13 @@ recreate ingestion. Use `SERVICE_ROLE=all` for legacy local development; `api`
 requires an explicit private `INGESTER_URL`. An unavailable collector returns 502
 for live endpoints while retained-data pages remain usable. SSE forwards reconnect
 cursors and disables proxy buffering.
+
+On an already-running installation, `node deploy/update-service.mjs api IMAGE`
+or `node deploy/update-service.mjs frontend IMAGE` preserves the live environment,
+mounts and networking in memory, waits for health, and retains a stopped rollback.
+It never recreates a sibling service. Updating `ingester` is deliberately blocked
+unless `--allow-ingester-restart` is explicitly supplied. Build images first with
+`docker build --target runtime -t IMAGE .` or `--target frontend` respectively.
 
 For this host, preserve `ARCHIVE_ROOT=/mnt/storage/bsky-observatory/archive-deploy-a8a891f`.
 The historical ClickHouse container pins a different underlying mount from the
