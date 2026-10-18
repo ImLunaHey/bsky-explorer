@@ -238,6 +238,26 @@ mod tests {
         );
         let counts = storage.record_interaction_counts(&uri).await.unwrap();
         assert_eq!((counts.likes, counts.replies), (1, 2));
+        // The client switches long SELECTs to readonly HTTP POST. Limits must
+        // be HTTP options, not SQL SETTINGS (which readonly mode rejects).
+        let mut batch: Vec<_> = (0..300)
+            .map(|i| format!("at://did:plc:a/app.bsky.feed.post/not-retained-{i:08}"))
+            .collect();
+        batch.push(uri.clone());
+        assert_eq!(storage.existing_uris(&batch).await.unwrap().len(), 1);
+        assert!(!storage.records(&batch).await.unwrap().is_empty());
+        let mut ids: Vec<_> = (0..300)
+            .map(|i| format!("large-association-event-identifier-not-retained-{i:08}"))
+            .collect();
+        ids.push("post".into());
+        assert_eq!(
+            storage
+                .existing_event_ids(&ids, &["did:plc:a".into()])
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
         assert!(storage.snapshot("missing").await.unwrap().is_none());
         storage
             .save_snapshot("test", "{\"ready\":true}")

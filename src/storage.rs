@@ -508,7 +508,7 @@ impl Storage {
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
-            "SELECT actor_did,if(target_did!='',target_did,if(startsWith(target,'at://'),arrayElement(splitByChar('/',substring(target,6)),1),'')) target_did,kind,toUnixTimestamp64Milli(timestamp) timestamp_ms FROM events WHERE timestamp>=now()-INTERVAL ? SECOND AND kind IN ({kinds}) AND actor_did!='' AND (target_did!='' OR target!='') ORDER BY timestamp DESC LIMIT ? SETTINGS max_execution_time=60, max_threads=2, max_memory_usage=1000000000, max_bytes_before_external_sort=128000000"
+            "SELECT actor_did,if(target_did!='',target_did,if(startsWith(target,'at://'),arrayElement(splitByChar('/',substring(target,6)),1),'')) target_did,kind,toUnixTimestamp64Milli(timestamp) timestamp_ms FROM events WHERE timestamp>=now()-INTERVAL ? SECOND AND kind IN ({kinds}) AND actor_did!='' AND (target_did!='' OR target!='') ORDER BY timestamp DESC LIMIT ? SETTINGS max_execution_time=60, max_threads=2, max_memory_usage=2000000000, max_bytes_before_external_sort=128000000"
         );
         let rows = self
             .client
@@ -1322,8 +1322,8 @@ impl Storage {
         if uris.is_empty() {
             return Ok(Vec::new());
         }
-        Ok(self.client.query(
-            "SELECT at_uri, actor_did, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, kind, text, reply_parent, reply_root, quote_target, urls, domains, languages FROM events WHERE at_uri IN ? AND kind IN ('post','reply','quote') ORDER BY timestamp DESC LIMIT ? SETTINGS max_execution_time=5, max_threads=2"
+        Ok(self.client.clone().with_option("max_execution_time", "5").with_option("max_threads", "2").query(
+            "SELECT at_uri, actor_did, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, kind, text, reply_parent, reply_root, quote_target, urls, domains, languages FROM events WHERE at_uri IN ? AND kind IN ('post','reply','quote') ORDER BY timestamp DESC LIMIT ?"
         ).bind(uris).bind(uris.len() as u64 * 2)
         .fetch_all::<StoredRecord>().await?)
     }
@@ -1336,9 +1336,19 @@ impl Storage {
         }
         Ok(self
             .client
-            .query("SELECT DISTINCT at_uri FROM events WHERE at_uri IN ? AND actor_did IN ? SETTINGS max_execution_time=10, max_threads=2")
+            .clone()
+            .with_option("max_execution_time", "10")
+            .with_option("max_threads", "2")
+            .query("SELECT DISTINCT at_uri FROM events WHERE at_uri IN ? AND actor_did IN ?")
             .bind(uris)
-            .bind(uris.iter().filter_map(|uri| uri.strip_prefix("at://").and_then(|path| path.split('/').next())).collect::<std::collections::BTreeSet<_>>())
+            .bind(
+                uris.iter()
+                    .filter_map(|uri| {
+                        uri.strip_prefix("at://")
+                            .and_then(|path| path.split('/').next())
+                    })
+                    .collect::<std::collections::BTreeSet<_>>(),
+            )
             .fetch_all::<StoredUri>()
             .await?
             .into_iter()
@@ -1366,7 +1376,10 @@ impl Storage {
         }
         Ok(self
             .client
-            .query("SELECT DISTINCT event_id FROM events WHERE event_id IN ? AND actor_did IN ? SETTINGS max_execution_time=10, max_threads=2")
+            .clone()
+            .with_option("max_execution_time", "10")
+            .with_option("max_threads", "2")
+            .query("SELECT DISTINCT event_id FROM events WHERE event_id IN ? AND actor_did IN ?")
             .bind(event_ids)
             .bind(actors)
             .fetch_all::<StoredEventId>()

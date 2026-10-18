@@ -16,7 +16,12 @@ async fn main() -> Result<()> {
         &cfg.clickhouse_password,
     );
     storage.ensure_community_schema().await?;
-    for window in [Window::Hour, Window::Day, Window::Week] {
+    let windows = if std::env::var("EXPLORER_REFRESH_SCOPE").as_deref() == Ok("coverage") {
+        vec![]
+    } else {
+        vec![Window::Hour, Window::Day, Window::Week]
+    };
+    for window in windows {
         let started = std::time::Instant::now();
         let data = storage
             .overview(window, chrono::Utc::now().timestamp())
