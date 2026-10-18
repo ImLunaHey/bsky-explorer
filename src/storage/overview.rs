@@ -203,6 +203,58 @@ mod tests {
             ('excluded', fromUnixTimestamp({end}), 0, 'did:plc:d', 'post', 'app.bsky.feed.post', 'create', '', 'boundary', '', '', '', [], []),
             ('other-app', fromUnixTimestamp({start}), 0, 'did:plc:e', 'post', 'com.example.post', 'create', '', 'other app', '', '', '', [], [])", start - 1, start + 1, start + 2);
         admin.query(&insert).execute().await.unwrap();
+        for statement in include_str!("../../migrations/009_explorer_performance.sql")
+            .split(';')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            storage.client.query(statement).execute().await.unwrap();
+        }
+        let uri = "at://did:plc:a/app.bsky.feed.post/p".to_owned();
+        assert_eq!(
+            storage.record(&uri).await.unwrap().unwrap().text,
+            "hello network"
+        );
+        assert_eq!(storage.account_posts("did:plc:a").await.unwrap().len(), 1);
+        assert_eq!(
+            storage
+                .existing_uris(std::slice::from_ref(&uri))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            storage
+                .existing_event_ids(&["post".into()], &["did:plc:a".into()])
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let counts = storage.record_interaction_counts(&uri).await.unwrap();
+        assert_eq!((counts.likes, counts.replies), (1, 2));
+        assert!(storage.snapshot("missing").await.unwrap().is_none());
+        storage
+            .save_snapshot("test", "{\"ready\":true}")
+            .await
+            .unwrap();
+        assert_eq!(
+            storage.snapshot("test").await.unwrap().unwrap(),
+            "{\"ready\":true}"
+        );
+        storage.client.query("INSERT INTO detections (cluster_id, first_seen, last_seen, evidence_json) VALUES ('cluster-a', now64(3), now64(3), '{\"accounts\":[\"did:plc:a\"]}')").execute().await.unwrap();
+        assert_eq!(
+            storage.account_cluster_ids("did:plc:a", 50).await.unwrap(),
+            vec!["cluster-a"]
+        );
+        assert!(
+            storage
+                .account_cluster_ids("did:plc:b", 50)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         let result = storage.overview(Window::Hour, end).await.unwrap();
         let current = result.totals.iter().find(|r| r.current == 1).unwrap();
         assert_eq!(

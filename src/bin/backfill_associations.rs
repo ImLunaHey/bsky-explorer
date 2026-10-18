@@ -337,7 +337,13 @@ async fn collect_post(
         eprintln!("post={uri} endpoint=thread error={error:#}");
     }
     let ids: Vec<_> = events.iter().map(|event| event.event_id.clone()).collect();
-    let existing = storage.existing_event_ids(&ids).await?;
+    let actors: Vec<_> = events
+        .iter()
+        .map(|event| event.actor_did.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let existing = storage.existing_event_ids(&ids, &actors).await?;
     events.retain(|event| !existing.contains(&event.event_id));
     storage.insert_events(&events).await
 }

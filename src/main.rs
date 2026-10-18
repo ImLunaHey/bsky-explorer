@@ -27,6 +27,12 @@ async fn main() -> Result<()> {
         &cfg.clickhouse_password,
     );
     storage.ensure_community_schema().await?;
+    tokio::spawn(bsky_observatory::storage::snapshots::refresh_coverage(
+        storage.clone(),
+    ));
+    tokio::spawn(bsky_observatory::storage::snapshots::refresh(
+        storage.clone(),
+    ));
     let community_configs = cfg
         .community_windows_seconds
         .iter()

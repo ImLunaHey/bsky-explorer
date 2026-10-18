@@ -110,6 +110,11 @@ pub fn router(s: AppState) -> Router {
         .route("/api/accounts/{did}", get(account))
         .route("/api/accounts/{did}/profile", get(account_profile))
         .route("/api/accounts/{did}/events", get(account_events))
+        .route("/api/accounts/{did}/posts", get(account_posts))
+        .route(
+            "/api/accounts/{did}/investigations",
+            get(account_investigations),
+        )
         .route("/api/accounts/{did}/follows", get(account_follows))
         .route("/api/accounts/{did}/analytics", get(account_analytics))
         .route("/api/accounts/{did}/lexicons", get(account_lexicons))
@@ -185,38 +190,23 @@ struct OverviewQuery {
 }
 
 async fn overview(State(s): State<AppState>, Query(q): Query<OverviewQuery>) -> Response {
-    // Coalesce expensive queries across visitors, with a maximum of three cached windows.
-    type Cache = tokio::sync::Mutex<Option<(Instant, crate::storage::overview::Overview)>>;
-    static CACHE: OnceLock<HashMap<i64, Cache>> = OnceLock::new();
-    let key = q.window.seconds();
-    let caches = CACHE.get_or_init(|| {
-        [3600, 86400, 604800]
-            .into_iter()
-            .map(|key| (key, Cache::default()))
-            .collect()
-    });
-    let mut cache = caches[&key].lock().await;
-    let ttl = match key {
-        3600 => 60,
-        86400 => 300,
-        _ => 900,
-    };
-    if let Some((at, result)) = cache.as_ref() {
-        if at.elapsed() < Duration::from_secs(ttl) {
-            return Json(result.clone()).into_response();
-        }
-    }
-    let end = Utc::now().timestamp();
-    match s.storage.overview(q.window, end).await {
-        Ok(result) => {
-            *cache = Some((Instant::now(), result.clone()));
-            Json(result).into_response()
-        }
+    let key = format!("overview:{}", q.window.seconds());
+    match s.storage.snapshot(&key).await {
+        Ok(Some(payload)) => (
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            payload,
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "This summary is being prepared in the background. Please try again shortly.",
+        )
+            .into_response(),
         Err(error) => {
             tracing::warn!(%error, "overview query failed");
             (
                 StatusCode::SERVICE_UNAVAILABLE,
-                "Overview unavailable; try a shorter time range.",
+                "Summary temporarily unavailable. Live exploration is still available.",
             )
                 .into_response()
         }
@@ -1339,11 +1329,10 @@ async fn account(
     if !did.starts_with("did:") {
         return Err((StatusCode::BAD_REQUEST, "invalid DID".into()));
     }
-    let (current_identity, identity_history, stored, stored_clusters) = tokio::try_join!(
+    let (current_identity, identity_history, stored) = tokio::try_join!(
         s.identities.resolve_local(&did),
         s.storage.identity_history(&did, 50),
         s.storage.account_stats(&did),
-        s.storage.account_cluster_ids(&did, 50),
     )
     .map_err(internal_error)?;
     if current_identity.handle.is_none()
@@ -1354,7 +1343,7 @@ async fn account(
     // Account pages must not contend with the ingest writer for the global hot
     // analyzer lock. ClickHouse is indexed for this lookup and remains responsive
     // while the collector is catching up.
-    let activity = account_activity_from_storage(&did, stored.as_ref(), stored_clusters);
+    let activity = account_activity_from_storage(&did, stored.as_ref(), Vec::new());
     Ok(Json(AccountDetail {
         current_identity,
         identity_history,
@@ -1406,6 +1395,31 @@ fn account_activity_from_storage(
             content_similarity_score: 0.0,
         },
     }
+}
+
+async fn account_investigations(
+    State(s): State<AppState>,
+    Path(did): Path<String>,
+) -> Result<Json<Vec<String>>, (StatusCode, String)> {
+    s.storage
+        .account_cluster_ids(&did, 50)
+        .await
+        .map(Json)
+        .map_err(internal_error)
+}
+
+async fn account_posts(
+    State(s): State<AppState>,
+    Path(did): Path<String>,
+) -> Result<Json<Vec<crate::storage::StoredRecord>>, (StatusCode, String)> {
+    if !did.starts_with("did:") {
+        return Err((StatusCode::BAD_REQUEST, "invalid DID".into()));
+    }
+    s.storage
+        .account_posts(&did)
+        .await
+        .map(Json)
+        .map_err(internal_error)
 }
 
 async fn account_events(
@@ -1476,6 +1490,8 @@ struct AccountDetail {
 #[derive(Deserialize)]
 struct RecordQuery {
     uri: String,
+    #[serde(default)]
+    summary: bool,
 }
 
 #[derive(Serialize)]
@@ -1515,6 +1531,19 @@ async fn record(
     } else {
         &record.reply_root
     };
+    if query.summary {
+        return Ok(Json(RecordDetail {
+            record,
+            interaction_counts: crate::storage::RecordInteractionCounts {
+                likes: 0,
+                reposts: 0,
+                replies: 0,
+                quotes: 0,
+            },
+            recent_interactions: Vec::new(),
+            conversation: Vec::new(),
+        }));
+    }
     let (interaction_counts, recent_interactions, mut conversation) = tokio::try_join!(
         s.storage.record_interaction_counts(&query.uri),
         s.storage.record_interactions(&query.uri, 100),
@@ -2333,7 +2362,22 @@ async fn coverage(
         return Ok(Json(value.clone()));
     }
     let queue = s.backfills.repository_coverage().map_err(internal_error)?;
-    let (totals, collections, daily) = s.storage.coverage().await.map_err(internal_error)?;
+    let payload = s
+        .storage
+        .snapshot("coverage")
+        .await
+        .map_err(internal_error)?
+        .ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Dataset summary is being prepared.".into(),
+        ))?;
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&payload).map_err(|e| internal_error(e.into()))?;
+    let (totals, collections, daily): (
+        crate::storage::CoverageTotals,
+        Vec<crate::storage::CoverageCollection>,
+        Vec<crate::storage::CoverageDay>,
+    ) = serde_json::from_value(snapshot["data"].clone()).map_err(|e| internal_error(e.into()))?;
     let value = serde_json::json!({
         "summary":{
             "unique_observed_actors":totals.unique_observed_actors,
@@ -2348,7 +2392,7 @@ async fn coverage(
             "coverage_estimate":serde_json::Value::Null,
             "coverage_denominator":serde_json::Value::Null,
             "coverage_qualification":"Estimated distinct counts and retained-data coverage for this observatory; collection bytes are allocated proportionally. Total ATProto network size is not known."
-        },"collections":collections,"daily":daily
+        },"collections":collections,"daily":daily,"generated_at":snapshot["generated_at"]
     });
     *cache.write().await = Some((Instant::now(), value.clone()));
     Ok(Json(value))

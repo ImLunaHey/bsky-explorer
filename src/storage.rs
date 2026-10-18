@@ -8,6 +8,7 @@ use chrono::Utc;
 use clickhouse::{Client, Row};
 use serde::{Deserialize, Serialize};
 pub mod overview;
+pub mod snapshots;
 
 #[derive(Clone)]
 pub struct Storage {
@@ -119,7 +120,7 @@ pub struct CoverageDay {
     pub new_accounts: u64,
     pub records: u64,
 }
-#[derive(Debug, Clone, Deserialize, Row)]
+#[derive(Debug, Clone, Deserialize, Row, Serialize)]
 pub struct CoverageTotals {
     pub unique_observed_actors: u64,
     pub identities_resolved: u64,
@@ -472,6 +473,7 @@ impl Storage {
         for statement in [
             include_str!("../migrations/006_communities.sql"),
             include_str!("../migrations/007_event_media.sql"),
+            include_str!("../migrations/009_explorer_performance.sql"),
         ]
         .join("\n")
         .split(';')
@@ -501,7 +503,7 @@ impl Storage {
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
-            "SELECT actor_did,if(target_did!='',target_did,if(startsWith(target,'at://'),arrayElement(splitByChar('/',substring(target,6)),1),'')) target_did,kind,toUnixTimestamp64Milli(timestamp) timestamp_ms FROM events WHERE timestamp>=now()-INTERVAL ? SECOND AND kind IN ({kinds}) AND actor_did!='' AND (target_did!='' OR target!='') ORDER BY timestamp DESC LIMIT ?"
+            "SELECT actor_did,if(target_did!='',target_did,if(startsWith(target,'at://'),arrayElement(splitByChar('/',substring(target,6)),1),'')) target_did,kind,toUnixTimestamp64Milli(timestamp) timestamp_ms FROM events WHERE timestamp>=now()-INTERVAL ? SECOND AND kind IN ({kinds}) AND actor_did!='' AND (target_did!='' OR target!='') ORDER BY timestamp DESC LIMIT ? SETTINGS max_execution_time=60, max_threads=2, max_memory_usage=1000000000, max_bytes_before_external_sort=128000000"
         );
         let rows = self
             .client
@@ -623,9 +625,9 @@ impl Storage {
     pub async fn coverage(
         &self,
     ) -> Result<(CoverageTotals, Vec<CoverageCollection>, Vec<CoverageDay>)> {
-        let totals=self.client.query("SELECT uniq(actor_did) AS unique_observed_actors,assumeNotNull((SELECT uniq(did) FROM identities FINAL WHERE handle!='')) AS identities_resolved,uniqIf(at_uri,at_uri!='') AS unique_records,assumeNotNull((SELECT coalesce(sum(bytes_on_disk),0) FROM system.parts WHERE active AND database=currentDatabase())) AS total_bytes FROM events").fetch_one::<CoverageTotals>();
-        let collections=self.client.clone().with_option("max_execution_time","5").with_option("max_threads","2").query("WITH (SELECT assumeNotNull(coalesce(sum(bytes_on_disk),0)) FROM system.parts WHERE active AND database=currentDatabase() AND table='events') AS compressed_total,(SELECT assumeNotNull(coalesce(sum(data_uncompressed_bytes),0)) FROM system.parts WHERE active AND database=currentDatabase() AND table='events') AS uncompressed_total,(SELECT count() FROM events) AS total_rows SELECT collection,arrayStringConcat(arraySlice(splitByChar('.',collection),1,2),'.') AS namespace,count() AS records,assumeNotNull(toUInt64(compressed_total*records/greatest(total_rows,1))) AS compressed_bytes,assumeNotNull(toUInt64(uncompressed_total*records/greatest(total_rows,1))) AS uncompressed_bytes,uniq(actor_did) AS unique_accounts FROM events GROUP BY collection ORDER BY records DESC LIMIT 500").fetch_all::<CoverageCollection>();
-        let daily=self.client.clone().with_option("max_execution_time","5").with_option("max_threads","2").query("WITH first_seen AS (SELECT actor_did,min(toDate(timestamp)) AS first_date FROM events GROUP BY actor_did), daily_events AS (SELECT toDate(timestamp) AS day,uniqExact(actor_did) AS active_accounts,count() AS records FROM events WHERE timestamp>=today()-30 GROUP BY day), daily_new AS (SELECT first_date AS day,count() AS new_accounts FROM first_seen WHERE first_date>=today()-30 GROUP BY day) SELECT toString(e.day) AS date,e.active_accounts,coalesce(n.new_accounts,0) AS new_accounts,e.records FROM daily_events e LEFT JOIN daily_new n USING day ORDER BY e.day").fetch_all::<CoverageDay>();
+        let totals=self.client.clone().with_option("max_execution_time","90").with_option("max_threads","2").with_option("max_memory_usage","1000000000").query("SELECT uniq(actor_did) AS unique_observed_actors,assumeNotNull((SELECT uniq(did) FROM identities FINAL WHERE handle!='')) AS identities_resolved,uniqIf(at_uri,at_uri!='') AS unique_records,assumeNotNull((SELECT coalesce(sum(bytes_on_disk),0) FROM system.parts WHERE active AND database=currentDatabase())) AS total_bytes FROM events").fetch_one::<CoverageTotals>();
+        let collections=self.client.clone().with_option("max_execution_time","90").with_option("max_threads","2").with_option("max_memory_usage","1000000000").with_option("max_bytes_before_external_group_by","128000000").query("WITH (SELECT assumeNotNull(coalesce(sum(bytes_on_disk),0)) FROM system.parts WHERE active AND database=currentDatabase() AND table='events') AS compressed_total,(SELECT assumeNotNull(coalesce(sum(data_uncompressed_bytes),0)) FROM system.parts WHERE active AND database=currentDatabase() AND table='events') AS uncompressed_total,(SELECT count() FROM events) AS total_rows SELECT collection,arrayStringConcat(arraySlice(splitByChar('.',collection),1,2),'.') AS namespace,count() AS records,assumeNotNull(toUInt64(compressed_total*records/greatest(total_rows,1))) AS compressed_bytes,assumeNotNull(toUInt64(uncompressed_total*records/greatest(total_rows,1))) AS uncompressed_bytes,uniq(actor_did) AS unique_accounts FROM events GROUP BY collection ORDER BY records DESC LIMIT 500").fetch_all::<CoverageCollection>();
+        let daily=self.client.clone().with_option("max_execution_time","90").with_option("max_threads","2").with_option("max_memory_usage","1000000000").with_option("max_bytes_before_external_group_by","128000000").query("WITH first_seen AS (SELECT actor_did,min(toDate(timestamp)) AS first_date FROM events GROUP BY actor_did), daily_events AS (SELECT toDate(timestamp) AS day,uniq(actor_did) AS active_accounts,count() AS records FROM events WHERE timestamp>=today()-30 GROUP BY day), daily_new AS (SELECT first_date AS day,count() AS new_accounts FROM first_seen WHERE first_date>=today()-30 GROUP BY day) SELECT toString(e.day) AS date,e.active_accounts,coalesce(n.new_accounts,0) AS new_accounts,e.records FROM daily_events e LEFT JOIN daily_new n USING day ORDER BY e.day").fetch_all::<CoverageDay>();
         tokio::try_join!(totals, collections, daily).map_err(Into::into)
     }
     pub async fn trending_accounts(
@@ -1280,7 +1282,7 @@ impl Storage {
         }
         Ok(self
             .client
-            .query("SELECT did, argMax(handle, observed_at) AS handle_value FROM identities WHERE has(?, did) GROUP BY did")
+            .query("SELECT did, argMax(handle, observed_at) AS handle_value FROM identities WHERE did IN ? GROUP BY did")
             .bind(dids)
             .fetch_all::<SearchIdentity>()
             .await?)
@@ -1290,26 +1292,23 @@ impl Storage {
         struct ClusterResult {
             cluster_id: String,
         }
-        // DIDs cannot contain JSON quote characters, so matching their encoded
-        // account-array value avoids substring matches against evidence text.
-        let needle = format!("%\"{}\"%", did);
-        Ok(self.client
-            .query("SELECT cluster_id FROM detections FINAL WHERE evidence_json LIKE ? ORDER BY last_seen DESC LIMIT ?")
-            .bind(needle).bind(limit)
+        Ok(self.client.clone().with_option("max_execution_time", "3").with_option("max_threads", "2")
+            .query("SELECT cluster_id FROM detection_accounts WHERE did = ? GROUP BY cluster_id ORDER BY max(last_seen) DESC LIMIT ?")
+            .bind(did).bind(limit)
             .fetch_all::<ClusterResult>().await?
             .into_iter().map(|row| row.cluster_id).collect())
     }
     pub async fn record(&self, uri: &str) -> Result<Option<StoredRecord>> {
         Ok(self.client.query(
-            "SELECT at_uri, actor_did, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, kind, text, reply_parent, reply_root, quote_target, urls, domains, languages FROM events WHERE at_uri = ? AND kind IN ('post','reply','quote') ORDER BY timestamp DESC LIMIT 1"
-        ).bind(uri).fetch_optional::<StoredRecord>().await?)
+            "SELECT at_uri, actor_did, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, kind, text, reply_parent, reply_root, quote_target, urls, domains, languages FROM events WHERE actor_did = ? AND at_uri = ? AND kind IN ('post','reply','quote') ORDER BY timestamp DESC LIMIT 1 SETTINGS max_execution_time=5, max_threads=2"
+        ).bind(uri.strip_prefix("at://").unwrap_or("").split('/').next().unwrap_or("")).bind(uri).fetch_optional::<StoredRecord>().await?)
     }
     pub async fn records(&self, uris: &[String]) -> Result<Vec<StoredRecord>> {
         if uris.is_empty() {
             return Ok(Vec::new());
         }
         Ok(self.client.query(
-            "SELECT at_uri, actor_did, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, kind, text, reply_parent, reply_root, quote_target, urls, domains, languages FROM events WHERE has(?, at_uri) AND kind IN ('post','reply','quote') ORDER BY timestamp DESC LIMIT ?"
+            "SELECT at_uri, actor_did, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, kind, text, reply_parent, reply_root, quote_target, urls, domains, languages FROM events WHERE at_uri IN ? AND kind IN ('post','reply','quote') ORDER BY timestamp DESC LIMIT ? SETTINGS max_execution_time=5, max_threads=2"
         ).bind(uris).bind(uris.len() as u64 * 2)
         .fetch_all::<StoredRecord>().await?)
     }
@@ -1322,8 +1321,9 @@ impl Storage {
         }
         Ok(self
             .client
-            .query("SELECT DISTINCT at_uri FROM events WHERE has(?, at_uri)")
+            .query("SELECT DISTINCT at_uri FROM events WHERE at_uri IN ? AND actor_did IN ? SETTINGS max_execution_time=10, max_threads=2")
             .bind(uris)
+            .bind(uris.iter().filter_map(|uri| uri.strip_prefix("at://").and_then(|path| path.split('/').next())).collect::<std::collections::BTreeSet<_>>())
             .fetch_all::<StoredUri>()
             .await?
             .into_iter()
@@ -1344,14 +1344,16 @@ impl Storage {
     pub async fn existing_event_ids(
         &self,
         event_ids: &[String],
+        actors: &[String],
     ) -> Result<std::collections::HashSet<String>> {
         if event_ids.is_empty() {
             return Ok(std::collections::HashSet::new());
         }
         Ok(self
             .client
-            .query("SELECT DISTINCT event_id FROM events WHERE has(?, event_id)")
+            .query("SELECT DISTINCT event_id FROM events WHERE event_id IN ? AND actor_did IN ? SETTINGS max_execution_time=10, max_threads=2")
             .bind(event_ids)
+            .bind(actors)
             .fetch_all::<StoredEventId>()
             .await?
             .into_iter()
@@ -1360,8 +1362,9 @@ impl Storage {
     }
     pub async fn record_interaction_counts(&self, uri: &str) -> Result<RecordInteractionCounts> {
         Ok(self.client.query(
-            "SELECT countIf(kind='like' AND target=?) AS likes, countIf(kind='repost' AND target=?) AS reposts, countIf(kind='reply' AND reply_parent=?) AS replies, countIf(kind='quote' AND quote_target=?) AS quotes FROM events"
+            "SELECT countIf(kind='like' AND target=?) AS likes, countIf(kind='repost' AND target=?) AS reposts, countIf(kind='reply' AND reply_parent=?) AS replies, countIf(kind='quote' AND quote_target=?) AS quotes FROM events WHERE target=? OR reply_parent=? OR quote_target=? SETTINGS max_execution_time=5, max_threads=2"
         ).bind(uri).bind(uri).bind(uri).bind(uri)
+        .bind(uri).bind(uri).bind(uri)
         .fetch_one::<RecordInteractionCounts>().await?)
     }
     pub async fn record_interactions(
@@ -1370,13 +1373,13 @@ impl Storage {
         limit: u64,
     ) -> Result<Vec<StoredInteraction>> {
         Ok(self.client.query(
-            "SELECT event_id, actor_did, kind, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, at_uri, target FROM events WHERE (kind IN ('like','repost') AND target=?) OR (kind='reply' AND reply_parent=?) OR (kind='quote' AND quote_target=?) ORDER BY timestamp DESC LIMIT ?"
+            "SELECT event_id, actor_did, kind, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, at_uri, target FROM events WHERE (kind IN ('like','repost') AND target=?) OR (kind='reply' AND reply_parent=?) OR (kind='quote' AND quote_target=?) ORDER BY timestamp DESC LIMIT ? SETTINGS max_execution_time=5, max_threads=2"
         ).bind(uri).bind(uri).bind(uri).bind(limit)
         .fetch_all::<StoredInteraction>().await?)
     }
     pub async fn conversation_context(&self, root: &str, limit: u64) -> Result<Vec<StoredRecord>> {
         Ok(self.client.query(
-            "SELECT at_uri, actor_did, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, kind, text, reply_parent, reply_root, quote_target, urls, domains, languages FROM events WHERE at_uri=? OR reply_root=? ORDER BY timestamp ASC LIMIT ?"
+            "SELECT at_uri, actor_did, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, kind, text, reply_parent, reply_root, quote_target, urls, domains, languages FROM events WHERE at_uri=? OR reply_root=? ORDER BY timestamp ASC LIMIT ? SETTINGS max_execution_time=5, max_threads=2"
         ).bind(root).bind(root).bind(limit)
         .fetch_all::<StoredRecord>().await?)
     }

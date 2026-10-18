@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=build /src/target/release/bsky-observatory /usr/local/bin/observatory
 COPY --from=build /src/target/release/backfill_account /usr/local/bin/backfill_account
 COPY --from=build /src/target/release/backfill_associations /usr/local/bin/backfill_associations
+COPY --from=build /src/target/release/refresh_explorer /usr/local/bin/refresh_explorer
 COPY --from=web-build /web/dist /usr/share/bsky-observatory
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=4 \
   CMD wget -q -O /dev/null http://127.0.0.1:3000/readyz || exit 1
