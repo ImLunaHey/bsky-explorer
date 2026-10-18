@@ -93,7 +93,9 @@ impl Storage {
             .with_option("max_execution_time", "10")
             .with_option("max_threads", "2")
             .with_option("max_memory_usage", "250000000");
-        let rows=client.query("SELECT time_us,event_id,toUnixTimestamp64Milli(any(timestamp)) AS timestamp_ms,any(actor_did) AS actor_did,any(at_uri) AS at_uri FROM follow_deletions WHERE (time_us,event_id)>(?,?) GROUP BY time_us,event_id ORDER BY time_us,event_id LIMIT 500").bind(cursor.time_us).bind(&cursor.event_id).fetch_all::<Deletion>().await?;
+        // Limit the ordered physical read before grouping: grouping the entire
+        // backlog first defeats the batch budget and exhausts memory at scale.
+        let rows=client.query("SELECT time_us,event_id,toUnixTimestamp64Milli(any(timestamp)) AS timestamp_ms,any(actor_did) AS actor_did,any(at_uri) AS at_uri FROM (SELECT * FROM follow_deletions WHERE (time_us,event_id)>(?,?) ORDER BY time_us,event_id LIMIT 500) GROUP BY time_us,event_id ORDER BY time_us,event_id").bind(cursor.time_us).bind(&cursor.event_id).fetch_all::<Deletion>().await?;
         let Some(last) = rows.last() else {
             return Ok((Cursor::default(), 0));
         };

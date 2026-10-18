@@ -6,8 +6,8 @@ import { execFileSync } from 'node:child_process';
 import http from 'node:http';
 
 const [service, image, confirmation] = process.argv.slice(2);
-if (!['api', 'frontend', 'ingester', 'identity'].includes(service) || !image) {
-  throw Error('Usage: update-service.mjs api|frontend|ingester|identity IMAGE [--allow-ingester-restart]');
+if (!['api', 'frontend', 'ingester', 'identity', 'follow-resolution'].includes(service) || !image) {
+  throw Error('Usage: update-service.mjs api|frontend|ingester|identity|follow-resolution IMAGE [--allow-ingester-restart]');
 }
 if (service === 'ingester' && confirmation !== '--allow-ingester-restart') {
   throw Error('Refusing to interrupt collection without --allow-ingester-restart');
@@ -49,6 +49,7 @@ const created = await call(`/containers/create?name=${stagingName}`, {
   Image: imageId, Env: env, Entrypoint: old.Config.Entrypoint,
   Cmd: old.Config.Cmd, User: old.Config.User, WorkingDir: old.Config.WorkingDir,
   ExposedPorts: old.Config.ExposedPorts,
+  ...(service === 'follow-resolution' ? {Healthcheck: old.Config.Healthcheck} : {}),
   Labels: { ...old.Config.Labels, 'org.opencontainers.image.revision': revision },
   HostConfig: old.HostConfig,
   NetworkingConfig: { EndpointsConfig: Object.fromEntries(Object.keys(old.NetworkSettings.Networks).map(network => [network, { Aliases: [service] }])) },
