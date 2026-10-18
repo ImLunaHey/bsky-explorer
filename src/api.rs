@@ -123,6 +123,7 @@ pub fn router(s: AppState) -> Router {
         .route("/api/records", get(record))
         .route("/api/repository-record", get(repository_record))
         .route("/api/collection-records", get(collection_records))
+        .route("/api/music", get(music))
         .route("/api/records/media", get(record_media))
         .route("/api/records/media/batch", post(record_media_batch))
         .route("/api/identities", get(identities))
@@ -296,6 +297,33 @@ async fn overview(State(s): State<AppState>, Query(q): Query<OverviewQuery>) -> 
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Summary temporarily unavailable. Live exploration is still available.",
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn music(State(s): State<AppState>, Query(q): Query<OverviewQuery>) -> Response {
+    match s
+        .storage
+        .snapshot(&format!("music:{}", q.window.seconds()))
+        .await
+    {
+        Ok(Some(payload)) => (
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            payload,
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Music charts are being prepared by the enrichment worker.",
+        )
+            .into_response(),
+        Err(error) => {
+            tracing::warn!(%error, "music snapshot unavailable");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Music charts temporarily unavailable.",
             )
                 .into_response()
         }

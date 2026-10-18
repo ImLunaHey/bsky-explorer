@@ -27,7 +27,7 @@ impl Storage {
     }
 
     pub async fn collection_records(&self, collection: &str) -> Result<Vec<RepositoryRecord>> {
-        Ok(self.client.query("SELECT at_uri, actor_did, collection, operation, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, record_json FROM events WHERE collection=? AND timestamp >= now()-INTERVAL 1 HOUR ORDER BY timestamp DESC LIMIT 1 BY at_uri LIMIT 30 SETTINGS max_execution_time=5, max_threads=2")
+        Ok(self.client.query("SELECT at_uri, actor_did, collection, operation, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, record_json FROM events WHERE collection=? AND timestamp >= now()-INTERVAL 1 DAY ORDER BY timestamp DESC, time_us DESC LIMIT 1 BY at_uri LIMIT 30 SETTINGS max_execution_time=5, max_threads=2")
             .bind(collection).fetch_all::<RepositoryRecord>().await?)
     }
     pub async fn snapshot(&self, key: &str) -> Result<Option<String>> {
