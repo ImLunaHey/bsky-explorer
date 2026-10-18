@@ -1,5 +1,5 @@
 import { PageSkeleton } from './Skeletons'
-import { lazy, Suspense, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { IdentityName, useIdentityMap } from './identities';
 import {
@@ -1377,10 +1377,12 @@ export type AppRoute =
 
 export default function App({ route }: { route: AppRoute }) {
   const navigate = useNavigate();
-  const openAccount = (did: string) =>
-    navigate({ to: "/accounts/$did", params: { did } });
-  const openRecord = (uri: string) =>
-    navigate({ to: "/records/$uri", params: { uri } });
+  // Live rate updates must not replace table cell component types: doing so
+  // remounts identity observers and continually resets their polling timers.
+  const openAccount = useCallback((did: string) =>
+    navigate({ to: "/accounts/$did", params: { did } }), [navigate]);
+  const openRecord = useCallback((uri: string) =>
+    navigate({ to: "/records/$uri", params: { uri } }), [navigate]);
   const openCluster = (cluster: Detection) =>
     navigate({
       to: "/clusters/$clusterId",

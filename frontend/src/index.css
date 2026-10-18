@@ -20,7 +20,7 @@ button:not(:disabled), summary { cursor: pointer; }
 * { box-sizing: border-box; }
 html { background: var(--color-ink); }
 body { margin: 0; min-width: 320px; min-height: 100vh; color: #ededed; background: var(--color-ink); }
-button, input { font: inherit; }
+@layer base { button, input { font: inherit; } }
 .panel { border: 1px solid var(--color-line); background: var(--color-panel); border-radius: 0; }
 .eyebrow { color: #c9a979; font-size: .67rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
 .discovery-hero { background: #0e0e0e; padding: 1.5rem; }
