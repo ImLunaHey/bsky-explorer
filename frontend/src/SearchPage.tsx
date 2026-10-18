@@ -1,3 +1,4 @@
+import { ListSkeleton } from './Skeletons'
 import { useCallback, useEffect, useState } from "react";
 import {
   keepPreviousData,
@@ -381,9 +382,7 @@ export function SearchPage({
           </div>
         )}
         {results.isLoading && (
-          <div className="panel flex min-h-56 items-center justify-center text-sm text-dim">
-            Searching…
-          </div>
+          <ListSkeleton/>
         )}
         {results.isError && (
           <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-5 text-sm text-red-200">

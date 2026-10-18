@@ -41,3 +41,7 @@ input, select, textarea { accent-color: var(--color-cyan); }
 [aria-label="Main navigation"] a:nth-child(3n+2) svg { color: #e9b96b; }
 [aria-label="Main navigation"] a:nth-child(3n) svg { color: #c4a0e5; }
 ::selection { background: #404040; color: #fff; }
+.skeleton-block { background: #242424; animation: skeleton-breathe 1.8s ease-in-out infinite; }
+.skeleton-chart { background: repeating-linear-gradient(to top, transparent 0, transparent calc(33.33% - 1px), #262626 calc(33.33% - 1px), #262626 33.33%); }
+@keyframes skeleton-breathe { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .skeleton-block { animation: none; } }

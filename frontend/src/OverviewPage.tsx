@@ -1,3 +1,4 @@
+import { AnalyticsSkeleton } from './Skeletons'
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
@@ -307,12 +308,7 @@ export function OverviewPage() {
         </div>
       )}
       {!data && query.isPending && (
-        <div
-          role="status"
-          className="panel grid min-h-80 place-items-center p-8 text-dim"
-        >
-          Loading the latest network summary…
-        </div>
+        <AnalyticsSkeleton/>
       )}
       {data && (
         <>

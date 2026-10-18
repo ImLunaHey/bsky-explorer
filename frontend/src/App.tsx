@@ -1,3 +1,4 @@
+import { PageSkeleton } from './Skeletons'
 import { lazy, Suspense, useMemo, useState } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
@@ -1517,7 +1518,7 @@ export default function App({ route }: { route: AppRoute }) {
       </header>
       <main className="mx-auto min-w-0 max-w-[1600px] px-4 pb-6 sm:px-6">
         <ExplorerNavigation view={route.view}/>
-        <Suspense fallback={<div role="status" className="panel p-10 text-sm text-dim">Opening explorer…</div>}>
+        <Suspense fallback={<PageSkeleton view={route.view}/>}>
         {route.view === 'discover' && <DiscoverPage />}
         {route.view === 'explore' && <DiscoverPage key={route.topic} topic={route.topic} />}
         {route.view === 'apps' && <AppsPage />}

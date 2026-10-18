@@ -1,3 +1,4 @@
+import { ProfileHeaderSkeleton, CardSkeletons, ListSkeleton } from './Skeletons'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
@@ -35,7 +36,7 @@ function Profile({ did }: { did: string }) {
   return <div className="min-w-0 space-y-6">
 
     <section className="panel overflow-hidden">
-      <div className="p-5">
+      {profile.isPending ? <ProfileHeaderSkeleton/> : <div className="p-5">
         <div className="flex items-end justify-between gap-3">
           <div className="grid size-16 shrink-0 place-items-center overflow-hidden border border-line bg-ink">
             {person?.avatar_url && !avatarFailed ? <img src={person.avatar_url} alt="" onError={() => setAvatarFailed(true)} referrerPolicy="no-referrer" className="size-full object-cover" /> : <UserRound className="size-10 text-cyan" />}
@@ -45,7 +46,6 @@ function Profile({ did }: { did: string }) {
         <div className="mt-4 grid gap-5 lg:grid-cols-2"><div>
         <h1 className="break-words text-3xl font-semibold tracking-tight">{name}</h1>
         <p className="mt-1 break-all text-sm text-cyan">{handle ? `@${handle}` : did}</p>
-        {profile.isPending && <p className="mt-3 text-sm text-dim">Loading public profile…</p>}
         {profile.isError && <p className="mt-3 text-sm text-dim">No Bluesky profile available. This ATProto repository is still explorable.</p>}
         {person?.description && <><p className={`mt-4 max-w-2xl whitespace-pre-wrap break-words text-sm leading-7 text-white/85 ${expandedBio ? '' : 'line-clamp-4'}`}>{person.description}</p>{(person.description.length > 180 || person.description.split('\n').length > 4) && <button onClick={() => setExpandedBio(value => !value)} className="mt-2 text-xs text-cyan">{expandedBio ? 'Show less' : 'Read full bio'}</button>}</>}
         </div><div className="lg:border-l lg:border-line lg:pl-7">
@@ -62,7 +62,7 @@ function Profile({ did }: { did: string }) {
           <Link to="/backfills" className="text-cyan">Manage collection →</Link></div>
         </details>
         </div></div>
-      </div>
+      </div>}
       <div className="flex overflow-x-auto border-t border-line px-3" role="tablist" aria-label="Profile sections">
         {tabs.map(value => <button key={value} role="tab" aria-selected={tab === value} aria-controls="profile-panel" id={`profile-tab-${value}`} onClick={() => setTab(value)} className={`shrink-0 border-b-2 px-4 py-4 text-sm font-medium transition ${tab === value ? 'border-cyan text-cyan' : 'border-transparent text-dim hover:text-white'}`}>{value}</button>)}
       </div>
@@ -87,7 +87,7 @@ function CrossAppContent({did,section}:{did:string;section:Tab|'Highlights'}) {
   // Highlights are deliberately varied: up to three examples from each interest.
   const counts = new Map<string,number>()
   const shown = selected.filter(record=>{const category=topicFor(record.collection)||'other';const count=counts.get(category)||0;counts.set(category,count+1);return section !== 'Highlights' || count < 3}).slice(0,section==='Highlights'?12:24)
-  return <div className="space-y-5"><header><h2 className="text-xl font-semibold">{section==='Highlights'?'A life across apps':section==='Writing'?'Writing & ideas':'Recently shared listening'}</h2><p className="mt-2 text-sm text-dim">{section==='Highlights'?'Some of what this person creates, enjoys and shares.':'Selected public records from this person’s activity.'} This is what we’ve retained, not their full history.</p></header>{section==='Highlights' && seenApps.length>0 && <div className="flex flex-wrap gap-2">{seenApps.map(app=>app && <Link key={app.id} to="/apps/$appId" params={{appId:app.id}} className="topic-chip">{app.name} →</Link>)}</div>}{query.isPending && <Loading/>}{query.isError && <Failure retry={()=>void query.refetch()}/>}<ContentCards records={shown}/>{query.isSuccess && !shown.length && <div className="panel p-6 text-sm leading-7 text-dim">We haven’t collected {section==='Writing'?'writing':section==='Listening'?'listening':'cross-app highlights'} for this person yet. That isn’t evidence they don’t use other apps. Check their posts or explore the apps directly.<div className="mt-3"><Link to="/apps" className="text-cyan">Explore apps →</Link></div></div>}</div>
+  return <div className="space-y-5"><header><h2 className="text-xl font-semibold">{section==='Highlights'?'A life across apps':section==='Writing'?'Writing & ideas':'Recently shared listening'}</h2><p className="mt-2 text-sm text-dim">{section==='Highlights'?'Some of what this person creates, enjoys and shares.':'Selected public records from this person’s activity.'} This is what we’ve retained, not their full history.</p></header>{section==='Highlights' && seenApps.length>0 && <div className="flex flex-wrap gap-2">{seenApps.map(app=>app && <Link key={app.id} to="/apps/$appId" params={{appId:app.id}} className="topic-chip">{app.name} →</Link>)}</div>}{query.isPending && <CardSkeletons/>}{query.isError && <Failure retry={()=>void query.refetch()}/>}<ContentCards records={shown}/>{query.isSuccess && !shown.length && <div className="panel p-6 text-sm leading-7 text-dim">We haven’t collected {section==='Writing'?'writing':section==='Listening'?'listening':'cross-app highlights'} for this person yet. That isn’t evidence they don’t use other apps. Check their posts or explore the apps directly.<div className="mt-3"><Link to="/apps" className="text-cyan">Explore apps →</Link></div></div>}</div>
 }
 
 function Posts({ did, name }: { did: string; name: string }) {
@@ -115,6 +115,6 @@ function Investigations({ did }: { did: string }) {
   return <div className="panel p-5"><h2 className="text-lg font-semibold">Coordination investigations</h2><p className="mt-2 text-sm text-dim">Observed patterns are leads for investigation, not proof of automation or wrongdoing.</p>{query.isPending && <Loading />}{query.isError && <Failure retry={() => void query.refetch()} />}{query.data?.map(id => <Link key={id} to="/clusters/$clusterId" params={{ clusterId: id }} className="mt-3 block break-all text-sm text-cyan">{id} →</Link>)}{query.data?.length === 0 && <Empty text="No indexed investigations for this account." />}</div>
 }
 
-function Loading() { return <div role="status" className="panel animate-pulse p-8 text-sm text-dim">Loading this section…</div> }
+function Loading() { return <ListSkeleton rows={3}/> }
 function Failure({ retry }: { retry: () => void }) { return <div role="alert" className="panel p-5 text-sm text-dim">This section couldn’t load. Other sections are still available. <button onClick={retry} className="ml-2 text-cyan">Try again</button></div> }
 function Empty({ text }: { text: string }) { return <p className="py-12 text-center text-sm leading-6 text-dim">{text}</p> }
