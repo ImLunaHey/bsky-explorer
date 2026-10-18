@@ -124,6 +124,9 @@ pub fn router(s: AppState) -> Router {
         .route("/api/repository-record", get(repository_record))
         .route("/api/collection-records", get(collection_records))
         .route("/api/music", get(music))
+        .route("/api/discover", get(discover))
+        .route("/api/music/entities/{id}", get(music_entity))
+        .route("/api/accounts/{did}/content", get(account_content))
         .route("/api/records/media", get(record_media))
         .route("/api/records/media/batch", post(record_media_batch))
         .route("/api/identities", get(identities))
@@ -328,6 +331,54 @@ async fn music(State(s): State<AppState>, Query(q): Query<OverviewQuery>) -> Res
                 .into_response()
         }
     }
+}
+
+async fn discover(State(s): State<AppState>) -> Response {
+    match s.storage.snapshot("discovery").await {
+        Ok(Some(payload)) => {
+            ([(header::CONTENT_TYPE, "application/json")], payload).into_response()
+        }
+        _ => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Discoveries are being refreshed. Please try again shortly.",
+        )
+            .into_response(),
+    }
+}
+async fn music_entity(State(s): State<AppState>, Path(id): Path<String>) -> Response {
+    if id.len() > 40 || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
+        return (StatusCode::BAD_REQUEST, "Invalid music identifier").into_response();
+    }
+    match s.storage.snapshot("music-entities").await {
+        Ok(Some(payload)) => {
+            let mut entries: serde_json::Value = match serde_json::from_str(&payload) {
+                Ok(value) => value,
+                Err(_) => {
+                    return (StatusCode::SERVICE_UNAVAILABLE, "Music details unavailable")
+                        .into_response();
+                }
+            };
+            match entries.get_mut(&id) { Some(value) => Json(value.take()).into_response(), None => (StatusCode::NOT_FOUND,"This item is no longer in the current chart selection. Explore the latest charts.").into_response() }
+        }
+        _ => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Music details are being prepared",
+        )
+            .into_response(),
+    }
+}
+async fn account_content(
+    State(s): State<AppState>,
+    Path(did): Path<String>,
+) -> Result<Json<Vec<crate::storage::snapshots::RepositoryRecord>>, (StatusCode, String)> {
+    if !did.starts_with("did:") || did.len() > 2048 {
+        return Err((StatusCode::BAD_REQUEST, "A DID is required".into()));
+    }
+    s.storage
+        .account_content(&did)
+        .await
+        .map(Json)
+        .map_err(internal_error)
 }
 
 #[derive(Debug, Deserialize)]

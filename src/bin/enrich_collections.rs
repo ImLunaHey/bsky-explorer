@@ -18,16 +18,18 @@ async fn main() -> Result<()> {
     storage.ensure_community_schema().await?;
     loop {
         let result = storage.refresh_music().await;
+        let discovery = storage.refresh_discovery().await;
         if std::env::var("ENRICHMENT_ONCE").as_deref() == Ok("1") {
-            return result;
+            result?;
+            return discovery;
         }
-        match result {
+        match result.and(discovery) {
             Ok(()) => {
                 std::fs::write(
                     "/tmp/enrichment-ready",
                     chrono::Utc::now().timestamp().to_string(),
                 )?;
-                tracing::info!("Music charts refreshed");
+                tracing::info!("Music and discovery refreshed");
             }
             Err(error) => {
                 tracing::warn!(%error, "Music enrichment failed; retaining last good charts")

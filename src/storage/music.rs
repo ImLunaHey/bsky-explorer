@@ -13,12 +13,13 @@ pub const COLLECTIONS: [&str; 3] = [
 ];
 const MAX_RECORDS: usize = 500_000;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Play {
     title: String,
     artists: Vec<String>,
     album: String,
     artwork_url: Option<String>,
+    listen_url: Option<String>,
     at: i64,
     actor: String,
     uri: String,
@@ -87,6 +88,17 @@ fn parse_play(record: &RepositoryRecord) -> Option<Play> {
         artists,
         album: clean(&value, if rocksky { "album" } else { "releaseName" }),
         artwork_url: artwork(&value),
+        listen_url: ["originUri", "originUrl", "spotifyLink"]
+            .iter()
+            .find_map(|key| {
+                let raw = value[*key].as_str()?;
+                let url = url::Url::parse(raw).ok()?;
+                (raw.len() <= 2048
+                    && url.scheme() == "https"
+                    && url.username().is_empty()
+                    && url.password().is_none())
+                .then(|| url.to_string())
+            }),
         at,
         actor: record.actor_did.clone(),
         uri: record.at_uri.clone(),
@@ -94,8 +106,10 @@ fn parse_play(record: &RepositoryRecord) -> Option<Play> {
     })
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Ranking {
+    pub id: String,
+    pub listen_url: Option<String>,
     pub artwork_url: Option<String>,
     pub title: String,
     pub subtitle: String,
@@ -106,6 +120,7 @@ pub struct Ranking {
 }
 #[derive(Default)]
 struct Counter {
+    listen_url: Option<String>,
     artwork_url: Option<String>,
     title: String,
     subtitle: String,
@@ -122,15 +137,30 @@ impl Counter {
         self.listeners.insert(play.actor.clone());
         self.example_uri = play.uri.clone();
         self.sources.insert(play.source.clone());
+        if play.listen_url.is_some() {
+            self.listen_url = play.listen_url.clone();
+        }
         if play.artwork_url.is_some() {
             self.artwork_url = play.artwork_url.clone();
         }
     }
 }
-fn ranked(counts: BTreeMap<String, Counter>) -> Vec<Ranking> {
+fn entity_id(kind: &str, title: &str, subtitle: &str) -> String {
+    format!(
+        "{kind}-{:016x}",
+        xxhash_rust::xxh3::xxh3_64(
+            serde_json::to_string(&(normalized(title), normalized(subtitle)))
+                .unwrap()
+                .as_bytes()
+        )
+    )
+}
+fn ranked(counts: BTreeMap<String, Counter>, kind: &str) -> (Vec<Ranking>, Vec<Ranking>) {
     let mut rows: Vec<_> = counts
         .into_values()
         .map(|r| Ranking {
+            id: entity_id(kind, &r.title, &r.subtitle),
+            listen_url: r.listen_url,
             artwork_url: r.artwork_url,
             title: r.title,
             subtitle: r.subtitle,
@@ -147,8 +177,15 @@ fn ranked(counts: BTreeMap<String, Counter>) -> Vec<Ranking> {
             .then(a.title.cmp(&b.title))
             .then(a.subtitle.cmp(&b.subtitle))
     });
+    let by_plays = rows.iter().take(30).cloned().collect();
+    rows.sort_by(|a, b| {
+        b.listeners
+            .cmp(&a.listeners)
+            .then(b.plays.cmp(&a.plays))
+            .then(a.id.cmp(&b.id))
+    });
     rows.truncate(30);
-    rows
+    (by_plays, rows)
 }
 #[derive(Debug, Serialize)]
 pub struct MusicSnapshot {
@@ -161,6 +198,9 @@ pub struct MusicSnapshot {
     pub tracks: Vec<Ranking>,
     pub artists: Vec<Ranking>,
     pub albums: Vec<Ranking>,
+    pub tracks_by_listeners: Vec<Ranking>,
+    pub artists_by_listeners: Vec<Ranking>,
+    pub albums_by_listeners: Vec<Ranking>,
     pub source_records: BTreeMap<String, usize>,
     pub duplicate_plays: usize,
     pub unparseable_records: usize,
@@ -233,6 +273,9 @@ fn aggregate(
                 .add(play, &play.album, &credit);
         }
     }
+    let (tracks, tracks_by_listeners) = ranked(tracks, "song");
+    let (artists, artists_by_listeners) = ranked(artists, "artist");
+    let (albums, albums_by_listeners) = ranked(albums, "album");
     MusicSnapshot {
         start,
         end,
@@ -240,9 +283,12 @@ fn aggregate(
         generated_at: chrono::Utc::now().timestamp(),
         plays: seen.len(),
         listeners: listeners.len(),
-        tracks: ranked(tracks),
-        artists: ranked(artists),
-        albums: ranked(albums),
+        tracks,
+        artists,
+        albums,
+        tracks_by_listeners,
+        artists_by_listeners,
+        albums_by_listeners,
         source_records,
         duplicate_plays,
         unparseable_records: unparseable,
@@ -288,8 +334,78 @@ impl Storage {
                 None => unparseable += 1,
             }
         }
+        let mut seeds = BTreeMap::new();
+        let mut snapshots = Vec::new();
         for seconds in [3600, 86400, 604800] {
             let snapshot = aggregate(&plays, end, seconds, unparseable, scanned);
+            for rows in [
+                &snapshot.tracks,
+                &snapshot.artists,
+                &snapshot.albums,
+                &snapshot.tracks_by_listeners,
+                &snapshot.artists_by_listeners,
+                &snapshot.albums_by_listeners,
+            ] {
+                for row in rows {
+                    seeds.insert(row.id.clone(), row.clone());
+                }
+            }
+            snapshots.push((seconds, snapshot));
+        }
+        let mut groups: BTreeMap<String, Vec<Play>> = BTreeMap::new();
+        for play in plays.iter().filter(|p| p.at >= end - 604800 && p.at < end) {
+            let credit = play.artists.join(" · ");
+            let mut ids = BTreeSet::from([
+                entity_id("song", &play.title, &credit),
+                entity_id("album", &play.album, &credit),
+            ]);
+            for artist in &play.artists {
+                ids.insert(entity_id("artist", artist, "Credited artist"));
+            }
+            for id in ids {
+                if seeds.contains_key(&id) {
+                    groups.entry(id).or_default().push(play.clone());
+                }
+            }
+        }
+        // Keep recently shared detail URLs useful when they drop out of a chart.
+        // Old entries retain their timestamp and are visibly stale, never relabeled live.
+        let mut entities: serde_json::Map<String, Value> = self
+            .snapshot("music-entities")
+            .await?
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, v)| {
+                v["generated_at"]
+                    .as_i64()
+                    .is_some_and(|at| at >= end - 604800)
+            })
+            .take(1000)
+            .collect();
+        for (id, row) in seeds {
+            let matching = groups.remove(&id).unwrap_or_default();
+            let mut windows = serde_json::Map::new();
+            for (label, seconds) in [("1h", 3600), ("24h", 86400), ("7d", 604800)] {
+                let summary = aggregate(&matching, end, seconds, 0, matching.len());
+                windows.insert(label.into(), serde_json::json!({"plays":summary.plays,"listeners":summary.listeners,"activity":summary.activity,"start":summary.start,"end":summary.end,"songs":summary.tracks_by_listeners}));
+            }
+            let albums: BTreeSet<_> = matching
+                .iter()
+                .filter(|p| !p.album.is_empty())
+                .map(|p| p.album.clone())
+                .collect();
+            let links: BTreeSet<_> = matching
+                .iter()
+                .filter_map(|p| p.listen_url.clone())
+                .collect();
+            entities.insert(id.clone(), serde_json::json!({"id":id,"kind":id.split('-').next(),"summary":row,"albums":albums.into_iter().take(12).collect::<Vec<_>>(),"links":links.into_iter().take(5).collect::<Vec<_>>(),"windows":windows,"generated_at":end}));
+        }
+        // Publish detail destinations before rankings that link to them.
+        self.save_snapshot("music-entities", &Value::Object(entities).to_string())
+            .await?;
+        for (seconds, snapshot) in snapshots {
             self.save_snapshot(
                 &format!("music:{seconds}"),
                 &serde_json::to_string(&snapshot)?,
@@ -303,6 +419,41 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn listener_ranking_considers_all_candidates_not_only_top_play_counts() {
+        let mut counts = BTreeMap::new();
+        for index in 0..35 {
+            counts.insert(
+                index.to_string(),
+                Counter {
+                    title: format!("Song {index}"),
+                    plays: 1000 - index,
+                    listeners: HashSet::from(["one".into()]),
+                    ..Default::default()
+                },
+            );
+        }
+        counts.insert(
+            "broad".into(),
+            Counter {
+                title: "Broad appeal".into(),
+                plays: 3,
+                listeners: HashSet::from(["one".into(), "two".into(), "three".into()]),
+                ..Default::default()
+            },
+        );
+        let (plays, listeners) = ranked(counts, "song");
+        assert!(!plays.iter().any(|r| r.title == "Broad appeal"));
+        assert_eq!(listeners[0].title, "Broad appeal");
+        assert_eq!(
+            entity_id("song", " SONG ", "Artist"),
+            entity_id("song", "song", "artist")
+        );
+        assert_ne!(
+            entity_id("song", "Song", "Artist"),
+            entity_id("album", "Song", "Artist")
+        );
+    }
     #[test]
     fn artwork_survives_deduplication_without_changing_counts() {
         let first = parse_play(&teal()).unwrap();

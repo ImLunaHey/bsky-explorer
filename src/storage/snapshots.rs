@@ -4,7 +4,7 @@ use anyhow::Result;
 use clickhouse::Row;
 use serde::Deserialize;
 
-#[derive(Row, Deserialize, serde::Serialize)]
+#[derive(Clone, Row, Deserialize, serde::Serialize)]
 pub struct RepositoryRecord {
     pub at_uri: String,
     pub actor_did: String,
