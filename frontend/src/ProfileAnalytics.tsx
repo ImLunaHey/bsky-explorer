@@ -8,10 +8,10 @@ type Bucket = { timestamp_ms: number; gained: number; lost: number; net: number;
 type History = { start_ms: number; end_ms: number; bucket_ms: number; buckets: Bucket[]; note: string }
 type Metric = keyof Omit<Bucket, 'timestamp_ms'>
 type Series = { key: Metric; label: string; color: string }
-const audience: Series[] = [{key:'gained',label:'Follows gained',color:'#ededed'},{key:'lost',label:'Known losses',color:'#d9a441'},{key:'net',label:'Observed net',color:'#bca58a'}]
-const activity: Series[] = [{key:'posts',label:'Posts & quotes',color:'#ededed'},{key:'replies',label:'Replies',color:'#bca58a'},{key:'likes',label:'Likes given',color:'#a3b89a'},{key:'reposts',label:'Reposts',color:'#d9a441'},{key:'other',label:'Other activity',color:'#929292'}]
-const engagement: Series[] = [{key:'likes_received',label:'Likes received',color:'#ededed'},{key:'reposts_received',label:'Reposts received',color:'#a3b89a'},{key:'replies_received',label:'Replies received',color:'#bca58a'}]
-const following: Series[] = [{key:'followed',label:'Followed others',color:'#ededed'},{key:'unfollowed',label:'Unfollowed others',color:'#d9a441'}]
+const audience: Series[] = [{key:'gained',label:'Follows gained',color:'#a3d99c'},{key:'lost',label:'Known losses',color:'#ed927e'},{key:'net',label:'Observed net',color:'#c4a0e5'}]
+const activity: Series[] = [{key:'posts',label:'Posts & quotes',color:'#a3d99c'},{key:'replies',label:'Replies',color:'#c4a0e5'},{key:'likes',label:'Likes given',color:'#e9b96b'},{key:'reposts',label:'Reposts',color:'#ed927e'},{key:'other',label:'Other activity',color:'#929292'}]
+const engagement: Series[] = [{key:'likes_received',label:'Likes received',color:'#a3d99c'},{key:'reposts_received',label:'Reposts received',color:'#e9b96b'},{key:'replies_received',label:'Replies received',color:'#c4a0e5'}]
+const following: Series[] = [{key:'followed',label:'Followed others',color:'#a3d99c'},{key:'unfollowed',label:'Unfollowed others',color:'#ed927e'}]
 const number = new Intl.NumberFormat()
 const stamp = (ms:number, hourly:boolean) => new Date(ms).toLocaleString([], hourly ? {month:'short',day:'numeric',hour:'numeric'} : {month:'short',day:'numeric'})
 

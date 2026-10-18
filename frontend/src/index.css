@@ -9,8 +9,8 @@ button:not(:disabled), summary { cursor: pointer; }
   --color-ink: #090909;
   --color-panel: #111111;
   --color-line: #262626;
-  --color-mint: #ededed;
-  --color-cyan: #dedede;
+  --color-mint: #a3d99c;
+  --color-cyan: #e9b96b;
   --color-dim: #939393;
   --color-sky-300: #d4d4d4;
   --color-sky-200: #eeeeee;
@@ -22,7 +22,7 @@ html { background: var(--color-ink); }
 body { margin: 0; min-width: 320px; min-height: 100vh; color: #ededed; background: var(--color-ink); }
 button, input { font: inherit; }
 .panel { border: 1px solid var(--color-line); background: var(--color-panel); border-radius: 0; }
-.eyebrow { color: var(--color-dim); font-size: .67rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+.eyebrow { color: #c9a979; font-size: .67rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
 .discovery-hero { background: #0e0e0e; padding: 1.5rem; }
 .discovery-hero h1 { font-size: clamp(1.65rem, 2.5vw, 2.5rem); line-height: 1.15; margin-top: .75rem; }
 .discovery-hero p { margin-top: .75rem; }
@@ -35,5 +35,9 @@ a.discovery-card:hover, .discovery-card:focus-within { border-color: #555; backg
 .scrollbar::-webkit-scrollbar-thumb { background: #444; border-radius: 0; }
 /* The interface uses square geometry throughout, including legacy tools. */
 [class*="rounded"] { border-radius: 0 !important; }
-input, select, textarea { accent-color: #dedede; }
+input, select, textarea { accent-color: var(--color-cyan); }
+[aria-label="Main navigation"] [aria-current="page"] { border-bottom-color: var(--color-cyan); color: var(--color-cyan); }
+[aria-label="Main navigation"] a:nth-child(3n+1) svg { color: #a3d99c; }
+[aria-label="Main navigation"] a:nth-child(3n+2) svg { color: #e9b96b; }
+[aria-label="Main navigation"] a:nth-child(3n) svg { color: #c4a0e5; }
 ::selection { background: #404040; color: #fff; }
