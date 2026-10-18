@@ -62,8 +62,9 @@ try {
   if (!healthy) throw Error('Replacement did not become healthy within 60 seconds');
   console.log(`${name} healthy; stopped rollback retained as ${rollbackName}. Other services were not restarted.`);
 } catch (error) {
-  await call(`/containers/${created.Id}/update`, { RestartPolicy: { Name: 'no' } }).catch(() => {});
+  await call(`/containers/${created.Id}/update`, { RestartPolicy: { Name: 'no' } });
   await call(`/containers/${created.Id}/stop?t=20`).catch(() => {});
+  if (inspect(created.Id).State.Running) throw Error('Replacement could not be stopped; refusing to start a second service instance. Inspect containers manually.');
   await call(`/containers/${created.Id}/rename?name=${stagingName}-failed`).catch(() => {});
   if (renamed) await call(`/containers/${old.Id}/rename?name=${name}`);
   await call(`/containers/${old.Id}/update`, { RestartPolicy: old.HostConfig.RestartPolicy });
