@@ -325,7 +325,7 @@ export function SearchPage({
       },
     });
   return (
-    <section className="mx-auto max-w-5xl">
+    <section className="min-w-0">
       <div className="mb-7">
         <p className="eyebrow">Follow a name, an idea, an interest</p>
         <h1 className="mt-2 text-3xl font-semibold tracking-tight">What are you curious about?</h1>

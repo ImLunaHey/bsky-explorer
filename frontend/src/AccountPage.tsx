@@ -10,9 +10,10 @@ import type { AccountDetail, AccountEvent, AccountProfile, RecordItem } from './
 import type { RepositoryRecord } from './CollectionsPage'
 import { ContentCards } from './DiscoveryCards'
 import { appFor, topicFor } from './discovery'
+import { ProfileAnalytics } from './ProfileAnalytics'
 
 const count = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
-const tabs = ['Highlights', 'Writing', 'Listening', 'Posts', 'Connections'] as const
+const tabs = ['Overview', 'Audience', 'Activity', 'Posts', 'Writing', 'Listening', 'Apps'] as const
 type Tab = typeof tabs[number]
 
 export function AccountPage({ did }: { did: string }) {
@@ -21,7 +22,7 @@ export function AccountPage({ did }: { did: string }) {
 
 function Profile({ did }: { did: string }) {
   const navigate = useNavigate()
-  const [tab, setTab] = useState<Tab>('Highlights')
+  const [tab, setTab] = useState<Tab>('Overview')
   const [technical, setTechnical] = useState(false)
   const [copied, setCopied] = useState(false)
   const [avatarFailed, setAvatarFailed] = useState(false)
@@ -31,10 +32,10 @@ function Profile({ did }: { did: string }) {
   const person = profile.data
   const handle = person?.handle || account.data?.current_identity.handle
   const name = person?.display_name || (handle ? `@${handle}` : 'A person on the open web')
-  return <div className="mx-auto max-w-5xl space-y-6">
+  return <div className="min-w-0 space-y-6">
     <Link to="/search" search={{ q: "", type: "account", offset: 0 }} className="text-sm text-dim hover:text-cyan">← Explore people</Link>
     <section className="panel overflow-hidden">
-      <div className="profile-cover h-28 sm:h-40" aria-hidden="true" />
+      <div className="profile-cover h-20 sm:h-24" aria-hidden="true" />
       <div className="px-5 pb-6 sm:px-8">
         <div className="flex items-end justify-between gap-3">
           <div className="-mt-10 grid size-24 shrink-0 place-items-center overflow-hidden rounded-3xl border-4 border-panel bg-ink shadow-xl">
@@ -65,14 +66,17 @@ function Profile({ did }: { did: string }) {
     </section>
     <section id="profile-panel" role="tabpanel" aria-labelledby={`profile-tab-${tab}`}>
       {tab === 'Posts' && <Posts did={did} name={name} />}
-      {(['Highlights','Writing','Listening'] as string[]).includes(tab) && <CrossAppContent did={did} section={tab} />}
-      {tab === 'Connections' && <div className="panel p-5"><AccountFollows did={did} onAccount={accountDid => void navigate({ to: '/accounts/$did', params: { did: accountDid } })} /></div>}
+      {tab === 'Overview' && <div className="space-y-8"><ProfileAnalytics did={did}/><CrossAppContent did={did} section="Highlights"/></div>}
+      {(['Writing','Listening'] as string[]).includes(tab) && <CrossAppContent did={did} section={tab} />}
+      {tab === 'Audience' && <div className="space-y-6"><ProfileAnalytics did={did} mode="audience"/><details className="panel p-5"><summary className="cursor-pointer text-sm">Recent follow records & short-window totals</summary><AccountFollows did={did} onAccount={accountDid => void navigate({ to: '/accounts/$did', params: { did: accountDid } })} /></details></div>}
+      {tab === 'Activity' && <div className="space-y-6"><ProfileAnalytics did={did} mode="activity"/><Activity did={did}/></div>}
+      {tab === 'Apps' && <AccountLexicons did={did}/>}
     </section>
-    <details className="panel p-5 text-sm" onToggle={event=>setTechnical(event.currentTarget.open)}><summary className="text-dim">Technical account details</summary>{technical && <div className="mt-5 space-y-6"><AccountLexicons did={did}/><Activity did={did}/><Investigations did={did}/></div>}</details>
+    <details className="panel p-5 text-sm" onToggle={event=>setTechnical(event.currentTarget.open)}><summary className="text-dim">Research & investigations</summary>{technical && <div className="mt-5"><Investigations did={did}/></div>}</details>
   </div>
 }
 
-function CrossAppContent({did,section}:{did:string;section:Tab}) {
+function CrossAppContent({did,section}:{did:string;section:Tab|'Highlights'}) {
   const query = useQuery({queryKey:['account-content',did],queryFn:()=>api<RepositoryRecord[]>(`/api/accounts/${encodeURIComponent(did)}/content`),staleTime:60_000})
   const records = query.data || []
   const seenApps = [...new Set(records.map(record=>appFor(record.collection)).filter(Boolean))]

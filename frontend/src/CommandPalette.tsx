@@ -3,6 +3,8 @@ import { useNavigate } from "@tanstack/react-router";
 import { Search } from "lucide-react";
 
 const destinations = [
+  { label: "Network", hint: "Network statistics, trends and activity charts", to: "/network" },
+  { label: "Collections", hint: "Explore app schemas and retained records", to: "/collections" },
   { label: "Music charts", hint: "Most played songs, artists and albums", to: "/music" },
   { label: "Discover", hint: "Fresh writing, music and discoveries", to: "/" },
   { label: "Explore", hint: "Music, writing, films and events", to: "/explore" },

@@ -41,6 +41,7 @@ import { FirehoseView } from "./FirehoseView";
 const FirehoseImagesPage = lazy(() => import('./FirehoseImagesPage').then(m => ({ default: m.FirehoseImagesPage })));
 const TrendPage = lazy(() => import('./TrendPage').then(m => ({ default: m.TrendPage })));
 import { CommandPalette } from "./CommandPalette";
+import { ExplorerNavigation } from './ExplorerNavigation';
 const SearchPage = lazy(() => import('./SearchPage').then(m => ({ default: m.SearchPage })));
 const AccountPage = lazy(() => import('./AccountPage').then(m => ({ default: m.AccountPage })));
 import { TopAccounts } from "./TopAccounts";
@@ -1489,7 +1490,7 @@ export default function App({ route }: { route: AppRoute }) {
     <>
       {(route.view === 'firehose' || route.view === 'firehose-images') && <LiveUpdates />}
       <header className="sticky top-0 z-30 border-b border-line/80 bg-ink/90 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4">
+        <div className="flex items-center justify-between px-5 py-4">
           <Link to="/" className="flex items-center gap-3" aria-label="ATProto Explorer home">
             <div className="grid size-9 place-items-center rounded-xl bg-mint text-ink">
               <Network className="size-5" />
@@ -1514,29 +1515,9 @@ export default function App({ route }: { route: AppRoute }) {
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-7xl px-4 py-6 sm:px-8 sm:py-8">
+      <main className="min-w-0 px-4 py-5 sm:px-6 lg:ml-52 lg:px-8">
         <Suspense fallback={<div role="status" className="panel p-10 text-sm text-dim">Opening explorer…</div>}>
-        <nav aria-label="Main navigation" className="mb-8 flex gap-1 rounded-xl border border-line bg-panel/70 p-1 sm:w-fit">
-          {(
-            [
-              ["/", "Discover", "discover"],
-              ["/explore", "Explore", "explore"],
-              ["/apps", "Apps", "apps"],
-              ["/search", "Search", "search"],
-            ] as const
-          ).map(([to, label, id]) => (
-            <Link
-              key={to}
-              to={to}
-              search={to === '/explore' ? {topic:''} : to === '/search' ? {q:'',type:'all',offset:0} : undefined}
-              activeOptions={{ exact: true }}
-              className={`flex-1 rounded-lg px-2 py-2.5 text-center text-sm font-medium transition sm:flex-none sm:px-4 ${route.view === id || (id === 'explore' && ['music','music-detail','story'].includes(route.view)) || (id === 'apps' && route.view === 'app') ? "bg-mint text-ink" : "text-dim hover:text-white"}`}
-            >
-              {label}
-            </Link>
-          ))}
-        </nav>
-        {advanced && !['advanced','admin'].includes(route.view) && <Link to="/advanced" className="mb-5 inline-block text-xs text-dim">← Advanced explorer</Link>}
+        <ExplorerNavigation view={route.view}/>
         {route.view === 'discover' && <DiscoverPage />}
         {route.view === 'explore' && <DiscoverPage key={route.topic} topic={route.topic} />}
         {route.view === 'apps' && <AppsPage />}
@@ -1811,7 +1792,7 @@ export default function App({ route }: { route: AppRoute }) {
         )}
         </Suspense>
       </main>
-      <footer className="mx-auto flex max-w-7xl flex-wrap justify-between gap-4 border-t border-line px-5 py-8 text-xs text-dim"><p>Made for curiosity. Built on public ATProto data.</p><div className="flex gap-5"><Link to="/coverage">Coverage & privacy</Link><Link to="/advanced">Advanced explorer</Link></div></footer>
+      <footer className="flex flex-wrap justify-between gap-4 border-t border-line px-5 py-8 text-xs text-dim lg:ml-52"><p>Made for curiosity. Built on public ATProto data.</p><div className="flex gap-5"><Link to="/coverage">Coverage & privacy</Link><Link to="/advanced">Research tools</Link></div></footer>
     </>
   );
 }
