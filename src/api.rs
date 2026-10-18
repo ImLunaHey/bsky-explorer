@@ -79,6 +79,8 @@ pub fn router(s: AppState) -> Router {
         .route("/readyz", get(ready))
         .route("/metrics", get(metrics))
         .route("/api/stats", get(stats))
+        .route("/api/overview", get(overview))
+        .route("/api/ingestion", get(ingestion))
         .route("/api/search", get(search))
         .route("/api/backfills", get(backfills).post(enqueue_backfill))
         .route("/api/backfills/{id}/status", get(backfill_status))
@@ -167,6 +169,47 @@ async fn metrics(State(s): State<AppState>) -> String {
 }
 async fn stats(State(s): State<AppState>) -> Json<crate::analysis::Rates> {
     Json(analyzer_blocking(s.analysis, |analysis| analysis.rates()).await)
+}
+
+async fn ingestion(State(s): State<AppState>) -> Json<serde_json::Value> {
+    Json(
+        serde_json::json!({"connected": s.metrics.connected.get() == 1,
+        "lag_ms": s.metrics.jetstream_lag_milliseconds.get()}),
+    )
+}
+
+#[derive(Deserialize)]
+struct OverviewQuery {
+    #[serde(default)]
+    window: crate::storage::overview::Window,
+}
+
+async fn overview(State(s): State<AppState>, Query(q): Query<OverviewQuery>) -> Response {
+    // Coalesce expensive queries across visitors, with a maximum of three cached windows.
+    type Cache = tokio::sync::Mutex<HashMap<i64, (Instant, crate::storage::overview::Overview)>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    let mut cache = CACHE.get_or_init(Default::default).lock().await;
+    let key = q.window.seconds();
+    if let Some((at, result)) = cache.get(&key) {
+        if at.elapsed() < Duration::from_secs(60) {
+            return Json(result.clone()).into_response();
+        }
+    }
+    let end = Utc::now().timestamp();
+    match s.storage.overview(q.window, end).await {
+        Ok(result) => {
+            cache.insert(key, (Instant::now(), result.clone()));
+            Json(result).into_response()
+        }
+        Err(error) => {
+            tracing::warn!(%error, "overview query failed");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Overview unavailable; try a shorter time range.",
+            )
+                .into_response()
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
