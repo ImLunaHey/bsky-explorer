@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { ArrowUpRight, Copy, UserRound } from 'lucide-react'
 import { api } from './api'
+import { IdentityName } from './identities'
 import { AccountFollows } from './AccountFollows'
 import { AccountLexicons } from './AccountLexicons'
 import { PostCard } from './PostCard'
@@ -45,7 +46,7 @@ function Profile({ did }: { did: string }) {
         </div>
         <div className="mt-4 grid gap-5 lg:grid-cols-2"><div>
         <h1 className="break-words text-3xl font-semibold tracking-tight">{name}</h1>
-        <p className="mt-1 break-all text-sm text-cyan">{handle ? `@${handle}` : did}</p>
+        <p className="mt-1 break-all text-sm text-cyan"><IdentityName did={did} handle={handle || undefined} inline /></p>
         {profile.isError && <p className="mt-3 text-sm text-dim">No Bluesky profile available. This ATProto repository is still explorable.</p>}
         {person?.description && <><p className={`mt-4 max-w-2xl whitespace-pre-wrap break-words text-sm leading-7 text-white/85 ${expandedBio ? '' : 'line-clamp-4'}`}>{person.description}</p>{(person.description.length > 180 || person.description.split('\n').length > 4) && <button onClick={() => setExpandedBio(value => !value)} className="mt-2 text-xs text-cyan">{expandedBio ? 'Show less' : 'Read full bio'}</button>}</>}
         </div><div className="lg:border-l lg:border-line lg:pl-7">

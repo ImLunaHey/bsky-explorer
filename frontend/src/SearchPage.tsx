@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { api } from "./api";
 import { DiscoverySearch } from './DiscoverySearch';
-import { useIdentityMap } from "./identities";
+import { IdentityLink, IdentityName } from "./identities";
 import type {
   BackfillJob,
   BackfillJobsResponse,
@@ -33,24 +33,8 @@ const kinds: { value: SearchKind; label: string }[] = [
   { value: "event", label: "Technical events" },
 ];
 function Result({ item }: { item: SearchResult }) {
-  const identities = useIdentityMap(item.handle ? [] : [item.did]);
-  const handle = item.handle || identities.get(item.did);
   const account = (
-    <Link
-      to="/accounts/$did"
-      params={{ did: item.did }}
-      title={`${handle ? `@${handle} · ` : ""}${item.did}`}
-      className="block min-w-0 text-sky-300 hover:text-sky-200"
-    >
-      <span className="block break-all font-medium">
-        {handle ? `@${handle}` : item.did}
-      </span>
-      {handle ? (
-        <span className="block break-all font-mono text-[10px] text-dim">
-          {item.did}
-        </span>
-      ) : <span className="block text-[9px] text-dim">resolving…</span>}
-    </Link>
+    <IdentityLink did={item.did} handle={item.handle || undefined} />
   );
   if (item.result_type === "account")
     return (
@@ -238,7 +222,7 @@ function BackfillState({
                   params={{ did: job.did }}
                   className="text-sm text-sky-300 hover:text-sky-200"
                 >
-                  {job.handle ? <><span className="block">@{job.handle}</span><span className="block break-all font-mono text-[9px] text-dim">{job.did}</span></> : <>{job.did} <span className="text-[9px] text-dim">resolving…</span></>} →
+                  <IdentityName did={job.did!} handle={job.handle || undefined} compact /> →
                 </Link>
               ) : (
                 <span className="text-sm text-sky-300">@{job.handle}</span>

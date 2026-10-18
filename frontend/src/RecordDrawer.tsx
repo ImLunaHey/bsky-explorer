@@ -7,7 +7,7 @@ import {
   Quote,
 } from "lucide-react";
 import { api } from "./api";
-import { useIdentityMap } from "./identities";
+import { IdentityName, useIdentityMap } from "./identities";
 import type { RecordDetail, RecordItem, RecordMediaResponse } from "./types";
 import { youtubeVideos } from "./youtube";
 import { HlsVideo } from "./HlsVideo";
@@ -57,7 +57,7 @@ function RecordSummary({
           onClick={() => onAccount(item.actor_did)}
           className="max-w-full break-all text-left font-medium text-cyan hover:text-mint"
         >
-          {handles.get(item.actor_did) ? <><span className="block">@{handles.get(item.actor_did)}</span><span className="block break-all font-mono text-[10px] text-dim">{item.actor_did}</span></> : <><span>{item.actor_did}</span><span className="ml-2 text-[9px] text-dim">resolving…</span></>}
+          <IdentityName did={item.actor_did} handle={handles.get(item.actor_did)} />
         </button>
         <span className="uppercase text-mint">{item.kind}</span>
         <time className="text-dim">

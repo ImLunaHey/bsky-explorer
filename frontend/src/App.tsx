@@ -1,6 +1,7 @@
 import { PageSkeleton } from './Skeletons'
 import { lazy, Suspense, useMemo, useState } from "react";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
+import { IdentityName, useIdentityMap } from './identities';
 import {
   createColumnHelper,
   flexRender,
@@ -159,15 +160,7 @@ function AccountIdentity({
       title={`${handle ? `@${handle} · ` : ""}${did}`}
       className="group min-w-0 text-left text-cyan hover:text-mint focus:outline-none focus-visible:ring-2 focus-visible:ring-mint/60"
     >
-      <span className="block break-all font-medium">
-        {handle ? `@${handle}` : did}
-      </span>
-      {handle && (
-        <span className={`block break-all font-mono text-dim group-hover:text-dim/80 ${compact?'text-[9px]':'text-[10px]'}`}>
-          {did}
-        </span>
-      )}
-      {!handle&&<span className="block text-[9px] text-dim">resolving…</span>}
+      <IdentityName did={did} handle={handle || undefined} compact={compact} />
     </button>
   );
 }
@@ -221,34 +214,6 @@ function useApi<T>(
     enabled,
     refetchInterval: interval,
   });
-}
-function useIdentityMap(values: string[]) {
-  const dids = [
-    ...new Set(
-      values
-        .map((x) => didFromTarget(x))
-        .filter((x): x is string => Boolean(x)),
-    ),
-  ].sort();
-  const batches = Array.from({ length: Math.ceil(dids.length / 100) }, (_, i) =>
-    dids.slice(i * 100, (i + 1) * 100),
-  );
-  const queries = useQueries({
-    queries: batches.map((batch) => ({
-      queryKey: ["identities", batch.join(",")],
-      queryFn: () =>
-        api<Identity[]>(
-          `/api/identities?dids=${encodeURIComponent(batch.join(","))}`,
-        ),
-      staleTime: 300_000,
-      gcTime: 3_600_000,
-    })),
-  });
-  return new Map(
-    queries
-      .flatMap((q) => q.data || [])
-      .map((identity) => [identity.did, identity.handle || undefined]),
-  );
 }
 type GraphEdge = ClusterDetail["graph_edges"][number];
 
@@ -615,7 +580,7 @@ function ConversationList({
           >
             <div className="flex items-center gap-2 text-xs">
               <span className="min-w-0 flex-1 break-all font-medium text-sky-300">
-                {item.handle ? <><span className="block">@{item.handle}</span>{record&&<span className="block break-all font-mono text-[9px] text-dim">{record.actor_did}</span>}</> : record ? <>{record.actor_did}<span className="ml-2 text-[9px] text-dim">resolving…</span></> : "Observed conversation"}
+                {record ? <IdentityName did={record.actor_did} handle={item.handle || undefined} compact /> : "Observed conversation"}
               </span>
               <span className="shrink-0 rounded-md bg-sky-500/10 px-2 py-1 font-mono text-sky-300">
                 {compact.format(item.count)} replies

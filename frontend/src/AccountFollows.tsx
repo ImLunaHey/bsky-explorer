@@ -2,7 +2,7 @@ import { memo, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowDownUp, ChevronLeft, ChevronRight } from "lucide-react";
 import { api } from "./api";
-import { useIdentityMap } from "./identities";
+import { IdentityLink, useIdentityMap } from "./identities";
 
 export type FollowWindow = {
   seconds: number;
@@ -94,24 +94,7 @@ function FollowEventTable({
                 >
                   <td className="px-3 py-3">
                     {other ? (
-                      <button
-                        onClick={() => onAccount(other)}
-                        title={other}
-                        className="block max-w-72 text-left text-sky-300 hover:text-sky-200"
-                      >
-                        <b className="block break-all">
-                          {handle ? `@${handle}` : other}
-                        </b>
-                        {handle ? (
-                          <span className="block break-all font-mono text-[10px] text-dim">
-                            {other}
-                          </span>
-                        ) : (
-                          <span className="block text-[9px] text-dim">
-                            resolving…
-                          </span>
-                        )}
-                      </button>
+                      <IdentityLink did={other} handle={handle} onSelect={onAccount} className="max-w-72" />
                     ) : (
                       <span className="italic text-dim">
                         Target unavailable

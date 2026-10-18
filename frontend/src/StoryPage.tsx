@@ -5,7 +5,7 @@ import { api } from './api'
 import { Artwork } from './Artwork'
 import { presentRecord, recordData } from './discovery'
 import { safeWebUrl } from './collectionEnrichment'
-import { useIdentityMap } from './identities'
+import { IdentityName } from './identities'
 import { RetryNotice } from './DiscoveryCards'
 import type { RepositoryRecord } from './CollectionsPage'
 
@@ -16,7 +16,6 @@ export function StoryPage({uri}:{uri:string}) {
   const data = record ? recordData(record) : {}
   const site = typeof data.site === 'string' && data.site.startsWith('at://') ? data.site : undefined
   const publication = useQuery({queryKey:['repository-record',site],queryFn:()=>api<RepositoryRecord>(`/api/repository-record?uri=${encodeURIComponent(site!)}`),enabled:!!site,staleTime:300_000})
-  const handles = useIdentityMap(record ? [record.actor_did] : [])
   let source = item?.url
   let publicationName = ''
   if (publication.data && publication.data.operation !== 'delete') {
@@ -29,7 +28,7 @@ export function StoryPage({uri}:{uri:string}) {
   const hidden = data.isDraft === true || ['private','unlisted','author'].includes(String(data.visibility))
   return <article className="mx-auto max-w-3xl space-y-6">{query.isPending && <DetailSkeleton/>}{query.isError && <RetryNotice retry={()=>void query.refetch()} text="We couldn’t open this item. It may no longer be available." />}{record && item && <>
     {record.operation === 'delete' || hidden ? <section className="panel p-8"><h1 className="text-2xl font-semibold">This item is no longer available.</h1><p className="mt-3 text-sm text-dim">It was removed or isn’t intended for public discovery.</p></section> : <>
-      <header className="discovery-card p-6 sm:p-8"><p className="eyebrow">{item.action}{item.app ? ` · ${item.app.name}` : ''}</p>{item.artworkUrl && <div className="mt-6"><Artwork url={item.artworkUrl} className={item.topic === 'films' ? 'h-60 w-40' : 'size-40'} /></div>}<h1 className="mt-5 break-words text-3xl font-semibold leading-tight tracking-tight sm:text-4xl">{item.title}</h1><p className="mt-3 break-words text-sm leading-6 text-dim">{publicationName || item.subtitle}</p><Link to="/accounts/$did" params={{did:record.actor_did}} className="mt-5 inline-block text-sm text-cyan">{handles.get(record.actor_did) ? `By @${handles.get(record.actor_did)}` : 'Meet the person behind this'} →</Link>
+      <header className="discovery-card p-6 sm:p-8"><p className="eyebrow">{item.action}{item.app ? ` · ${item.app.name}` : ''}</p>{item.artworkUrl && <div className="mt-6"><Artwork url={item.artworkUrl} className={item.topic === 'films' ? 'h-60 w-40' : 'size-40'} /></div>}<h1 className="mt-5 break-words text-3xl font-semibold leading-tight tracking-tight sm:text-4xl">{item.title}</h1><p className="mt-3 break-words text-sm leading-6 text-dim">{publicationName || item.subtitle}</p><Link to="/accounts/$did" params={{did:record.actor_did}} className="mt-5 inline-block text-sm text-cyan">By <IdentityName did={record.actor_did} inline /> →</Link>
       {item.date && Number.isFinite(Date.parse(item.date)) && <p className="mt-3 text-sm text-dim">{item.topic === 'events' ? 'Starts ' : ''}{new Date(item.date).toLocaleString([], {dateStyle:'long',timeStyle:item.topic === 'events' ? 'short' : undefined})}</p>}
       {item.topic === 'events' && typeof data.endsAt === 'string' && Number.isFinite(Date.parse(data.endsAt)) && <p className="mt-1 text-sm text-dim">Ends {new Date(data.endsAt).toLocaleString([], {dateStyle:'long',timeStyle:'short'})}</p>}
       {item.topic === 'events' && <p className="mt-3 text-xs text-dim">Dates and location are supplied by the organizer. Check the original listing before making plans.</p>}

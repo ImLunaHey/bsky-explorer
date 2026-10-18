@@ -3,7 +3,7 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ChevronLeft, ChevronRight, ExternalLink, Pause, Play, Wifi, WifiOff, X } from "lucide-react";
 import { api } from "./api";
-import { useIdentityMap } from "./identities";
+import { IdentityName, useIdentityMap } from "./identities";
 import { FIREHOSE_PAUSE_EVENT, type LiveConnection } from "./live";
 import type { FirehoseEvent, FirehoseFeed, RecordMedia } from "./types";
 
@@ -60,11 +60,7 @@ async function fetchMediaBatch(uris: string[]) {
 }
 
 function Author({ event, handle }: { event: FirehoseEvent; handle?: string }) {
-  return handle ? (
-    <><b className="block truncate">@{handle}</b><span className="block break-all font-mono text-[9px] leading-tight text-white/35">{event.actor_did}</span></>
-  ) : (
-    <b className="block break-all font-mono text-[10px] leading-tight">{event.actor_did}</b>
-  );
+  return <IdentityName did={event.actor_did} handle={handle} compact />;
 }
 
 type ResolvedImage = { event: FirehoseEvent; image: RecordMedia; handle?: string };

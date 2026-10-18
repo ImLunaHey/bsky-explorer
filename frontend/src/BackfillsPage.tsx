@@ -13,7 +13,7 @@ import {
 import { ArrowDownUp, ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { api } from "./api";
-import { useIdentityMap } from "./identities";
+import { IdentityLink, IdentityName, useIdentityMap } from "./identities";
 import { CrawlOverview } from "./CrawlsPage";
 import type {
   BackfillJob,
@@ -61,19 +61,7 @@ const columns = [
       const job = x.row.original;
       return (
         <div className="max-w-64">
-          <span className="block break-all font-medium text-sky-300">
-            {job.handle
-              ? `@${job.handle}`
-              : job.did
-                ? job.did
-                : job.query}
-          </span>
-          {job.handle && job.did && (
-            <span className="block break-all font-mono text-[10px] text-dim">
-              {job.did}
-            </span>
-          )}
-          {!job.handle&&job.did&&<span className="block text-[9px] text-dim">resolving…</span>}
+          {job.did ? <IdentityName did={job.did} handle={job.handle || undefined} /> : job.query}
         </div>
       );
     },
@@ -359,14 +347,13 @@ export function BackfillDetailPage({jobId}:{jobId:string}) {
     enabled:Boolean(did),staleTime:5_000,
     refetchInterval:()=>job.data&&active.has(job.data.status)?10_000:false,
   });
-  const eventHandles=useIdentityMap((imported.data?.events||[]).map(event=>event.actor_did));
   const eventColumns=useMemo(()=>[
     eventHelper.accessor("timestamp_ms",{header:"Observed",cell:x=><time className="whitespace-nowrap text-dim">{new Date(x.getValue()).toLocaleString()}</time>}),
     eventHelper.accessor("kind",{header:"Kind",cell:x=><span className="uppercase text-sky-300">{x.getValue()}</span>}),
-    eventHelper.accessor("actor_did",{header:"Actor",cell:x=>{const actor=x.getValue(),actorHandle=eventHandles.get(actor);return <Link to="/accounts/$did" params={{did:actor}} className="block max-w-56 text-sky-300" title={actor}><b className="block truncate">{actorHandle?`@${actorHandle}`:actor}</b>{actorHandle&&<span className="block truncate font-mono text-[9px] text-dim">{actor}</span>}</Link>}}),
+    eventHelper.accessor("actor_did",{header:"Actor",cell:x=><IdentityLink did={x.getValue()} compact className="max-w-56" />}),
     eventHelper.accessor("collection",{header:"Collection",cell:x=><span className="block max-w-64 truncate" title={x.getValue()}>{x.getValue()}</span>}),
     eventHelper.accessor(x=>x.at_uri||x.target,{id:"record",header:"Record / target",cell:x=>{const uri=x.getValue();return uri?<Link to="/records/$uri" params={{uri}} className="block max-w-80 truncate text-sky-300" title={uri}>{uri}</Link>:"—"}}),
-  ],[eventHandles]);
+  ],[]);
   const eventData=useMemo(()=>{const needle=eventSearch.trim().toLowerCase();return (imported.data?.events||[]).filter(event=>!needle||`${event.actor_did} ${event.kind} ${event.collection} ${event.at_uri} ${event.target}`.toLowerCase().includes(needle))},[eventSearch,imported.data]);
   const eventTable=useReactTable({data:eventData,columns:eventColumns,state:{sorting:eventSorting},onSortingChange:setEventSorting,getCoreRowModel:getCoreRowModel(),getSortedRowModel:getSortedRowModel()});
   if(job.isLoading)return <div className="panel grid min-h-64 place-items-center text-sm text-dim">Loading job status…</div>;

@@ -2,15 +2,14 @@ import { Link } from '@tanstack/react-router'
 import { ArrowUpRight } from 'lucide-react'
 import { Artwork } from './Artwork'
 import { presentRecord } from './discovery'
-import { useIdentityMap } from './identities'
+import { IdentityLink } from './identities'
 import type { RepositoryRecord } from './CollectionsPage'
 import type { Ranking } from './discovery'
 
 export function ContentCards({ records }: { records: RepositoryRecord[] }) {
-  const handles = useIdentityMap(records.map(record => record.actor_did))
-  return <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{records.map(record => <ContentCard key={record.at_uri} record={record} handle={handles.get(record.actor_did)} />)}</div>
+  return <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{records.map(record => <ContentCard key={record.at_uri} record={record} />)}</div>
 }
-function ContentCard({ record, handle }: { record: RepositoryRecord; handle?: string }) {
+function ContentCard({ record }: { record: RepositoryRecord }) {
   const item = presentRecord(record)
   return <article className="discovery-card flex min-w-0 flex-col p-5">
     <p className="eyebrow">{item.action}{item.app ? ` · ${item.app.name}` : ''}</p>
@@ -19,7 +18,7 @@ function ContentCard({ record, handle }: { record: RepositoryRecord; handle?: st
     {item.topic === 'events' && item.date && Number.isFinite(Date.parse(item.date)) && <p className="mt-3 text-sm text-cyan">{new Date(item.date).toLocaleString([], {dateStyle:'medium',timeStyle:'short'})}</p>}
     <p className="mt-2 line-clamp-2 break-words text-xs text-dim">{item.subtitle}</p>
     {item.body && <p className="mt-3 line-clamp-3 break-words text-sm leading-6 text-dim">{item.body}</p>}
-    <div className="mt-auto flex items-end justify-between gap-3 pt-5 text-xs"><Link to="/accounts/$did" params={{did:record.actor_did}} className="min-w-0 truncate text-cyan">{handle ? `@${handle}` : 'Meet the person →'}</Link><Link to="/stories/$uri" params={{uri:record.at_uri}} aria-label={`Explore ${item.title}`} className="rounded-full border border-line p-2 text-cyan"><ArrowUpRight className="size-4" /></Link></div>
+    <div className="mt-auto flex items-end justify-between gap-3 pt-5 text-xs"><IdentityLink did={record.actor_did} inline className="truncate" /><Link to="/stories/$uri" params={{uri:record.at_uri}} aria-label={`Explore ${item.title}`} className="rounded-full border border-line p-2 text-cyan"><ArrowUpRight className="size-4" /></Link></div>
   </article>
 }
 export function SongCards({ rows }: { rows: Ranking[] }) {
