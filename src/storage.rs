@@ -1255,7 +1255,7 @@ impl Storage {
             )
         };
         let sql = format!(
-            "SELECT event_id, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, actor_did, kind, collection, operation, at_uri, record_json, target, text, urls, domains FROM events WHERE {type_predicate} AND {time_predicate} AND {search_predicate} ORDER BY timestamp DESC LIMIT ?"
+            "SELECT event_id, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, actor_did, kind, collection, operation, at_uri, '' AS record_json, target, text, urls, domains FROM events WHERE {type_predicate} AND {time_predicate} AND {search_predicate} ORDER BY timestamp DESC LIMIT ?"
         );
         let client = self
             .client

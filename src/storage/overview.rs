@@ -246,6 +246,12 @@ mod tests {
         batch.push(uri.clone());
         assert_eq!(storage.existing_uris(&batch).await.unwrap().len(), 1);
         assert!(!storage.records(&batch).await.unwrap().is_empty());
+        let search = storage
+            .search_events("hello", crate::storage::SearchEventType::Records, 10)
+            .await
+            .unwrap();
+        assert!(!search.is_empty());
+        assert!(search.iter().all(|row| row.record_json.is_empty()));
         let mut ids: Vec<_> = (0..300)
             .map(|i| format!("large-association-event-identifier-not-retained-{i:08}"))
             .collect();
