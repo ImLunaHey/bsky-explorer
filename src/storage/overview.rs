@@ -80,20 +80,21 @@ impl Storage {
         let client = self
             .client
             .clone()
-            .with_option("max_execution_time", "20")
+            .with_option("max_execution_time", "90")
             .with_option("max_threads", "2")
-            .with_option("max_memory_usage", "1000000000");
+            .with_option("max_memory_usage", "1000000000")
+            .with_option("max_bytes_before_external_group_by", "128000000");
         // Explicit date predicates allow the existing event ordering to prune old data.
         let bounds = format!(
             "timestamp >= fromUnixTimestamp({previous}) AND timestamp < fromUnixTimestamp({end}) AND toDate(timestamp) >= toDate(fromUnixTimestamp({previous})) AND startsWith(collection, 'app.bsky.')"
         );
         let current_bounds = format!("{bounds} AND timestamp >= fromUnixTimestamp({start})");
-        let measures = "uniqExact(event_id) AS events, uniqExactIf(event_id, kind IN ('post','reply','quote') AND operation='create') AS posts, uniqExact(actor_did) AS actors, uniqExactIf(event_id, kind='reply' AND operation='create') AS replies";
+        let measures = "uniqCombined64(event_id) AS events, uniqCombined64If(event_id, kind IN ('post','reply','quote') AND operation='create') AS posts, uniqCombined64(actor_did) AS actors, uniqCombined64If(event_id, kind='reply' AND operation='create') AS replies";
         let totals = client.query(&format!("SELECT toUInt8(timestamp >= fromUnixTimestamp({start})) AS current, {measures}, toInt64(min(toUnixTimestamp(timestamp))) AS first_event, toInt64(max(toUnixTimestamp(timestamp))) AS last_event FROM events WHERE {bounds} GROUP BY current ORDER BY current")).fetch_all::<Totals>().await?;
         let bucket = window.bucket();
         let activity = client.query(&format!("SELECT toInt64({start} + intDiv(toInt64(toUnixTimestamp(timestamp)) - {start}, {bucket}) * {bucket}) AS bucket, {measures} FROM events WHERE {current_bounds} GROUP BY bucket ORDER BY bucket")).fetch_all::<Activity>().await?;
-        let languages = client.query(&format!("SELECT language AS key, uniqExact(event_id) AS count FROM events ARRAY JOIN if(empty(languages), ['und'], arrayDistinct(languages)) AS language WHERE {current_bounds} AND kind IN ('post','reply','quote') AND operation='create' GROUP BY key ORDER BY count DESC LIMIT 12")).fetch_all::<Breakdown>().await?;
-        let domains = client.query(&format!("SELECT domain AS key, uniqExact(event_id) AS count FROM events ARRAY JOIN arrayDistinct(domains) AS domain WHERE {current_bounds} AND kind IN ('post','reply','quote') AND operation='create' GROUP BY key ORDER BY count DESC LIMIT 8")).fetch_all::<Breakdown>().await?;
+        let languages = client.query(&format!("SELECT language AS key, uniqCombined64(event_id) AS count FROM events ARRAY JOIN if(empty(languages), ['und'], arrayDistinct(languages)) AS language WHERE {current_bounds} AND kind IN ('post','reply','quote') AND operation='create' GROUP BY key ORDER BY count DESC LIMIT 12")).fetch_all::<Breakdown>().await?;
+        let domains = client.query(&format!("SELECT domain AS key, uniqCombined64(event_id) AS count FROM events ARRAY JOIN arrayDistinct(domains) AS domain WHERE {current_bounds} AND kind IN ('post','reply','quote') AND operation='create' GROUP BY key ORDER BY count DESC LIMIT 8")).fetch_all::<Breakdown>().await?;
         let mut rankings = Vec::new();
         for conversations in [false, true] {
             let target = if conversations {
@@ -106,10 +107,28 @@ impl Storage {
             } else {
                 "kind IN ('like','repost','reply','quote')"
             };
+            // Discover heavy hitters with bounded state before aggregating per URI.
+            // Grouping every target on a busy week creates millions of tiny states.
+            #[derive(Deserialize, Row)]
+            struct Candidates {
+                uris: Vec<String>,
+            }
+            let candidates = client.query(&format!("SELECT topK(1000)({target}) AS uris FROM events WHERE {bounds} AND {kinds} AND operation='create' AND startsWith({target}, 'at://') GROUP BY timestamp >= fromUnixTimestamp({start})")).fetch_all::<Candidates>().await?;
+            let uris: Vec<_> = candidates
+                .into_iter()
+                .flat_map(|r| r.uris)
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let minimum_people = if conversations { 2 } else { 1 };
             let query = format!(
-                "SELECT {target} AS uri, uniqExactIf(event_id, timestamp >= fromUnixTimestamp({start})) AS current, uniqExactIf(event_id, timestamp < fromUnixTimestamp({start})) AS previous, toInt64(current)-toInt64(previous) AS growth, uniqExactIf(actor_did, timestamp >= fromUnixTimestamp({start})) AS participants, '' AS text, '' AS actor FROM events WHERE {bounds} AND {kinds} AND operation='create' AND startsWith({target}, 'at://') GROUP BY uri HAVING current > 0 ORDER BY growth DESC, participants DESC, uri ASC LIMIT 8"
+                "SELECT {target} AS uri, uniqCombined64If(event_id, timestamp >= fromUnixTimestamp({start})) AS current, uniqCombined64If(event_id, timestamp < fromUnixTimestamp({start})) AS previous, toInt64(current)-toInt64(previous) AS growth, uniqCombined64If(actor_did, timestamp >= fromUnixTimestamp({start})) AS participants, '' AS text, '' AS actor FROM events WHERE {bounds} AND {kinds} AND operation='create' AND {target} IN ? GROUP BY uri HAVING current > 0 AND growth > 0 AND participants >= {minimum_people} ORDER BY growth DESC, participants DESC, uri ASC LIMIT 8"
             );
-            let mut rows = client.query(&query).fetch_all::<Rising>().await?;
+            let mut rows = client
+                .query(&query)
+                .bind(uris)
+                .fetch_all::<Rising>()
+                .await?;
             // Bound preview lookup to the same two windows; older roots remain navigable.
             #[derive(Deserialize, Row)]
             struct Preview {
@@ -119,7 +138,7 @@ impl Storage {
             }
             let uris: Vec<_> = rows.iter().map(|r| r.uri.clone()).collect();
             if !uris.is_empty() {
-                let previews = client.query(&format!("SELECT at_uri AS uri, argMax(text, timestamp) AS text, argMax(actor_did, timestamp) AS actor FROM events WHERE {bounds} AND kind IN ('post','reply','quote') AND has(?, at_uri) GROUP BY uri")).bind(uris).fetch_all::<Preview>().await?;
+                let previews = client.query(&format!("SELECT at_uri AS uri, argMax(text, timestamp) AS text, argMax(actor_did, timestamp) AS actor FROM events WHERE {bounds} AND kind IN ('post','reply','quote') AND at_uri IN ? GROUP BY uri")).bind(uris).fetch_all::<Preview>().await?;
                 for row in &mut rows {
                     row.actor = row
                         .uri
@@ -180,6 +199,7 @@ mod tests {
             ('post', fromUnixTimestamp({start}), 0, 'did:plc:a', 'post', 'app.bsky.feed.post', 'create', 'at://did:plc:a/app.bsky.feed.post/p', 'hello network', '', '', '', ['en','fr'], ['example.com']),
             ('like', fromUnixTimestamp({}), 0, 'did:plc:b', 'like', 'app.bsky.feed.like', 'create', '', '', 'at://did:plc:a/app.bsky.feed.post/p', '', '', [], []),
             ('reply', fromUnixTimestamp({}), 0, 'did:plc:c', 'reply', 'app.bsky.feed.post', 'create', 'at://did:plc:c/app.bsky.feed.post/r', 'a reply', '', 'at://did:plc:a/app.bsky.feed.post/p', 'at://did:plc:a/app.bsky.feed.post/p', [], []),
+            ('reply2', fromUnixTimestamp({start}), 0, 'did:plc:f', 'reply', 'app.bsky.feed.post', 'create', 'at://did:plc:f/app.bsky.feed.post/r', 'another reply', '', 'at://did:plc:a/app.bsky.feed.post/p', 'at://did:plc:a/app.bsky.feed.post/p', [], []),
             ('excluded', fromUnixTimestamp({end}), 0, 'did:plc:d', 'post', 'app.bsky.feed.post', 'create', '', 'boundary', '', '', '', [], []),
             ('other-app', fromUnixTimestamp({start}), 0, 'did:plc:e', 'post', 'com.example.post', 'create', '', 'other app', '', '', '', [], [])", start - 1, start + 1, start + 2);
         admin.query(&insert).execute().await.unwrap();
@@ -192,7 +212,7 @@ mod tests {
                 current.actors,
                 current.replies
             ),
-            (3, 2, 3, 1)
+            (4, 3, 4, 2)
         );
         assert_eq!(
             result
@@ -203,13 +223,21 @@ mod tests {
                 .events,
             1
         );
-        assert_eq!(result.activity.iter().map(|r| r.events).sum::<u64>(), 3);
-        assert_eq!(result.posts[0].current, 2);
+        assert_eq!(result.activity.iter().map(|r| r.events).sum::<u64>(), 4);
+        assert_eq!(result.posts[0].current, 3);
         assert_eq!(result.posts[0].text, "hello network");
-        assert_eq!(result.conversations[0].current, 1);
+        assert_eq!(result.conversations[0].current, 2);
         assert_eq!(result.domains[0].count, 1);
         assert_eq!(result.languages.len(), 3);
-        assert!(result.languages.iter().all(|r| r.count == 1));
+        assert_eq!(
+            result
+                .languages
+                .iter()
+                .find(|r| r.key == "und")
+                .unwrap()
+                .count,
+            2
+        );
         for window in [Window::Day, Window::Week] {
             assert_eq!(
                 storage
@@ -221,7 +249,7 @@ mod tests {
                     .find(|r| r.current == 1)
                     .unwrap()
                     .events,
-                4
+                5
             );
         }
         admin

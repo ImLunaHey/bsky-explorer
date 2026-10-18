@@ -186,19 +186,30 @@ struct OverviewQuery {
 
 async fn overview(State(s): State<AppState>, Query(q): Query<OverviewQuery>) -> Response {
     // Coalesce expensive queries across visitors, with a maximum of three cached windows.
-    type Cache = tokio::sync::Mutex<HashMap<i64, (Instant, crate::storage::overview::Overview)>>;
-    static CACHE: OnceLock<Cache> = OnceLock::new();
-    let mut cache = CACHE.get_or_init(Default::default).lock().await;
+    type Cache = tokio::sync::Mutex<Option<(Instant, crate::storage::overview::Overview)>>;
+    static CACHE: OnceLock<HashMap<i64, Cache>> = OnceLock::new();
     let key = q.window.seconds();
-    if let Some((at, result)) = cache.get(&key) {
-        if at.elapsed() < Duration::from_secs(60) {
+    let caches = CACHE.get_or_init(|| {
+        [3600, 86400, 604800]
+            .into_iter()
+            .map(|key| (key, Cache::default()))
+            .collect()
+    });
+    let mut cache = caches[&key].lock().await;
+    let ttl = match key {
+        3600 => 60,
+        86400 => 300,
+        _ => 900,
+    };
+    if let Some((at, result)) = cache.as_ref() {
+        if at.elapsed() < Duration::from_secs(ttl) {
             return Json(result.clone()).into_response();
         }
     }
     let end = Utc::now().timestamp();
     match s.storage.overview(q.window, end).await {
         Ok(result) => {
-            cache.insert(key, (Instant::now(), result.clone()));
+            *cache = Some((Instant::now(), result.clone()));
             Json(result).into_response()
         }
         Err(error) => {
