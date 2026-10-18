@@ -20,6 +20,10 @@ pub enum RemoteIdentityResult {
 #[derive(Debug)]
 pub enum RemoteIdentityBatchResult {
     Resolved(HashMap<String, IdentityRecord>),
+    Partial {
+        found: HashMap<String, IdentityRecord>,
+        retry: HashMap<String, String>,
+    },
     RetryAfter(Duration, String),
 }
 
@@ -521,6 +525,7 @@ impl IdentityService {
         // A missing Bluesky profile is not a missing AT Protocol identity.
         // Native fallback is only enabled for our fixed production upstream,
         // never for test/mocked endpoints.
+        let mut retry = HashMap::new();
         if self.inner.profile_endpoint
             == "https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile"
         {
@@ -535,8 +540,8 @@ impl IdentityService {
                     found.insert(did, local);
                     continue;
                 }
-                match self.resolve_native(&did).await? {
-                    RemoteIdentityResult::Resolved(record) => {
+                match self.resolve_native(&did).await {
+                    Ok(RemoteIdentityResult::Resolved(record)) => {
                         let accepted = if let Some(db) = &self.inner.persistent {
                             db.store_remote_identity(&record)?
                         } else {
@@ -546,12 +551,18 @@ impl IdentityService {
                         self.put_cache(accepted.clone(), self.inner.ttl);
                         found.insert(did, accepted);
                     }
-                    RemoteIdentityResult::Negative => {}
-                    RemoteIdentityResult::RetryAfter(delay, error) => {
+                    Ok(RemoteIdentityResult::Negative) => {}
+                    Ok(RemoteIdentityResult::RetryAfter(delay, error)) => {
                         return Ok(RemoteIdentityBatchResult::RetryAfter(delay, error));
+                    }
+                    Err(error) => {
+                        retry.insert(did, error.to_string());
                     }
                 }
             }
+        }
+        if !retry.is_empty() {
+            return Ok(RemoteIdentityBatchResult::Partial { found, retry });
         }
         Ok(RemoteIdentityBatchResult::Resolved(found))
     }

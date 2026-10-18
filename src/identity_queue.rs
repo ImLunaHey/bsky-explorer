@@ -777,7 +777,24 @@ pub async fn run_worker(queue: IdentityQueue, service: IdentityService) {
                 };
                 for j in pending {
                     let (status, err, delay, handle) = match &result {
-                        Ok(RemoteIdentityBatchResult::Resolved(found)) => found.get(&j.did).map_or(
+                        Ok(RemoteIdentityBatchResult::Partial { retry, .. })
+                            if retry.contains_key(&j.did) =>
+                        {
+                            (
+                                if j.attempts >= j.max_attempts {
+                                    IdentityJobStatus::DeadLetter
+                                } else {
+                                    IdentityJobStatus::Retrying
+                                },
+                                retry.get(&j.did).cloned(),
+                                Some(std::time::Duration::from_secs(30)),
+                                None,
+                            )
+                        }
+                        Ok(
+                            RemoteIdentityBatchResult::Resolved(found)
+                            | RemoteIdentityBatchResult::Partial { found, .. },
+                        ) => found.get(&j.did).map_or(
                             (IdentityJobStatus::Negative, None, None, None),
                             |identity| {
                                 (
