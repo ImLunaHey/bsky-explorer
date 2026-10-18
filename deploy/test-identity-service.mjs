@@ -26,8 +26,10 @@ try {
  await sql('CREATE TABLE IF NOT EXISTS observatory.account_history_events(account_did String) ENGINE=MergeTree ORDER BY account_did');
  const rows=Array.from({length:100},(_,i)=>({did:`did:plc:fixture${String(i).padStart(3,'0')}`,handle:`fixture${i}.test`,observed_at:'2020-01-01 00:00:00.000',source:'jetstream'}));
  await sql(`INSERT INTO observatory.identities FORMAT JSONEachRow\n${rows.map(r=>JSON.stringify(r)).join('\n')}`);
+ await sql("INSERT INTO observatory.account_history_events VALUES ('not-a-did'),('did:plc:fixture000'),('did:plc:fixture099')");
  await start();
  await until(async()=> (await (await fetch(`${origin}/stats`)).json()).bootstrap_complete);
+ await until(async()=> (await (await fetch(`${origin}/stats`)).json()).backlog_cursor==='did:plc:fixture099');
  const dids=rows.map(r=>r.did).reverse();
  const startTime=performance.now();
  const records=await resolve(dids);
@@ -50,5 +52,5 @@ try {
   const r=await fetch(`${origin}/resolve`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(bad)});assert.equal(r.status,400);
  }
  const jobs=await (await fetch(`${origin}/api/identity-queue?limit=25`)).json();assert.ok(Array.isArray(jobs.jobs));
- console.log('PASS: batch ordering, old positive handles, event updates, replay protection, invalidation, restart persistence, no known-account jobs, bounded input, queue API.');
+ console.log('PASS: batch ordering, old positive handles, event updates, replay protection, invalidation, restart persistence, no known-account jobs, bounded backlog scan skips non-DIDs, bounded input, queue API.');
 } finally { await stop();await rm(root,{recursive:true,force:true}); }
