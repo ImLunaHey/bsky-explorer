@@ -63,6 +63,6 @@ services:
       IDENTITY_WORKER_CONCURRENCY: ${IDENTITY_WORKER_CONCURRENCY:-1}
       RUST_LOG: bsky_observatory=info,tower_http=info
     volumes:
-      - ${STORAGE_ROOT:-/mnt/storage/bsky-observatory}/archive:/data/archive
+      - ${ARCHIVE_ROOT:-${STORAGE_ROOT:-/mnt/storage/bsky-observatory}/archive}:/data/archive
     ports:
       - "3000:3000"

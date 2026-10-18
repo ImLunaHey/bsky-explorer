@@ -71,6 +71,14 @@ field assignment, not an API credential. Do not add real secrets to that allowli
 
 The observatory allocation defaults to 25 TiB. Change `STORAGE_BUDGET_TIB`, or set `STORAGE_BUDGET_BYTES` for an exact override. This logical budget is reported separately from filesystem capacity; runway projections show both and identify whichever limit arrives first at the currently measured daily growth rate.
 
+Before replacing a running container, verify that its `/data/archive` mount and
+the intended host archive directory refer to the same filesystem and current
+cursor. A storage array mounted after Docker starts can hide an older root-disk
+directory that an existing container is still using. Do not restart against a
+stale copy. `ARCHIVE_ROOT` can pin the archive independently of ClickHouse's
+`STORAGE_ROOT`. Preserve the live archive and queue databases, pause writers for
+the final synchronization, and verify the copied cursor before switching.
+
 The dashboard is a Vite/React application built into the production container. Axum serves its hashed assets with immutable caching, keeps the SPA entry point fresh, and marks live API responses `no-store`. During frontend development, run `npm install && npm run dev` in `frontend`; Vite proxies API calls to the Rust service on port 3000.
 
 ## Data and restart behavior
