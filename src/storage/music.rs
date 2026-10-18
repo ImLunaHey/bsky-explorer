@@ -18,6 +18,7 @@ struct Play {
     title: String,
     artists: Vec<String>,
     album: String,
+    artwork_url: Option<String>,
     at: i64,
     actor: String,
     uri: String,
@@ -38,6 +39,22 @@ fn normalized(value: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
+}
+fn artwork(value: &Value) -> Option<String> {
+    ["albumArtUrl", "albumCoverUrl", "artworkUrl"]
+        .iter()
+        .find_map(|key| {
+            let raw = value[*key].as_str()?;
+            if raw.len() > 2048 {
+                return None;
+            }
+            let url = url::Url::parse(raw).ok()?;
+            (url.scheme() == "https"
+                && url.host_str().is_some()
+                && url.username().is_empty()
+                && url.password().is_none())
+            .then(|| url.to_string())
+        })
 }
 fn parse_play(record: &RepositoryRecord) -> Option<Play> {
     if record.operation == "delete" || !COLLECTIONS.contains(&record.collection.as_str()) {
@@ -69,6 +86,7 @@ fn parse_play(record: &RepositoryRecord) -> Option<Play> {
         title,
         artists,
         album: clean(&value, if rocksky { "album" } else { "releaseName" }),
+        artwork_url: artwork(&value),
         at,
         actor: record.actor_did.clone(),
         uri: record.at_uri.clone(),
@@ -78,6 +96,7 @@ fn parse_play(record: &RepositoryRecord) -> Option<Play> {
 
 #[derive(Debug, Serialize)]
 pub struct Ranking {
+    pub artwork_url: Option<String>,
     pub title: String,
     pub subtitle: String,
     pub plays: u64,
@@ -87,6 +106,7 @@ pub struct Ranking {
 }
 #[derive(Default)]
 struct Counter {
+    artwork_url: Option<String>,
     title: String,
     subtitle: String,
     plays: u64,
@@ -102,12 +122,16 @@ impl Counter {
         self.listeners.insert(play.actor.clone());
         self.example_uri = play.uri.clone();
         self.sources.insert(play.source.clone());
+        if play.artwork_url.is_some() {
+            self.artwork_url = play.artwork_url.clone();
+        }
     }
 }
 fn ranked(counts: BTreeMap<String, Counter>) -> Vec<Ranking> {
     let mut rows: Vec<_> = counts
         .into_values()
         .map(|r| Ranking {
+            artwork_url: r.artwork_url,
             title: r.title,
             subtitle: r.subtitle,
             plays: r.plays,
@@ -170,6 +194,16 @@ fn aggregate(
             duplicate_plays += 1;
             if let Some(track) = tracks.get_mut(&track_key) {
                 track.sources.insert(play.source.clone());
+                if play.artwork_url.is_some() {
+                    track.artwork_url = play.artwork_url.clone();
+                }
+            }
+            if let Some(album) = albums.get_mut(
+                &serde_json::to_string(&(normalized(&play.album), normalized(&credit))).unwrap(),
+            ) {
+                if play.artwork_url.is_some() {
+                    album.artwork_url = play.artwork_url.clone();
+                }
             }
             continue;
         }
@@ -269,6 +303,32 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn artwork_survives_deduplication_without_changing_counts() {
+        let first = parse_play(&teal()).unwrap();
+        let end = first.at + 3600;
+        let mut duplicate = parse_play(&teal()).unwrap();
+        duplicate.artwork_url = Some("https://i.scdn.co/image/album".into());
+        let data = aggregate(&[first, duplicate], end, 3600, 0, 2);
+        assert_eq!(data.plays, 1);
+        assert_eq!(
+            data.tracks[0].artwork_url.as_deref(),
+            Some("https://i.scdn.co/image/album")
+        );
+        assert_eq!(data.albums[0].artwork_url, data.tracks[0].artwork_url);
+        assert_eq!(
+            artwork(&serde_json::json!({"albumArtUrl":"javascript:alert(1)"})),
+            None
+        );
+        assert_eq!(
+            artwork(&serde_json::json!({"albumArtUrl":"https://user:pass@i.scdn.co/a"})),
+            None
+        );
+        assert_eq!(
+            artwork(&serde_json::json!({"albumArtUrl":"https://i.scdn.co/image/album"})),
+            data.tracks[0].artwork_url
+        );
+    }
     #[tokio::test]
     #[ignore = "requires an isolated ClickHouse at CLICKHOUSE_TEST_URL"]
     async fn materializer_deduplicates_updates_deletes_and_persists_charts() {
