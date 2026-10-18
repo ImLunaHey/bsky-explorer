@@ -205,10 +205,10 @@ export const AccountFollows = memo(function AccountFollows({
               <th className="px-3">Following</th>
               <th className="px-3">Followers</th>
               <th className="px-3">Unfollowed</th>
-              <th className="px-3">Lost followers</th>
+              <th className="px-3">Attributed losses (partial)</th>
               <th className="px-3">Unknown target</th>
               <th className="px-3">Outbound net</th>
-              <th className="px-3">Inbound net</th>
+              <th className="px-3">Partial balance</th>
             </tr>
           </thead>
           <tbody>
