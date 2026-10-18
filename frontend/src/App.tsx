@@ -35,6 +35,7 @@ import { CommandPalette } from "./CommandPalette";
 import { SearchPage } from "./SearchPage";
 import { AccountPage } from "./AccountPage";
 import { TopAccounts } from "./TopAccounts";
+import { OverviewPage } from "./OverviewPage";
 import { BackfillDetailPage, BackfillsPage } from "./BackfillsPage";
 import { IdentitiesPage, IdentityDetailPage } from "./IdentitiesPage";
 import { CrawlDetailPage } from "./CrawlsPage";
@@ -1380,7 +1381,7 @@ function SystemView({
 }
 
 export type AppRoute =
-  | { view: "network" | "firehose" | "firehose-images" | "anomalies" | "system" | "backfills" | "identities" | "coverage" | "communities" }
+  | { view: "network" | "diagnostics" | "firehose" | "firehose-images" | "anomalies" | "system" | "backfills" | "identities" | "coverage" | "communities" }
   | { view: "search"; query: string; searchType: SearchKind; offset: number }
   | { view: "backfill"; jobId: string }
   | { view: "identity"; jobId: string }
@@ -1408,10 +1409,11 @@ export default function App({ route }: { route: AppRoute }) {
       params: { dimension },
       search: { key: item.key },
     });
-  const network = route.view === "network",
+  const network = route.view === "diagnostics",
     detections = route.view === "anomalies",
     systemPage = route.view === "system";
   const rates = useApi<Rates>("rates", "/api/stats", network);
+  const ingestion = useApi<{ connected: boolean; lag_ms: number }>("ingestion", "/api/ingestion", true, 15000);
   const urls = useApi<[string, number][]>(
     "urls",
     "/api/trending/urls",
@@ -1479,7 +1481,7 @@ export default function App({ route }: { route: AppRoute }) {
                 Bluesky Observatory
               </h1>
               <p className="text-[10px] uppercase tracking-[.16em] text-dim">
-                Live ATProto network intelligence
+                Explore the public conversation
               </p>
             </div>
           </div>
@@ -1487,9 +1489,9 @@ export default function App({ route }: { route: AppRoute }) {
             <CommandPalette />
             <div className="flex items-center gap-2 text-xs text-dim">
               <span
-                className={`size-2 rounded-full ${rates.isError ? "bg-red-400" : "animate-pulse bg-mint"}`}
+                className={`size-2 rounded-full ${!ingestion.data?.connected || ingestion.isError ? "bg-red-400" : "bg-mint"}`}
               />
-              {rates.isError ? "Disconnected" : "Firehose live"}
+              {ingestion.isError ? "Ingestion status unavailable" : !ingestion.data ? "Checking ingestion…" : !ingestion.data.connected ? "Ingestion disconnected" : ingestion.data.lag_ms > 10000 ? "Catching up" : "Firehose live"}
             </div>
           </div>
         </div>
@@ -1498,15 +1500,11 @@ export default function App({ route }: { route: AppRoute }) {
         <nav className="mb-7 flex gap-1 overflow-x-auto rounded-xl border border-line bg-panel/70 p-1 sm:w-fit">
           {(
             [
-              ["/", "Network", "network"],
+              ["/", "Bluesky now", "network"],
               ["/firehose", "Firehose", "firehose"],
               ["/search", "Search", "search"],
               ["/coverage", "Coverage", "coverage"],
               ["/communities", "Communities", "communities"],
-              ["/backfills", "Backfills", "backfills"],
-              ["/identities", "Identities", "identities"],
-              ["/detections", "Detections", "anomalies"],
-              ["/system", "System", "system"],
             ] as const
           ).map(([to, label, id]) => (
             <Link
@@ -1519,7 +1517,14 @@ export default function App({ route }: { route: AppRoute }) {
             </Link>
           ))}
         </nav>
-        {route.view === "network" && (
+        <details className="mb-6 text-xs text-dim" open={['system','diagnostics','backfills','backfill','identities','identity','crawl','anomalies','cluster'].includes(route.view) || undefined}>
+          <summary className="w-fit cursor-pointer rounded-lg border border-line px-3 py-2">Operations & investigations</summary>
+          <div className="mt-3 flex flex-wrap gap-4">
+            <Link to="/system">System health</Link><Link to="/system/network">Ingestion diagnostics</Link><Link to="/backfills">Backfills</Link><Link to="/identities">Identity queue</Link><Link to="/detections">Coordination investigations</Link>
+          </div>
+        </details>
+        {route.view === "network" && <OverviewPage />}
+        {route.view === "diagnostics" && (
           <>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <Stat

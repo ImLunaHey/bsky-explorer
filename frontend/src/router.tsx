@@ -9,6 +9,7 @@ const firehoseRoute=createRoute({getParentRoute:()=>rootRoute,path:'/firehose',c
 const firehoseImagesRoute=createRoute({getParentRoute:()=>rootRoute,path:'/firehose/images',component:()=> <App route={{view:'firehose-images'}}/>})
 const detectionsRoute=createRoute({getParentRoute:()=>rootRoute,path:'/detections',component:()=> <App route={{view:'anomalies'}}/>})
 const systemRoute=createRoute({getParentRoute:()=>rootRoute,path:'/system',component:()=> <App route={{view:'system'}}/>})
+const diagnosticsRoute=createRoute({getParentRoute:()=>rootRoute,path:'/system/network',component:()=> <App route={{view:'diagnostics'}}/>})
 const backfillsRoute=createRoute({getParentRoute:()=>rootRoute,path:'/backfills',component:()=> <App route={{view:'backfills'}}/>})
 const identitiesRoute=createRoute({getParentRoute:()=>rootRoute,path:'/identities',component:()=> <App route={{view:'identities'}}/>})
 const identityRoute=createRoute({getParentRoute:()=>rootRoute,path:'/identities/$jobId',component:IdentityRoute})
@@ -33,7 +34,7 @@ function IdentityRoute(){const {jobId}=identityRoute.useParams();return <App rou
 function CrawlRoute(){const {crawlId}=crawlRoute.useParams();return <App route={{view:'crawl',crawlId}}/>}
 function CommunityRoute(){const {communityId}=communityRoute.useParams();return <App route={{view:'community',communityId}}/>}
 
-const routeTree=rootRoute.addChildren([indexRoute,firehoseRoute,firehoseImagesRoute,searchRoute,coverageRoute,communitiesRoute,communityRoute,backfillsRoute,backfillRoute,crawlRoute,identitiesRoute,identityRoute,detectionsRoute,systemRoute,accountRoute,recordRoute,clusterRoute,trendRoute])
+const routeTree=rootRoute.addChildren([indexRoute,firehoseRoute,firehoseImagesRoute,searchRoute,coverageRoute,communitiesRoute,communityRoute,backfillsRoute,backfillRoute,crawlRoute,identitiesRoute,identityRoute,detectionsRoute,systemRoute,diagnosticsRoute,accountRoute,recordRoute,clusterRoute,trendRoute])
 export const router=createRouter({routeTree,defaultPreload:'intent'})
 
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }
