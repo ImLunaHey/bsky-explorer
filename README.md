@@ -24,7 +24,12 @@ calendar events, Popfeed films, Podping, sensor batches, weather, flights and
 Puzzmo streaks. Unknown schemas keep a text/field preview and raw record inspector.
 Recent collection browsing is limited to 30 records observed in the last 24 hours.
 External links are HTTP(S)-only; record text is never rendered as HTML. Cards do
-not fetch remote artwork, resolve arbitrary schema URLs, or infer measurement units.
+not resolve arbitrary schema URLs or infer measurement units. Album covers and
+film posters use retained artwork URLs on recognized HTTPS image hosts. The
+browser loads them lazily without a referrer; missing/failed images have a fixed-size
+placeholder. No image proxy or blob download is added to the collector. Song and
+album chart snapshots retain available cover URLs; artist charts do not mislabel
+album covers as artist portraits. Teal-only records commonly have no cover URL.
 
 `/music` and `GET /api/music?window=24h` (`1h`, `24h`, `7d`) expose top-30 songs,
 artists and albums, exact observed play/listener counts and listening activity.

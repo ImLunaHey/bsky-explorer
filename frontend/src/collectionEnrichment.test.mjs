@@ -1,6 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { collectionInfo, enrichRecord, safeWebUrl } from './collectionEnrichment.ts'
+import { collectionInfo, enrichRecord, safeWebUrl, safeArtworkUrl } from './collectionEnrichment.ts'
+
+test('artwork is extracted from music/status/film records and restricted to trusted HTTPS hosts', () => {
+  const art = 'https://i.scdn.co/image/album'
+  assert.equal(enrichRecord('app.rocksky.scrobble', JSON.stringify({albumArtUrl:art})).artworkUrl, art)
+  assert.equal(enrichRecord('app.rocksky.actor.status', JSON.stringify({track:{albumCoverUrl:art}})).artworkUrl, art)
+  assert.equal(enrichRecord('social.popfeed.feed.listItem', '{"posterUrl":"https://image.tmdb.org/t/p/w500/poster.jpg"}').artworkUrl, 'https://image.tmdb.org/t/p/w500/poster.jpg')
+  assert.equal(enrichRecord('fm.teal.feed.play', '{}').artworkUrl, undefined)
+  for (const url of ['http://i.scdn.co/a','https://localhost/a','https://127.0.0.1/a','https://i.scdn.co.evil.test/a','https://user:pass@i.scdn.co/a','https://i.scdn.co:8443/a','data:image/png,abc','javascript:alert(1)']) assert.equal(safeArtworkUrl(url), undefined)
+})
 
 test('known collections are categorized, unknown namespaces remain generic', () => {
   assert.equal(collectionInfo('fm.teal.feed.play').category, 'Music')

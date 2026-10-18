@@ -1,12 +1,14 @@
 import { Link } from '@tanstack/react-router'
 import { enrichRecord } from './collectionEnrichment'
 import type { RepositoryRecord } from './CollectionsPage'
+import { Artwork } from './Artwork'
 
 export function EnrichedRecordCard({ record }: { record: RepositoryRecord }) {
   const preview = enrichRecord(record.collection, record.record_json, record.operation)
   const date = preview.date && Number.isFinite(Date.parse(preview.date)) ? new Date(preview.date).toLocaleString() : null
   return <article className="panel min-w-0 p-5">
     <div className="flex flex-wrap justify-between gap-2 text-xs text-dim"><span className="uppercase text-cyan">{record.operation}</span><span>Observed {new Date(record.timestamp_ms).toLocaleString()}</span></div>
+    {preview.artworkUrl && <div className="mt-4"><Artwork url={preview.artworkUrl} className="size-28" /></div>}
     <Link to="/records/$uri" params={{ uri: record.at_uri }} className="mt-4 block break-words text-lg font-semibold text-white hover:text-cyan">{preview.title}</Link>
     <p className="mt-1 break-words text-sm text-cyan">{preview.subtitle}</p>
     {date && <p className="mt-2 text-xs text-dim">Record date: {date}</p>}

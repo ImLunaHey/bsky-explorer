@@ -23,7 +23,16 @@ export function safeWebUrl(value: unknown): string | undefined {
   if (typeof value !== 'string') return
   try { const url = new URL(value); if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) return url.href } catch { /* not a web URL */ }
 }
-export type RecordPreview = { title: string; subtitle: string; body: string; tags: string[]; url?: string; date?: string }
+// Avoid arbitrary record-supplied tracking/local-network image origins. These
+// hosts serve the retained artwork we support; no server-side image proxy.
+export function safeArtworkUrl(value: unknown): string | undefined {
+  const safe = safeWebUrl(value)
+  if (!safe || safe.length > 2048) return
+  const url = new URL(safe)
+  const hosts = ['i.scdn.co', 'cdn-images.dzcdn.net', 'lastfm-img.freetls.fastly.net', 'lastfm.freetls.fastly.net', 'cdn.rocksky.app', 'cdn.bsky.app', 'resources.tidal.com', 'image.tmdb.org', 'f4.bcbits.com']
+  if (url.protocol === 'https:' && !url.port && (hosts.includes(url.hostname) || url.hostname.endsWith('.mzstatic.com'))) return url.href
+}
+export type RecordPreview = { title: string; subtitle: string; body: string; tags: string[]; url?: string; date?: string; artworkUrl?: string }
 export function enrichRecord(collection: string, raw: string, operation = 'create'): RecordPreview {
   const empty = { title: operation === 'delete' ? 'Record deleted' : 'Structured record', subtitle: collectionInfo(collection).label, body: '', tags: [] as string[] }
   if (operation === 'delete') return empty
@@ -37,6 +46,7 @@ export function enrichRecord(collection: string, raw: string, operation = 'creat
     preview.title = text(item.trackName) || text(item.title) || text(item.name) || preview.title
     preview.subtitle = [artists, text(item.releaseName) || text(item.album)].filter(Boolean).join(' / ') || empty.subtitle
     preview.date = text(item.playedTime) || text(item.createdAt)
+    preview.artworkUrl = [item.albumArtUrl, item.albumCoverUrl, item.artworkUrl].map(safeArtworkUrl).find(Boolean)
     preview.url = safeWebUrl(item.originUri) || safeWebUrl(item.originUrl) || safeWebUrl(item.spotifyLink)
     preview.tags = [collection.endsWith('.status') ? 'Listening status · not a play' : collection.endsWith('.play') || collection.endsWith('.scrobble') ? 'Recorded play' : 'Music catalog', ...tags]
   } else if (collection === 'site.standard.document') {
@@ -59,6 +69,7 @@ export function enrichRecord(collection: string, raw: string, operation = 'creat
     preview.subtitle = 'Stream announcement · availability unverified'
     preview.date = text(data.lastSeenAt) || text(data.createdAt)
   } else if (collection === 'social.popfeed.feed.listItem') {
+    preview.artworkUrl = safeArtworkUrl(data.posterUrl)
     preview.subtitle = [text(data.mainCredit), text(data.creativeWorkType), text(data.listType).replaceAll('_', ' ')].filter(Boolean).join(' · ')
   } else if (collection === 'at.podping.records.podping') {
     const uris = Array.isArray(data.uris) ? data.uris : []
