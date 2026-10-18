@@ -18,9 +18,11 @@ Open <http://localhost:3000>. Prometheus metrics are at `/metrics`; JSON endpoin
 
 ### Discovery and network analytics
 
-The desktop sidebar links directly to **Network, People & search, Discover, Music,
+The compact top navigation links directly to **Network, People & search, Discover, Music,
 Apps, Collections, Live activity, and Research tools**. On small screens it folds
-into a compact menu. Profiles and analytics use the available content width.
+into a compact menu. Profiles and analytics share a centered, 1,600px maximum
+workspace with no sidebar. Black/charcoal surfaces, neutral borders, square controls,
+and restrained chart colours keep the interface compact and consistent.
 
 - `/` shows actual selections of music, writing, films, upcoming events, saved links,
   stream announcements and game activity. Small/empty sections do not become empty dashboards.
