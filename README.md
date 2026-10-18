@@ -188,18 +188,22 @@ search retained history. No claim of complete network coverage is made.
 
 ## Independent deployments
 
-Production Compose runs four application services:
+Production Compose runs five application services:
 
-- `ingester`: Jetstream, archive/checkpoint ownership, backfills, identity workers,
+- `ingester`: Jetstream, archive/checkpoint ownership, backfills,
   analytics materializations and private hot-state endpoints. No published host port.
 - `api`: durable queries and queue controls; explicitly proxies live state/SSE to
   `INGESTER_URL`. It never starts collection or background workers.
 - `frontend`: static assets and the public reverse proxy on port 3000.
 - `enrichment`: independent background music-chart materialization, with no archive mount.
+- `identity`: persistent display-handle cache, event updates and rate-limited
+  resolution of missing handles. No published host port.
 
-The two Rust roles share ClickHouse and the archive's SQLite queues (WAL). Only the
-ingester writes stream segments/checkpoints. SQLite queue controls still need write
-access from the API. Keep these services on the same host/local filesystem.
+The Rust services share ClickHouse. Only the ingester writes stream segments and
+checkpoints; only the identity service opens its SQLite cache/queue. Backfill queue
+controls still need write access from the API. Keep archive-backed services on the
+same host/local filesystem. See [identity service migration and operations](deploy/identity-service.md)
+for the one-time extraction and future independent deployments.
 
 For subsequent web-only deployments:
 
@@ -298,7 +302,12 @@ ClickHouse uses monthly `MergeTree` partitions, time/kind/actor ordering, Zstd t
 
 Scores describe observed evidence (`automation`, coordination, shared-target, timing, and content similarity); they do not label accounts as bots. Cluster evidence includes participants, timing, shared targets, URLs/domains, and sample event IDs.
 
-Jetstream identity events update a bounded in-memory DID/handle cache immediately and are persisted to both current and history tables in ClickHouse. Cache misses first consult ClickHouse, then use the configurable public Bluesky profile resolver with positive/negative TTLs and rate limiting. Handle changes therefore flow from the firehose without polling; successful on-demand resolutions are also retained. No profile media is requested or stored.
+Jetstream identity events persist handle observations in ClickHouse. The identity
+service tails these into its durable cache every two seconds. Known handles never
+expire or trigger refresh lookups. API reads are batched; only missing mappings
+enter a prioritised queue, with background capacity reserved for the observed-account
+backlog. Bluesky profile batches have a protocol-native DID-document fallback.
+Event-derived handles are display metadata, not independent authentication proofs.
 
 ## Configuration and verification
 
@@ -326,9 +335,10 @@ in `legacy-json-migration-backup/` as a recovery copy; later startups are
 idempotent. Backfill jobs and repository/association cursor checkpoints use the
 same SQLite WAL control plane, including leases, dependencies, counters, retries,
 and errors. Active queue code never writes per-job JSON files.
-`IDENTITY_WORKER_CONCURRENCY` defaults to 1, `IDENTITY_REQUESTS_PER_SECOND`
-controls fixed-AppView pacing, and `IDENTITY_NEGATIVE_TTL_SECONDS` controls when
-a missing profile may be retried. Identity API misses return immediately and
+The standalone service uses one batched worker; `IDENTITY_REQUESTS_PER_SECOND`
+controls the shared upstream budget. Missing identities cool down for 24 hours.
+The legacy `all` role still supports `IDENTITY_WORKER_CONCURRENCY` and
+`IDENTITY_NEGATIVE_TTL_SECONDS`. Identity API misses return immediately and
 queue work rather than putting public-network latency on API or firehose paths.
 
 Copy `.env.example`; all options are shown by `cargo run -- --help`. Analysis defaults are 1m/5m/1h/24h windows and a 30-second coordination interval.
