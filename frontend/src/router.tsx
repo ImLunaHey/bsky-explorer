@@ -4,6 +4,7 @@ import App from './App'
 import type { SearchKind } from './types'
 
 const rootRoute=createRootRoute()
+const musicRoute=createRoute({getParentRoute:()=>rootRoute,path:'/music',component:()=> <App route={{view:'music'}}/>})
 const indexRoute=createRoute({getParentRoute:()=>rootRoute,path:'/',component:()=> <App route={{view:'network'}}/>})
 const firehoseRoute=createRoute({getParentRoute:()=>rootRoute,path:'/firehose',component:()=> <App route={{view:'firehose'}}/>})
 const firehoseImagesRoute=createRoute({getParentRoute:()=>rootRoute,path:'/firehose/images',component:()=> <App route={{view:'firehose-images'}}/>})
@@ -36,7 +37,7 @@ function IdentityRoute(){const {jobId}=identityRoute.useParams();return <App rou
 function CrawlRoute(){const {crawlId}=crawlRoute.useParams();return <App route={{view:'crawl',crawlId}}/>}
 function CommunityRoute(){const {communityId}=communityRoute.useParams();return <App route={{view:'community',communityId}}/>}
 
-const routeTree=rootRoute.addChildren([indexRoute,collectionsRoute,firehoseRoute,firehoseImagesRoute,searchRoute,coverageRoute,communitiesRoute,communityRoute,backfillsRoute,backfillRoute,crawlRoute,identitiesRoute,identityRoute,detectionsRoute,systemRoute,diagnosticsRoute,accountRoute,recordRoute,clusterRoute,trendRoute])
+const routeTree=rootRoute.addChildren([indexRoute,musicRoute,collectionsRoute,firehoseRoute,firehoseImagesRoute,searchRoute,coverageRoute,communitiesRoute,communityRoute,backfillsRoute,backfillRoute,crawlRoute,identitiesRoute,identityRoute,detectionsRoute,systemRoute,diagnosticsRoute,accountRoute,recordRoute,clusterRoute,trendRoute])
 export const router=createRouter({routeTree,defaultPreload:'intent'})
 
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }

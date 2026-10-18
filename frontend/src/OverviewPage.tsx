@@ -293,7 +293,7 @@ export function OverviewPage() {
         </div>
       </header>
       <div className="grid gap-3 sm:grid-cols-3">
-        <Link to="/collections" search={{collection:''}} className="panel p-5 transition hover:border-cyan/50"><h2 className="font-medium">Explore apps & collections ↗</h2><p className="mt-2 text-xs leading-5 text-dim">Discover public record types beyond Bluesky.</p></Link>
+        <Link to="/music" className="panel p-5 transition hover:border-cyan/50"><h2 className="font-medium">What’s on repeat? ↗</h2><p className="mt-2 text-xs leading-5 text-dim">Most-played songs, artists and albums across observed Teal & Rocksky records.</p></Link>
         <Link to="/search" search={{q:'',type:'account',offset:0}} className="panel p-5 transition hover:border-cyan/50"><h2 className="font-medium">People & repositories ↗</h2><p className="mt-2 text-xs leading-5 text-dim">Find identities and explore activity across their apps.</p></Link>
         <Link to="/firehose" className="panel p-5 transition hover:border-cyan/50"><h2 className="font-medium">Watch the network ↗</h2><p className="mt-2 text-xs leading-5 text-dim">A live stream of observed public repository events.</p></Link>
       </div>

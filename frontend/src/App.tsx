@@ -29,6 +29,7 @@ import { tooltip } from "@tanstack/charts/tooltip";
 import { api } from "./api";
 import { LiveUpdates } from "./live";
 const CollectionsPage = lazy(() => import('./CollectionsPage').then(m => ({ default: m.CollectionsPage })));
+const MusicPage = lazy(() => import('./MusicPage').then(m => ({ default: m.MusicPage })));
 const GenericRecordPage = lazy(() => import('./CollectionsPage').then(m => ({ default: m.GenericRecordPage })));
 const RecordPage = lazy(() => import('./RecordDrawer').then(m => ({ default: m.RecordPage })));
 import { FirehoseView } from "./FirehoseView";
@@ -1384,6 +1385,7 @@ function SystemView({
 }
 
 export type AppRoute =
+  | { view: "music" }
   | { view: "collections"; collection: string }
   | { view: "network" | "diagnostics" | "firehose" | "firehose-images" | "anomalies" | "system" | "backfills" | "identities" | "coverage" | "communities" }
   | { view: "search"; query: string; searchType: SearchKind; offset: number }
@@ -1505,6 +1507,7 @@ export default function App({ route }: { route: AppRoute }) {
         <Suspense fallback={<div role="status" className="panel p-10 text-sm text-dim">Opening explorer…</div>}>
         <nav className="mb-7 flex gap-1 overflow-x-auto rounded-xl border border-line bg-panel/70 p-1 sm:w-fit">
           <Link to="/collections" search={{collection:''}} className={`shrink-0 rounded-lg px-4 py-2 text-xs font-medium ${route.view === 'collections' ? 'bg-mint text-ink' : 'text-dim hover:text-white'}`}>Collections</Link>
+          <Link to="/music" className={`shrink-0 rounded-lg px-4 py-2 text-xs font-medium ${route.view === 'music' ? 'bg-mint text-ink' : 'text-dim hover:text-white'}`}>Music</Link>
           {(
             [
               ["/", "Network", "network"],
@@ -1532,6 +1535,7 @@ export default function App({ route }: { route: AppRoute }) {
         </details>
         {route.view === "network" && <OverviewPage />}
         {route.view === "collections" && <CollectionsPage collection={route.collection} />}
+        {route.view === "music" && <MusicPage />}
         {route.view === "diagnostics" && (
           <>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
