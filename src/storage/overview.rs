@@ -75,6 +75,7 @@ pub struct Overview {
 
 impl Storage {
     pub async fn overview(&self, window: Window, end: i64) -> Result<Overview> {
+        let _permit = super::BACKGROUND_QUERY.acquire().await?;
         let start = end - window.seconds();
         let previous = start - window.seconds();
         let client = self

@@ -11,7 +11,13 @@ COPY Cargo.toml Cargo.lock* ./
 COPY src ./src
 COPY migrations ./migrations
 RUN cargo build --release --bins
-FROM debian:bookworm-slim
+FROM nginx:stable-alpine AS frontend
+COPY --from=web-build /web/dist /usr/share/nginx/html
+COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
+HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=4 \
+  CMD wget -q -O /dev/null http://127.0.0.1/healthz || exit 1
+
+FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates wget && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/bsky-observatory /usr/local/bin/observatory
 COPY --from=build /src/target/release/backfill_account /usr/local/bin/backfill_account

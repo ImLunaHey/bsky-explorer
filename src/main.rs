@@ -19,6 +19,25 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
     let cfg = Config::parse();
+    let runs_workers = cfg.service_role != "api";
+    let ingester_url = if cfg.service_role == "api" {
+        let origin = cfg
+            .ingester_url
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("API role requires INGESTER_URL for live views"))?;
+        let parsed = url::Url::parse(&origin)?;
+        anyhow::ensure!(
+            matches!(parsed.scheme(), "http" | "https")
+                && parsed.host_str().is_some()
+                && parsed.path() == "/"
+                && parsed.query().is_none()
+                && parsed.fragment().is_none(),
+            "INGESTER_URL must be an HTTP origin"
+        );
+        Some(origin)
+    } else {
+        None
+    };
     let metrics = Metrics::new()?;
     let storage = Storage::new(
         &cfg.clickhouse_url,
@@ -27,38 +46,40 @@ async fn main() -> Result<()> {
         &cfg.clickhouse_password,
     );
     storage.ensure_community_schema().await?;
-    tokio::spawn(bsky_observatory::storage::snapshots::refresh_coverage(
-        storage.clone(),
-    ));
-    tokio::spawn(bsky_observatory::storage::snapshots::refresh(
-        storage.clone(),
-    ));
-    let community_configs = cfg
-        .community_windows_seconds
-        .iter()
-        .copied()
-        .filter(|window| *window > 0)
-        .map(
-            |window_seconds| bsky_observatory::community::CommunityConfig {
-                window_seconds,
-                event_types: cfg
-                    .community_event_types
-                    .iter()
-                    .cloned()
-                    .collect::<BTreeSet<_>>(),
-                min_edge_weight: cfg.community_min_edge_weight,
-                max_nodes: cfg.community_max_nodes,
-                max_edges: cfg.community_max_edges,
-                ..Default::default()
-            },
-        )
-        .collect();
-    tokio::spawn(bsky_observatory::community::run_periodically(
-        storage.clone(),
-        community_configs,
-        cfg.community_max_input_rows,
-        std::time::Duration::from_secs(cfg.community_interval_seconds),
-    ));
+    if runs_workers {
+        tokio::spawn(bsky_observatory::storage::snapshots::refresh_coverage(
+            storage.clone(),
+        ));
+        tokio::spawn(bsky_observatory::storage::snapshots::refresh(
+            storage.clone(),
+        ));
+        let community_configs = cfg
+            .community_windows_seconds
+            .iter()
+            .copied()
+            .filter(|window| *window > 0)
+            .map(
+                |window_seconds| bsky_observatory::community::CommunityConfig {
+                    window_seconds,
+                    event_types: cfg
+                        .community_event_types
+                        .iter()
+                        .cloned()
+                        .collect::<BTreeSet<_>>(),
+                    min_edge_weight: cfg.community_min_edge_weight,
+                    max_nodes: cfg.community_max_nodes,
+                    max_edges: cfg.community_max_edges,
+                    ..Default::default()
+                },
+            )
+            .collect();
+        tokio::spawn(bsky_observatory::community::run_periodically(
+            storage.clone(),
+            community_configs,
+            cfg.community_max_input_rows,
+            std::time::Duration::from_secs(cfg.community_interval_seconds),
+        ));
+    }
     let analysis = Analyzer::with_windows(
         cfg.coordination_window_seconds,
         cfg.min_cluster_accounts,
@@ -80,7 +101,11 @@ async fn main() -> Result<()> {
         .clone()
         .unwrap_or_else(|| cfg.data_dir.join("backfill-queue"));
     let backfills = bsky_observatory::backfill::BackfillQueue::open(backfill_dir)?;
-    for _ in 0..cfg.backfill_worker_concurrency.clamp(1, 4) {
+    for _ in 0..if runs_workers {
+        cfg.backfill_worker_concurrency.clamp(1, 4)
+    } else {
+        0
+    } {
         tokio::spawn(bsky_observatory::backfill::run_worker(
             backfills.clone(),
             storage.clone(),
@@ -93,13 +118,18 @@ async fn main() -> Result<()> {
         cfg.identity_queue_capacity,
         chrono::Duration::seconds(cfg.identity_negative_ttl_seconds as i64),
     )?;
-    for _ in 0..cfg.identity_worker_concurrency.clamp(1, 4) {
+    for _ in 0..if runs_workers {
+        cfg.identity_worker_concurrency.clamp(1, 4)
+    } else {
+        0
+    } {
         tokio::spawn(bsky_observatory::identity_queue::run_worker(
             identity_queue.clone(),
             identities.clone(),
         ));
     }
     let state = AppState {
+        ingester_url,
         analysis: analysis.clone(),
         metrics: metrics.clone(),
         storage: storage.clone(),
@@ -117,9 +147,11 @@ async fn main() -> Result<()> {
     };
     let listener = tokio::net::TcpListener::bind(&cfg.listen_addr).await?;
     tokio::spawn(api::sample_system_history(state.clone()));
-    tokio::spawn(bsky_observatory::ingest::run(
-        cfg, storage, analysis, metrics, identities,
-    ));
+    if runs_workers {
+        tokio::spawn(bsky_observatory::ingest::run(
+            cfg, storage, analysis, metrics, identities,
+        ));
+    }
     axum::serve(listener, api::router(state)).await?;
     Ok(())
 }

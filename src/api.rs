@@ -40,6 +40,7 @@ pub struct GrowthBaseline {
 }
 #[derive(Clone)]
 pub struct AppState {
+    pub ingester_url: Option<String>,
     pub analysis: Analyzer,
     pub metrics: Arc<Metrics>,
     pub storage: Storage,
@@ -54,6 +55,7 @@ pub struct AppState {
 }
 pub type SystemHistory = Arc<RwLock<VecDeque<SystemSample>>>;
 pub fn router(s: AppState) -> Router {
+    let live_origin = s.ingester_url.clone();
     let index = s.web_dist_dir.join("index.html");
     let spa = || get_service(ServeFile::new(index.clone()));
     let frontend = ServeDir::new(&s.web_dist_dir).not_found_service(ServeFile::new(index.clone()));
@@ -131,7 +133,92 @@ pub fn router(s: AppState) -> Router {
         .fallback_service(frontend)
         .layer(CompressionLayer::new())
         .layer(middleware::from_fn(cache_headers))
+        .layer(middleware::from_fn_with_state(
+            live_origin,
+            forward_ingester,
+        ))
         .with_state(s)
+}
+
+fn ingester_route(path: &str) -> bool {
+    matches!(
+        path,
+        "/metrics"
+            | "/api/ingestion"
+            | "/api/stats"
+            | "/api/live"
+            | "/api/firehose"
+            | "/api/trending/urls"
+            | "/api/trending/domains"
+            | "/api/trending/fingerprints"
+            | "/api/trending/drilldown"
+            | "/api/trending/conversations"
+            | "/api/anomalies"
+            | "/api/clusters"
+            | "/api/system"
+            | "/api/system/history"
+            | "/api/storage"
+    )
+}
+
+/// Only explicitly enumerated, read-only hot-state routes cross this boundary.
+/// Durable account/post/search queries stay in the independently deployable API.
+async fn forward_ingester(
+    State(origin): State<Option<String>>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let Some(origin) = origin.filter(|_| ingester_route(request.uri().path())) else {
+        return next.run(request).await;
+    };
+    if request.method() != axum::http::Method::GET {
+        return StatusCode::METHOD_NOT_ALLOWED.into_response();
+    }
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    let client = CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(3))
+            .build()
+            .expect("HTTP client")
+    });
+    let url = format!(
+        "{}{}",
+        origin.trim_end_matches('/'),
+        request
+            .uri()
+            .path_and_query()
+            .map(|p| p.as_str())
+            .unwrap_or("/")
+    );
+    let mut outgoing = client.get(url);
+    if request.uri().path() != "/api/live" {
+        outgoing = outgoing.timeout(Duration::from_secs(10));
+    }
+    if let Some(cursor) = request.headers().get("last-event-id") {
+        outgoing = outgoing.header("last-event-id", cursor);
+    }
+    match outgoing.send().await {
+        Ok(upstream) => {
+            let mut response = Response::builder()
+                .status(upstream.status())
+                .header(header::CACHE_CONTROL, "no-store")
+                .header("x-accel-buffering", "no");
+            if let Some(value) = upstream.headers().get(header::CONTENT_TYPE) {
+                response = response.header(header::CONTENT_TYPE, value);
+            }
+            response
+                .body(axum::body::Body::from_stream(upstream.bytes_stream()))
+                .expect("valid upstream response")
+        }
+        Err(error) => {
+            tracing::warn!(%error, "ingester live endpoint unavailable");
+            (
+                StatusCode::BAD_GATEWAY,
+                "Live ingestion service unavailable; retained data remains accessible.",
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn cache_headers(request: Request<axum::body::Body>, next: Next) -> Response {

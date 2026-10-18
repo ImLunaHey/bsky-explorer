@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 pub mod overview;
 pub mod snapshots;
 
+// Expensive materializations share one permit; interactive lookups and inserts
+// never wait for it. Prevent dashboard, coverage and community rebuilds piling up.
+pub(super) static BACKGROUND_QUERY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
 #[derive(Clone)]
 pub struct Storage {
     client: Client,
@@ -490,6 +494,7 @@ impl Storage {
         event_types: &[String],
         limit: u64,
     ) -> Result<Vec<crate::community::CommunityInteraction>> {
+        let _permit = BACKGROUND_QUERY.acquire().await?;
         let allowed = event_types
             .iter()
             .filter(|v| matches!(v.as_str(), "like" | "repost" | "quote" | "reply" | "follow"))
@@ -625,10 +630,11 @@ impl Storage {
     pub async fn coverage(
         &self,
     ) -> Result<(CoverageTotals, Vec<CoverageCollection>, Vec<CoverageDay>)> {
+        let _permit = BACKGROUND_QUERY.acquire().await?;
         let totals=self.client.clone().with_option("max_execution_time","90").with_option("max_threads","2").with_option("max_memory_usage","1000000000").query("SELECT uniq(actor_did) AS unique_observed_actors,assumeNotNull((SELECT uniq(did) FROM identities FINAL WHERE handle!='')) AS identities_resolved,uniqIf(at_uri,at_uri!='') AS unique_records,assumeNotNull((SELECT coalesce(sum(bytes_on_disk),0) FROM system.parts WHERE active AND database=currentDatabase())) AS total_bytes FROM events").fetch_one::<CoverageTotals>();
         let collections=self.client.clone().with_option("max_execution_time","90").with_option("max_threads","2").with_option("max_memory_usage","1000000000").with_option("max_bytes_before_external_group_by","128000000").query("WITH (SELECT assumeNotNull(coalesce(sum(bytes_on_disk),0)) FROM system.parts WHERE active AND database=currentDatabase() AND table='events') AS compressed_total,(SELECT assumeNotNull(coalesce(sum(data_uncompressed_bytes),0)) FROM system.parts WHERE active AND database=currentDatabase() AND table='events') AS uncompressed_total,(SELECT count() FROM events) AS total_rows SELECT collection,arrayStringConcat(arraySlice(splitByChar('.',collection),1,2),'.') AS namespace,count() AS records,assumeNotNull(toUInt64(compressed_total*records/greatest(total_rows,1))) AS compressed_bytes,assumeNotNull(toUInt64(uncompressed_total*records/greatest(total_rows,1))) AS uncompressed_bytes,uniq(actor_did) AS unique_accounts FROM events GROUP BY collection ORDER BY records DESC LIMIT 500").fetch_all::<CoverageCollection>();
         let daily=self.client.clone().with_option("max_execution_time","90").with_option("max_threads","2").with_option("max_memory_usage","1000000000").with_option("max_bytes_before_external_group_by","128000000").query("WITH first_seen AS (SELECT actor_did,min(toDate(timestamp)) AS first_date FROM events GROUP BY actor_did), daily_events AS (SELECT toDate(timestamp) AS day,uniq(actor_did) AS active_accounts,count() AS records FROM events WHERE timestamp>=today()-30 GROUP BY day), daily_new AS (SELECT first_date AS day,count() AS new_accounts FROM first_seen WHERE first_date>=today()-30 GROUP BY day) SELECT toString(e.day) AS date,e.active_accounts,coalesce(n.new_accounts,0) AS new_accounts,e.records FROM daily_events e LEFT JOIN daily_new n USING day ORDER BY e.day").fetch_all::<CoverageDay>();
-        tokio::try_join!(totals, collections, daily).map_err(Into::into)
+        Ok((totals.await?, collections.await?, daily.await?))
     }
     pub async fn trending_accounts(
         &self,

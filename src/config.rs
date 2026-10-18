@@ -4,6 +4,12 @@ use std::{path::PathBuf, time::Duration};
 #[derive(Debug, Clone, Parser)]
 #[command(version, about)]
 pub struct Config {
+    /// `all` preserves single-process development. Production uses separate roles.
+    #[arg(long, env = "SERVICE_ROLE", default_value = "all", value_parser = ["all", "ingester", "api"])]
+    pub service_role: String,
+    /// Private ingester HTTP origin, required for the API role's live views.
+    #[arg(long, env = "INGESTER_URL")]
+    pub ingester_url: Option<String>,
     #[arg(
         long,
         env = "JETSTREAM_URL",

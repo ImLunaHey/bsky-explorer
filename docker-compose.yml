@@ -16,13 +16,17 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
-  observatory:
-    build: .
+  ingester:
+    image: ${INGESTER_IMAGE:-bsky-explorer-ingester:local}
+    build:
+      context: .
+      target: runtime
     restart: unless-stopped
     depends_on:
       clickhouse:
         condition: service_healthy
-    environment:
+    environment: &app-environment
+      SERVICE_ROLE: ingester
       JETSTREAM_URL: ${JETSTREAM_URL:-wss://jetstream2.us-east.bsky.network/subscribe}
       CLICKHOUSE_URL: http://clickhouse:8123
       CLICKHOUSE_DATABASE: observatory
@@ -64,5 +68,33 @@ services:
       RUST_LOG: bsky_observatory=info,tower_http=info
     volumes:
       - ${ARCHIVE_ROOT:-${STORAGE_ROOT:-/mnt/storage/bsky-observatory}/archive}:/data/archive
+    expose:
+      - "3000"
+  api:
+    image: ${API_IMAGE:-bsky-explorer-api:local}
+    build:
+      context: .
+      target: runtime
+    restart: unless-stopped
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      <<: *app-environment
+      SERVICE_ROLE: api
+      INGESTER_URL: http://ingester:3000
+    volumes:
+      - ${ARCHIVE_ROOT:-${STORAGE_ROOT:-/mnt/storage/bsky-observatory}/archive}:/data/archive
+    expose:
+      - "3000"
+  frontend:
+    image: ${FRONTEND_IMAGE:-bsky-explorer-frontend:local}
+    build:
+      context: .
+      target: frontend
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
     ports:
-      - "3000:3000"
+      - "3000:80"
